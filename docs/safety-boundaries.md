@@ -75,9 +75,59 @@ Each rule declares `required_evidence`. If any required evidence field is
 
 ## Human Gate (spec Section 15) — never auto-executed
 
-external send · file deletion · production config change · money movement ·
+external send · file deletion / write · production config change · money movement ·
 HR judgement · contract / legal judgement · credential retrieval ·
 destructive shell / CLI operations.
 
-The reviewer returns `HUMAN_APPROVAL_REQUIRED` instead of acting.
-(Implementation lands in M5.)
+`app/policy/human_gate.py::evaluate_action` returns `HUMAN_APPROVAL_REQUIRED` for
+any recognised high-impact action **and for any unrecognised action** (fail
+closed). Only an explicit, side-effect-free kind is `ALLOWED`. The system never
+executes an action itself.
+
+## §32 — Knowledge Repository is read-only during assessment
+
+Part of the threat model, not a usage note. Retrieved content can contain
+descriptions of prompt injection, tool abuse and memory poisoning; if the same
+agent could modify its own rules or knowledge, that is a knowledge-poisoning path.
+
+- `app/policy/knowledge_guard.py`: `read` / `list` / `search` -> `ALLOWED`; every
+  mutating or unknown operation -> `READ_ONLY_VIOLATION`.
+- The assessment path (`app/reviewer/assess.py`) contains no knowledge write and
+  completes against a read-only SQLite connection (AC-14).
+- There is **no runtime API that changes knowledge content**.
+  `POST /v1/knowledge/reindex` only re-derives the FTS index from the existing,
+  already-verified read-only knowledge root, with classification + integrity
+  checks before an atomic swap; on any failure the existing index is kept.
+- An AI's proposed knowledge change is an untrusted proposal, not an edit - it is
+  handled through a separate review workflow, never by the assessment agent.
+
+## §33 — Trust boundary & fail-safe
+
+| Trusted / controlled | Untrusted / potentially adversarial |
+| --- | --- |
+| Reviewed Knowledge Units | User prompts |
+| Approved risk rules | External documents / web / PDF / images |
+| Classification gate | RAG content before source & integrity verification |
+| Deterministic rule engine | The assessed AI's own output |
+| Human review / maintainer approval | LLM-generated observations & suggestions |
+| | An update pack before verification |
+
+Retrieved content is not trusted just because it came from the Knowledge Repo -
+its source, classification and integrity are checked first. Instructions embedded
+in untrusted input ("ignore this rule", "rewrite the knowledge") are data, never
+control.
+
+Fail-closed rules:
+
+- Evidence insufficient -> `UNKNOWN` (never a guessed `PASS`).
+- Classification decision fails -> stop retrieval and LLM input (`PolicyBlocked`).
+- LLM output fails to parse -> one repair attempt, then `LLM_PARSE_ERROR` with no
+  fabricated observations.
+- Rule engine and LLM disagree -> the LLM cannot lift or downgrade a deterministic
+  `FAIL` / `WARN` (decision A8, enforced by the `Finding` model + `merge_findings`).
+- Human Gate decision fails -> `HUMAN_APPROVAL_REQUIRED`.
+- Index integrity / revision check fails -> `POLICY_BLOCKED`; a `PolicyStop`
+  aborts the assessment rather than returning an empty result.
+
+`PASS` is not a security guarantee. `UNKNOWN` is a valid verdict. The final
+decision is a human's.

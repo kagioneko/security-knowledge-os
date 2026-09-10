@@ -22,10 +22,12 @@ from app.models.context import (
 )
 from app.models.knowledge import (
     Classification,
+    Derivation,
     KnowledgeCategory,
     KnowledgeStatus,
     KnowledgeUnit,
     KnowledgeUnitFrontMatter,
+    Provenance,
     SourceType,
 )
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, PolicyStop
@@ -60,6 +62,7 @@ __all__ = [
     "Clause",
     "ClauseOutcome",
     "CredentialStorage",
+    "Derivation",
     "Evidence",
     "Finding",
     "FindingStatus",
@@ -78,6 +81,7 @@ __all__ = [
     "PolicyDecision",
     "PolicyOutcome",
     "PolicyStop",
+    "Provenance",
     "Question",
     "QueryCategory",
     "RetrievalResponse",

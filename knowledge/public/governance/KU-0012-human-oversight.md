@@ -11,6 +11,13 @@ risk_ids:
 version: "1.0"
 last_reviewed: "2026-09-10"
 requires_ip_review: false
+provenance:
+  source_title: "NIST AI Risk Management Framework (AI RMF 1.0)"
+  source_url: "https://www.nist.gov/itl/ai-risk-management-framework"
+  source_version: "1.0 (2023-01)"
+  source_license: "U.S. Government work / public domain"
+  derivation: summary
+  last_verified: "2026-09-10"
 ---
 
 ## Summary

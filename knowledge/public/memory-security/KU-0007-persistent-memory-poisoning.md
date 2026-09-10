@@ -11,6 +11,13 @@ risk_ids:
 version: "1.0"
 last_reviewed: "2026-09-10"
 requires_ip_review: false
+provenance:
+  source_title: "OWASP Top 10 for LLM Applications 2025 - LLM04 Data and Model Poisoning"
+  source_url: "https://genai.owasp.org/llmrisk/llm04-data-and-model-poisoning/"
+  source_version: "2025"
+  source_license: "CC-BY-SA-4.0 (OWASP GenAI Security Project)"
+  derivation: summary
+  last_verified: "2026-09-10"
 ---
 
 ## Summary

@@ -45,6 +45,30 @@ class KnowledgeStatus(StrEnum):
     DEPRECATED = "deprecated"
 
 
+class Derivation(StrEnum):
+    """How this Knowledge Unit relates to its cited source."""
+
+    ORIGINAL = "original"      # entirely our own analysis
+    SUMMARY = "summary"        # our own prose summarising a publicly documented concept
+    ADAPTATION = "adaptation"  # reworded / restructured from a specific source
+    QUOTATION = "quotation"    # contains verbatim quoted material from the source
+
+
+class Provenance(BaseModel):
+    """Where a Knowledge Unit's content comes from and how it may be used
+    (required before public release - see docs/attribution.md)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_title: str = Field(min_length=1)
+    source_url: str | None = None
+    source_version: str | None = None  # version or publication date of the source
+    source_license: str = Field(min_length=1)  # licence / usage terms of the SOURCE
+    derivation: Derivation
+    last_verified: date
+    usage_note: str | None = None
+
+
 class KnowledgeUnitFrontMatter(BaseModel):
     """The YAML front matter block of a Knowledge Unit file."""
 
@@ -61,6 +85,7 @@ class KnowledgeUnitFrontMatter(BaseModel):
     version: str = Field(min_length=1)
     last_reviewed: date
     requires_ip_review: bool
+    provenance: Provenance
 
     @field_validator("title", "source_ref", "version")
     @classmethod

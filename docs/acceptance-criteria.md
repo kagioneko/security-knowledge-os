@@ -19,10 +19,10 @@ the tests that cover it. Status is updated as milestones land.
 | AC-12 | pytest all pass | all | done | 308 passed, 1 skipped (JA-R02, out of scope) |
 | AC-13 | Normal assessment cannot rewrite production knowledge | M5 | done | `test_knowledge_guard.py`, `test_assess_m5.py::test_assess_source_has_no_knowledge_write` |
 | AC-14 | All fixtures complete with no knowledge-write credential | M5 | done | `test_assess_m5.py::test_ac14_*` (read-only sqlite connection) |
-| AC-15 | README states read-only, poisoning risk, update review | M8 | not started | |
-| AC-16 | README states "PASS is not a security guarantee" | M8 | not started | |
-| AC-17 | README states UNKNOWN is a valid verdict | M8 | not started | |
-| AC-18 | Trusted / Untrusted boundary is defined | M1/M8 | partial (`docs/safety-boundaries.md`, `docs/threat-model.md`) | |
+| AC-15 | README states read-only, poisoning risk, update review | M8 | done | README "Security disclaimer & scope" |
+| AC-16 | README states "PASS is not a security guarantee" | M8 | done | README "Security disclaimer & scope" |
+| AC-17 | README states UNKNOWN is a valid verdict | M8 | done | README "Security disclaimer & scope" |
+| AC-18 | Trusted / Untrusted boundary is defined | M1/M8 | done | README trust-boundary table; `docs/safety-boundaries.md` §33; `docs/threat-model.md` |
 | AC-19 | Insufficient evidence never falls back to PASS | M3 | done | `test_assess.py::test_ac19_*`, `test_rule_engine` |
 | AC-20 | Classification / integrity / Human Gate failures fail closed | M2/M5 | done | `test_fail_closed.py` |
 

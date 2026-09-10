@@ -10,6 +10,14 @@ risk_ids: []
 version: "1.0"
 last_reviewed: "2026-09-10"
 requires_ip_review: false
+provenance:
+  source_title: "MITRE ATLAS; OWASP Top 10 for LLM Applications 2025 - LLM06"
+  source_url: "https://atlas.mitre.org/"
+  source_version: "2026"
+  source_license: "MITRE ATLAS Terms of Use (free use with attribution); CC-BY-SA-4.0 (OWASP GenAI Security Project)"
+  derivation: summary
+  last_verified: "2026-09-10"
+  usage_note: "Original Japanese-language summary of assume-compromise / reachability analysis."
 ---
 
 ## Summary

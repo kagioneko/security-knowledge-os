@@ -13,6 +13,45 @@ The source of truth for the design is the Google Drive document
 > This system is **not** an AI that decides "safe" on its own. It finds evidence,
 > evaluates against rules, flags gaps, and supports a human decision.
 
+## Security disclaimer & scope
+
+- **This is a security assessment *support* tool, not a security guarantee.**
+- **`PASS` is not a security guarantee.** It means "no major issue was detected
+  within the assessed scope, the available evidence, the active knowledge
+  revision, the rule set, and the model configuration". It does not prove the
+  target is secure.
+- **`UNKNOWN` is a valid, first-class verdict** - it means evidence was
+  insufficient. The engine returns `UNKNOWN` rather than guessing.
+- **Fixture performance is not real-world effectiveness.** The current metrics
+  (known-risk recall, false-positive rate, etc.) are measured on a small set of
+  *artificial* fixtures and show that the mechanism separates
+  vulnerable / safe / unknown as designed. They do **not** establish real-world
+  security effectiveness.
+- **Human review is required.** High-impact decisions - deployment approval, risk
+  acceptance, and anything affecting money, people, contracts, production, or
+  external parties - stay with a named human owner. High-impact *actions* are
+  never auto-executed; the engine returns `HUMAN_APPROVAL_REQUIRED`.
+- **The Knowledge Repository is read-only during assessment.** Retrieved content
+  can contain descriptions of prompt injection, tool abuse, and memory poisoning;
+  letting the same agent modify its own rules or knowledge would create a
+  knowledge-poisoning path. Do not grant an AI agent write access to the
+  production Knowledge Repository. Changes go through a separate review workflow.
+
+### Trust boundary
+
+| Trusted / controlled | Untrusted / potentially adversarial |
+| --- | --- |
+| Reviewed Knowledge Units | User prompts |
+| Approved risk rules | External documents / web / PDF / images |
+| Classification gate | RAG content before source & integrity verification |
+| Deterministic rule engine | The assessed AI's own output |
+| Human review / maintainer approval | LLM-generated observations & suggestions |
+| | An update pack before verification |
+
+"Ignore this rule" / "rewrite the knowledge" appearing in any untrusted input is
+treated as data, never as a control instruction. Details in
+`docs/safety-boundaries.md` and `docs/threat-model.md`.
+
 ## Core principles
 
 - The LLM is **off by default**. `Input -> AssessmentContext -> Rule Engine -> Finding -> Report`
@@ -34,7 +73,7 @@ The source of truth for the design is the Google Drive document
 | **M5 — Safe Test + Human Gate** | done | `app/models/policy_outcome.py`, `app/policy/{human_gate,knowledge_guard,safe_test}.py`, `app/storage/integrity.py`, `safe_tests/**` (4 templates), `scripts/validate_safe_tests.py` |
 | **M6 — Orchestrator + CLI + API** | done | `app/models/report.py`, `app/reviewer/report.py`, `app/cli.py` (`skos`), `app/main.py` (FastAPI), `app/retrieval/index.py::reindex_atomic` |
 | **M7 — Fixtures + Evaluation + starter KUs** | done | `knowledge/public/**` (13 KUs), `tests/fixtures/assessments/{safe,vulnerable,unknown}/`, `app/eval/metrics.py`, `scripts/evaluate.py`, JA retrieval (trigram) |
-| M8 — Docs + hardening | not started | |
+| **M8 — Docs + hardening** | done | Security disclaimer (AC-15–18), KU `provenance` schema, `docs/{attribution,threat-model,architecture}.md`, `sbom.json`, `scripts/{secret_scan,generate_sbom,preflight}.py` |
 
 ## Quickstart (M1)
 
@@ -71,11 +110,25 @@ python3.12 -m venv .venv
 ```
 
 The MVP ships **13 public Knowledge Units** (`knowledge/public/`, all from
-published standards - OWASP LLM Top 10 2025, MITRE ATLAS, NIST AI RMF; one in
-Japanese). See `docs/knowledge-corpus.md`. Evaluation over the 12 labelled
-fixtures: known-risk recall 1.0, false-positive rate 0.0, UNKNOWN-appropriateness
-1.0, evidence coverage 1.0, safe-test safety violations 0 (fixtures are
-artificial - this shows the mechanism, not field performance).
+published standards - OWASP LLM Top 10 2025, MITRE ATLAS, NIST AI RMF / AI 600-1;
+one in Japanese). Each unit carries `provenance` (source title, URL, version,
+licence, derivation status, last-verified date). See `docs/knowledge-corpus.md`
+and `docs/attribution.md`.
+
+**Internal fixture evaluation** (`scripts/evaluate.py`, 12 artificial fixtures ×
+13 indexed KUs):
+
+```
+Classification Leakage          = 0
+Safe Test Safety Violation      = 0
+Human Gate Bypass               = 0
+current controlled-fixture metrics = 1.0
+  (known-risk recall, false-positive rate=0, UNKNOWN-appropriateness,
+   evidence coverage, citation/source match)
+```
+
+These results **do not establish real-world security effectiveness**. They show
+the mechanism behaves as designed on a controlled set.
 
 ### `skos` CLI
 

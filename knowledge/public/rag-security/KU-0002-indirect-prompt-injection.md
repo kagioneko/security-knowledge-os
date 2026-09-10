@@ -11,6 +11,14 @@ risk_ids:
 version: "1.0"
 last_reviewed: "2026-09-10"
 requires_ip_review: false
+provenance:
+  source_title: "OWASP Top 10 for LLM Applications 2025 - LLM01 Prompt Injection"
+  source_url: "https://genai.owasp.org/llmrisk/llm01-prompt-injection/"
+  source_version: "2025"
+  source_license: "CC-BY-SA-4.0 (OWASP GenAI Security Project)"
+  derivation: summary
+  last_verified: "2026-09-10"
+  usage_note: "Indirect prompt injection is also extensively documented by S. Willison (simonwillison.net); not reproduced here."
 ---
 
 ## Summary

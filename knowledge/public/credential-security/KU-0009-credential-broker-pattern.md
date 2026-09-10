@@ -11,6 +11,13 @@ risk_ids:
 version: "1.0"
 last_reviewed: "2026-09-10"
 requires_ip_review: false
+provenance:
+  source_title: "NIST AI 600-1: Artificial Intelligence Risk Management Framework - Generative AI Profile"
+  source_url: "https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.600-1.pdf"
+  source_version: "2024-07"
+  source_license: "U.S. Government work / public domain"
+  derivation: summary
+  last_verified: "2026-09-10"
 ---
 
 ## Summary

@@ -19,8 +19,25 @@ risk_ids:                         # rule ids this KU is evidence for (may be emp
 version: "0.1"                    # MUST be quoted (string, not a number)
 last_reviewed: "2026-09-10"       # YYYY-MM-DD
 requires_ip_review: false         # true if IP / trade-secret review is still pending
+provenance:                       # required - where the content comes from (docs/attribution.md)
+  source_title: "OWASP Top 10 for LLM Applications 2025 - LLM01 Prompt Injection"
+  source_url: "https://genai.owasp.org/llmrisk/llm01-prompt-injection/"   # or null
+  source_version: "2025"          # version or publication date; or null
+  source_license: "CC-BY-SA-4.0 (OWASP GenAI Security Project)"
+  derivation: summary             # original | summary | adaptation | quotation
+  last_verified: "2026-09-10"
+  usage_note: "..."               # optional
 ---
 ```
+
+`provenance.derivation`:
+
+| value | meaning |
+| --- | --- |
+| `original` | entirely our own analysis |
+| `summary` | our own prose summarising a publicly documented concept |
+| `adaptation` | reworded / restructured from a specific source (check ShareAlike) |
+| `quotation` | contains verbatim quoted material from the source |
 
 - Unknown front-matter keys are rejected (`extra="forbid"`) to catch typos early.
 - `version` and `last_reviewed` must be quoted so YAML keeps them as strings/dates.
