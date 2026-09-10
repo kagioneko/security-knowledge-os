@@ -94,8 +94,12 @@ run_antigravity() {
     echo "commit: ${COMMIT}   date: $(date -Iseconds)"
     echo
   } > "$f"
+  # --mode plan keeps it read-only (no edits); --dangerously-skip-permissions is
+  # required so headless mode does not auto-deny read tools (grep/find/cat) it
+  # cannot prompt for. plan mode bounds the "dangerously": it still cannot write.
   timeout "$TIMEOUT" agy -p "$ANTIGRAVITY_PROMPT" \
-    --add-dir "$REPO" --effort high --output-format text 2>&1 | tee -a "$f" || {
+    --add-dir "$REPO" --effort high --mode plan --dangerously-skip-permissions \
+    --output-format text 2>&1 | tee -a "$f" || {
       echo "!! agy failed or timed out (exit $?)" | tee -a "$f"; }
   echo "   done: $f"
 }

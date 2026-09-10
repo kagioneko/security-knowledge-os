@@ -1,2 +1,2 @@
-reviews/*.md
-!reviews/README.md
+*.md
+!README.md
