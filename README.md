@@ -30,7 +30,7 @@ The source of truth for the design is the Google Drive document
 | **M1 — Skeleton + Schema + Validator** | done | directory tree, `app/models/*`, `app/ingestion/validator.py`, `scripts/validate_knowledge.py`, `docs/knowledge-schema.md` |
 | **M2 — Knowledge Loader + FTS5 Retrieval** | done | `app/ingestion/{loader,chunker}.py`, `app/storage/{db,repository}.py`, `app/retrieval/{base,bm25,hybrid,index}.py`, `scripts/{ingest,build_index}.py` |
 | **M3 — Deterministic Rule Engine** | done | `app/models/rule_clause.py`, `app/reviewer/{facts,clause_eval,rule_loader,rule_engine,normalize,attack_surface,evidence,rollup,assess}.py`, `rules/**` (7 rules), `scripts/validate_rules.py`, `docs/rule-schema.md` |
-| M4 — LLM Adapter + Reviewer | not started | |
+| **M4 — LLM Adapter + Reviewer** | done | `app/llm/{base,mock,anthropic_client,factory}.py`, `app/models/{reviewer_output,llm_io}.py`, `app/reviewer/{llm_review,questions}.py`, `assess()` full, `scripts/assess.py` |
 | M5 — Safe Test + Human Gate | not started | |
 | M6 — Orchestrator + CLI + API | not started | |
 | M7 — Fixtures + Evaluation + starter KUs | not started | |
@@ -52,6 +52,9 @@ python3.12 -m venv .venv
 # Validate the deterministic rule catalogue
 .venv/bin/python scripts/validate_rules.py rules
 
+# Run an assessment (provider=none by default: the deterministic engine does the work)
+.venv/bin/python scripts/assess.py tests/fixtures/assessments/V-001-indirect-injection-auto-email.yaml
+
 # Run the test-suite
 .venv/bin/pytest -q
 ```
@@ -61,6 +64,13 @@ assessment path (`app/reviewer/assess.py`) runs with no LLM: it normalizes the
 input, extracts the attack surface, evaluates the rule catalogue over a
 whitelisted fact set, and rolls the findings up. A rule is never `PASS` while any
 check was `UNKNOWN` or any required evidence was missing.
+
+The LLM is an **optional additive layer** (`SKOS_LLM_PROVIDER`, default `none`).
+It receives the deterministic findings as a read-only view and its output schema
+has no field for a status or an overall verdict, so it structurally cannot change
+a deterministic result - it can only add `LLM-OBS-*` observations (capped at
+`WARN`/`UNKNOWN`), questions, and notes. Malformed LLM output is repaired once,
+then discarded (`LLM_PARSE_ERROR`).
 
 The knowledge root and index path are parameters (`SKOS_KNOWLEDGE_ROOT`,
 `SKOS_DB_PATH`), so the same code serves `knowledge/` today and a Pack Manager's

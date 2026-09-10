@@ -46,3 +46,7 @@ markers = [
 python_version = "3.12"
 strict = true
 files = ["app", "scripts"]
+
+[[tool.mypy.overrides]]
+module = ["anthropic", "anthropic.*"]
+ignore_missing_imports = true

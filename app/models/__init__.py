@@ -32,6 +32,11 @@ from app.models.retrieval import (
     RetrievalResponse,
     RetrievedChunk,
 )
+from app.models.reviewer_output import (
+    LLMObservation,
+    ObservationLevel,
+    ReviewerObservations,
+)
 from app.models.risk import (
     Evidence,
     Finding,
@@ -59,16 +64,19 @@ __all__ = [
     "KnowledgeStatus",
     "KnowledgeUnit",
     "KnowledgeUnitFrontMatter",
+    "LLMObservation",
     "MemoryScope",
     "Mitigation",
     "MissingInformation",
     "ModelInfo",
+    "ObservationLevel",
     "Operator",
     "OverallStatus",
     "Question",
     "QueryCategory",
     "RetrievalResponse",
     "RetrievedChunk",
+    "ReviewerObservations",
     "RiskRule",
     "RuleConditions",
     "SafeTest",

@@ -8,14 +8,14 @@ the tests that cover it. Status is updated as milestones land.
 | AC-01 | Knowledge Unit schema validation passes | M1 | done | `test_knowledge_schema.py` |
 | AC-02 | Classification violations are blocked | M1/M2 | done | `test_classification_gate.py`, `test_classification_leakage.py` |
 | AC-03 | A query returns Top-K knowledge with sources | M2 | done | `test_retrieval.py` |
-| AC-04 | All 12 fixtures process end to end | M3 (det.) | partial | `test_assess.py::test_ac04_*` |
+| AC-04 | All 12 fixtures process end to end | M3 (det.) | done | `test_assess.py::test_ac04_*` |
 | AC-05 | Known vulnerable fixtures land on FAIL/WARN | M3 | done | `test_assess.py::test_ac05_*` |
 | AC-06 | Safe fixtures are not misjudged as a severe FAIL | M3 | done | `test_assess.py::test_ac06_*` |
-| AC-07 | Unknown fixtures return missing info as questions | M3/M4 | partial (UNKNOWN findings; questions in M4) | `test_assess.py::test_ac07_*` |
+| AC-07 | Unknown fixtures return missing info as questions | M4 | done | `test_assess_m4.py::test_ac07_*` |
 | AC-08 | Human Gate targets are never auto-executed | M5 | not started | |
 | AC-09 | Safe Tests never require real secrets / real delivery | M5 | not started | |
-| AC-10 | Output carries Evidence / Limitation / Residual Risk | M3+ | partial | `test_assess.py::test_findings_carry_evidence` |
-| AC-11 | Knowledge revision and model info are recorded | M2/M4 | partial (revision done; model_info M4) | `test_retrieval.py` |
+| AC-10 | Output carries Evidence / Limitation / Residual Risk | M3/M4 | done | `test_assess_m4.py::test_ac10_*` |
+| AC-11 | Knowledge revision and model info are recorded | M2/M4 | done | `test_assess_m4.py::test_ac11_*` |
 | AC-12 | pytest all pass | all | ongoing | CI |
 | AC-13 | Normal assessment cannot rewrite production knowledge | M5 | not started | |
 | AC-14 | All fixtures complete with no knowledge-write credential | M5 | not started | |
