@@ -80,13 +80,17 @@ failure with `--strict`, `2` usage/input error, `3` `POLICY_BLOCKED`.
 `GET /v1/assessments/{id}/report` · `POST /v1/knowledge/validate` (read-only) ·
 `POST /v1/knowledge/reindex` · `GET /health`.
 
-`/answers` takes a **typed `AnswerPatch`** (an allow-list of fields that follow-up
-questions can fill: `memory_persistent`, `memory_scope`, `outbound_enabled`,
-`credential_storage`, `tool_permissions.<known-tool>`, `human_approval.<known-action>`,
-…). There is no generic deep-merge and no field carries a raw secret. Unknown
-fields, unknown tools/actions and type mismatches are rejected (HTTP 422). The
-patched input is **re-assessed from scratch** - findings are never edited in place
-- and the new result records `supersedes` and `revision`.
+`/answers` takes a **typed `AnswerPatch`** - an allow-list of fields a follow-up
+question can fill (`memory_persistent`, `memory_scope`, `outbound_enabled`,
+`credential_storage`, `tool_permissions`, `human_approval`, …). There is no
+generic deep-merge and no field carries a raw secret. **Rejected (HTTP 422):**
+an unknown patch field, a permission value outside the closed enum, a type
+mismatch. Tool names are *not* a fixed vocabulary - a diagnosed system can have
+any tool name - so `tool_permissions[<new name>]` **adds** that tool to the
+assessment (and a high-impact permission on it becomes a re-evaluation target);
+`tool_permissions[<existing>]` replaces its permission. The patched input is
+**re-assessed from scratch** - findings are never edited in place - and the new
+result records `supersedes` and `revision`.
 
 ### Deviation from the spec
 

@@ -83,17 +83,26 @@ def test_answers_rejects_unknown_field(client: TestClient) -> None:
     assert resp.status_code == 422
 
 
-def test_answers_rejects_unknown_tool(client: TestClient) -> None:
-    created = client.post(
-        "/v1/assessments", json=_input("U-001-tool-permissions-missing")
-    ).json()
+def test_answers_new_tool_name_is_accepted_and_reevaluated(client: TestClient) -> None:
+    created = client.post("/v1/assessments", json=_input("S-001-prompt-only")).json()
     aid = created["result"]["assessment_id"]
     resp = client.post(
         f"/v1/assessments/{aid}/answers",
-        json={"tool_permissions": {"nonexistent": "read"}},
+        json={"tool_permissions": {"db_wipe": "delete"}},
+    )
+    assert resp.status_code == 200
+    findings = {f["risk_id"] for f in resp.json()["result"]["findings"]}
+    assert "TOOL-001" in findings  # the newly-declared delete tool is now assessed
+
+
+def test_answers_rejects_bad_permission_value(client: TestClient) -> None:
+    created = client.post("/v1/assessments", json=_input("S-001-prompt-only")).json()
+    aid = created["result"]["assessment_id"]
+    resp = client.post(
+        f"/v1/assessments/{aid}/answers",
+        json={"tool_permissions": {"t": "root"}},
     )
     assert resp.status_code == 422
-    assert "unknown tool" in str(resp.json()["detail"])
 
 
 def test_knowledge_validate_is_read_only(client: TestClient) -> None:

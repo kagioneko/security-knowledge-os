@@ -1,8 +1,20 @@
-"""Apply a typed AnswerPatch to an AssessmentInput (M6.1).
+"""Apply a typed AnswerPatch to an AssessmentInput (M6.1 / M6.2).
 
 The patched input is re-assessed from the start (normalize -> rules -> retrieval ->
 LLM -> roll-up). Findings are never edited in place, so a partially-answered
 assessment cannot end up internally inconsistent.
+
+What is rejected: an unknown patch field (schema ``extra="forbid"``), a permission
+value outside the closed enum, or a type mismatch (all handled by ``AnswerPatch``
+itself). **Tool names are not a fixed vocabulary** - a diagnosed system can have
+any tool name - so:
+
+  * ``tool_permissions[<existing tool>]``  -> replace that tool's permission
+  * ``tool_permissions[<new name>]``       -> add the tool to the assessment
+  * ``human_approval[<action>]``           -> merged as-is (an action key is a name)
+
+A high-impact permission (write / delete / send / shell) that a patch introduces
+is a first-class re-evaluation target: the rule engine sees the new tool.
 """
 
 from __future__ import annotations
@@ -10,10 +22,10 @@ from __future__ import annotations
 from app.models.answer import AnswerPatch
 from app.models.assessment import AssessmentInput
 
-_OUTBOUND_ACTIONS = {"outbound_send", "outbound"}
-
 
 class AnswerValidationError(ValueError):
+    """Kept for the API layer; structural rejection is done by the AnswerPatch schema."""
+
     def __init__(self, reasons: list[str]) -> None:
         super().__init__("; ".join(reasons))
         self.reasons = reasons
@@ -21,7 +33,6 @@ class AnswerValidationError(ValueError):
 
 def apply_patch(original: AssessmentInput, patch: AnswerPatch) -> AssessmentInput:
     data = original.model_dump()
-    reasons: list[str] = []
 
     if patch.system_prompt is not None:
         data["system_prompt"] = patch.system_prompt
@@ -52,26 +63,17 @@ def apply_patch(original: AssessmentInput, patch: AnswerPatch) -> AssessmentInpu
             "true" if patch.credential_exposed_to_model else "false"
         )
 
-    known_tools = {tool["name"] for tool in data["tools"]}
-
     if patch.tool_permissions is not None:
+        by_name = {tool["name"]: tool for tool in data["tools"]}
         for name, perm in patch.tool_permissions.items():
-            if name not in known_tools:
-                reasons.append(f"unknown tool '{name}'")
-                continue
-            for tool in data["tools"]:
-                if tool["name"] == name:
-                    tool["permissions"] = perm
+            if name in by_name:
+                by_name[name]["permissions"] = perm  # replace an existing tool's permission
+            else:
+                data["tools"].append(
+                    {"name": name, "permissions": perm, "requires_approval": None}
+                )
 
     if patch.human_approval is not None:
-        allowed = known_tools | _OUTBOUND_ACTIONS | set(data["human_approval"])
-        for action, granted in patch.human_approval.items():
-            if action not in allowed:
-                reasons.append(f"unknown approval action '{action}'")
-                continue
-            data["human_approval"][action] = granted
-
-    if reasons:
-        raise AnswerValidationError(reasons)
+        data["human_approval"].update(patch.human_approval)
 
     return AssessmentInput.model_validate(data)

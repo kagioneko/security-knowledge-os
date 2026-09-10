@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from app.models.answer import AnswerPatch
 from app.models.assessment import AssessmentInput, OverallStatus
-from app.reviewer.answers import AnswerValidationError, apply_patch
+from app.reviewer.answers import apply_patch
 from app.reviewer.assess import assess
 from app.reviewer.rule_loader import RuleCatalogue
 
@@ -82,28 +82,36 @@ def test_credential_exposed_bool_becomes_string(load_assessment: Loader) -> None
     assert patched.credentials.exposed_to_model == "false"
 
 
-def test_unknown_tool_is_rejected(load_assessment: Loader) -> None:
-    with pytest.raises(AnswerValidationError, match="unknown tool"):
-        apply_patch(
-            load_assessment("U-001-tool-permissions-missing"),
-            AnswerPatch(tool_permissions={"ghost_tool": "read"}),
-        )
-
-
-def test_known_tool_permission_is_applied(load_assessment: Loader) -> None:
+def test_existing_tool_permission_is_replaced(load_assessment: Loader) -> None:
     patched = apply_patch(
         load_assessment("U-001-tool-permissions-missing"),
         AnswerPatch(tool_permissions={"mystery_tool": "read"}),
     )
+    assert len(patched.tools) == 1
+    assert patched.tools[0].name == "mystery_tool"
     assert patched.tools[0].permissions == "read"
 
 
-def test_unknown_approval_action_is_rejected(load_assessment: Loader) -> None:
-    with pytest.raises(AnswerValidationError, match="unknown approval action"):
-        apply_patch(
-            load_assessment("V-002-rag-delete-tool-no-approval"),
-            AnswerPatch(human_approval={"launch_missiles": True}),
-        )
+def test_new_tool_name_is_added_to_the_assessment(load_assessment: Loader) -> None:
+    # a diagnosed system can have any tool name; a new name adds the tool
+    original = load_assessment("S-001-prompt-only")
+    assert original.tools == []
+    patched = apply_patch(original, AnswerPatch(tool_permissions={"db_wipe": "delete"}))
+    assert [t.name for t in patched.tools] == ["db_wipe"]
+    assert patched.tools[0].permissions == "delete"
+
+
+def test_bad_permission_value_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"tool_permissions": {"t": "root"}})
+
+
+def test_arbitrary_approval_action_is_merged(load_assessment: Loader) -> None:
+    patched = apply_patch(
+        load_assessment("V-002-rag-delete-tool-no-approval"),
+        AnswerPatch(human_approval={"doc_delete": True}),
+    )
+    assert patched.human_approval == {"doc_delete": True}
 
 
 # --------------------------------------------------------------------------- #
