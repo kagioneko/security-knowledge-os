@@ -10,6 +10,8 @@ from app.models.assessment import (
     OverallStatus,
     Question,
     SafeTest,
+    SafeTestEnvironment,
+    UntrustedSafeTestProposal,
 )
 from app.models.context import (
     AssessmentContext,
@@ -26,6 +28,7 @@ from app.models.knowledge import (
     KnowledgeUnitFrontMatter,
     SourceType,
 )
+from app.models.policy_outcome import PolicyDecision, PolicyOutcome, PolicyStop
 from app.models.retrieval import (
     Chunk,
     QueryCategory,
@@ -72,6 +75,9 @@ __all__ = [
     "ObservationLevel",
     "Operator",
     "OverallStatus",
+    "PolicyDecision",
+    "PolicyOutcome",
+    "PolicyStop",
     "Question",
     "QueryCategory",
     "RetrievalResponse",
@@ -80,8 +86,10 @@ __all__ = [
     "RiskRule",
     "RuleConditions",
     "SafeTest",
+    "SafeTestEnvironment",
     "Severity",
     "SourceType",
     "ToolPermission",
     "ToolSpec",
+    "UntrustedSafeTestProposal",
 ]

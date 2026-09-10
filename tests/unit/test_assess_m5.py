@@ -1,0 +1,131 @@
+"""M5 / AC-13, AC-14: read-only knowledge + safe-test attachment vs proposals."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from pathlib import Path
+
+import pytest
+
+from app.config import LLMProvider, Mode, Settings
+from app.llm.mock import MockClient
+from app.models.assessment import AssessmentInput
+from app.retrieval.index import build_index
+from app.reviewer import assess as assess_module
+from app.reviewer.assess import assess
+from app.reviewer.rule_loader import RuleCatalogue
+from app.storage.db import connect
+
+Loader = Callable[[str], AssessmentInput]
+ALL_FIXTURES = [
+    "V-001-indirect-injection-auto-email",
+    "V-002-rag-delete-tool-no-approval",
+    "V-003-persistent-memory-untrusted",
+    "V-004-env-secret-readable",
+    "S-001-prompt-only",
+    "S-002-rag-trusted-no-actions",
+    "S-003-readonly-tool-with-approval",
+    "S-004-credential-proxy",
+    "U-001-tool-permissions-missing",
+    "U-002-memory-persistence-unspecified",
+    "U-003-outbound-destination-unspecified",
+    "U-004-credential-handling-unspecified",
+]
+
+_PROPOSAL_RESPONSE = json.dumps(
+    {
+        "observations": [],
+        "questions": [],
+        "evidence_notes": [],
+        "limitations": [],
+        "safe_test_suggestions": [
+            {
+                "title": "Try sending a canary email through the agent",
+                "relates_to_risk_id": "PI-003",
+                "idea": "See whether the agent forwards an injected instruction.",
+            }
+        ],
+    }
+)
+
+
+def test_assess_source_has_no_knowledge_write() -> None:
+    source = Path(assess_module.__file__).read_text(encoding="utf-8")
+    for token in ("rebuild(", "build_index", "INSERT INTO chunks", "UPDATE chunks", "DELETE FROM"):
+        assert token not in source, token
+
+
+@pytest.mark.parametrize("name", ALL_FIXTURES)
+def test_ac14_all_fixtures_complete_with_a_read_only_index(
+    name: str,
+    load_assessment: Loader,
+    catalogue: RuleCatalogue,
+    tmp_path_factory: pytest.TempPathFactory,
+    corpus_root: Path,
+) -> None:
+    db = tmp_path_factory.mktemp("ro") / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db, read_only=True)
+    try:
+        result = assess(
+            load_assessment(name),
+            catalogue,
+            settings=Settings(mode=Mode.PRIVATE),
+            index_conn=conn,
+        )
+    finally:
+        conn.close()
+    assert result.assessment_id
+    assert result.knowledge_revision is not None
+
+
+def test_read_only_connection_cannot_write(tmp_path: Path, corpus_root: Path) -> None:
+    import sqlite3
+
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db, read_only=True)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("DELETE FROM chunks")
+    finally:
+        conn.close()
+
+
+def test_safe_tests_are_attached_for_flagged_findings(
+    load_assessment: Loader, catalogue: RuleCatalogue
+) -> None:
+    result = assess(load_assessment("V-001-indirect-injection-auto-email"), catalogue)
+    attached = {t.id for t in result.safe_tests}
+    assert "ST-IPI-001" in attached
+    for test in result.safe_tests:
+        assert test.origin in ("template", "human")
+        assert test.environment
+        assert test.cleanup
+
+
+def test_llm_suggestions_land_as_untrusted_proposals_not_safe_tests(
+    load_assessment: Loader, catalogue: RuleCatalogue
+) -> None:
+    result = assess(
+        load_assessment("V-001-indirect-injection-auto-email"),
+        catalogue,
+        settings=Settings(llm_provider=LLMProvider.MOCK),
+        client=MockClient([_PROPOSAL_RESPONSE]),
+    )
+    assert result.safe_test_proposals
+    assert result.safe_test_proposals[0].origin == "llm"
+    proposal_titles = {p.title for p in result.safe_test_proposals}
+    safe_test_titles = {t.title for t in result.safe_tests}
+    assert proposal_titles.isdisjoint(safe_test_titles)
+    # every executable safe test is template-origin, never llm
+    assert all(t.origin == "template" for t in result.safe_tests)
+
+
+def test_safe_fixtures_have_no_attached_safe_tests(
+    load_assessment: Loader, catalogue: RuleCatalogue
+) -> None:
+    for name in ("S-001-prompt-only", "S-002-rag-trusted-no-actions"):
+        result = assess(load_assessment(name), catalogue)
+        assert result.safe_tests == []

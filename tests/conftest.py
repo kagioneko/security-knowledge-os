@@ -44,6 +44,18 @@ def catalogue(rules_root: Path) -> RuleCatalogue:
 
 
 @pytest.fixture(scope="session")
+def safe_tests_root() -> Path:
+    return Path(__file__).resolve().parents[1] / "safe_tests"
+
+
+@pytest.fixture(scope="session")
+def safe_test_templates(safe_tests_root: Path):
+    from app.policy.safe_test import load_safe_test_templates
+
+    return load_safe_test_templates(safe_tests_root)
+
+
+@pytest.fixture(scope="session")
 def assessments_dir(fixtures_dir: Path) -> Path:
     return fixtures_dir / "assessments"
 

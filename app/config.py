@@ -43,6 +43,7 @@ class Settings:
     llm_model: str | None = None
     knowledge_root: str = "knowledge"
     rules_root: str = "rules"
+    safe_tests_root: str = "safe_tests"
     db_path: str = "var/index.sqlite"
     top_k: int = 5
 
@@ -59,6 +60,7 @@ class Settings:
             llm_model=_env("SKOS_LLM_MODEL", "") or None,
             knowledge_root=_env("SKOS_KNOWLEDGE_ROOT", "knowledge"),
             rules_root=_env("SKOS_RULES_ROOT", "rules"),
+            safe_tests_root=_env("SKOS_SAFE_TESTS_ROOT", "safe_tests"),
             db_path=_env("SKOS_DB_PATH", "var/index.sqlite"),
             top_k=int(_env("SKOS_TOP_K", "5")),
         )

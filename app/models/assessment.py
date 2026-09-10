@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -96,16 +97,45 @@ class Question(BaseModel):
     related_rule_ids: list[str] = Field(default_factory=list)
 
 
+class SafeTestEnvironment(StrEnum):
+    SANDBOX = "sandbox"
+    READ_ONLY = "read_only"
+    CANARY = "canary"
+
+
+class UntrustedSafeTestProposal(BaseModel):
+    """An LLM's idea for a safe test. It is *not* executable and is never promoted
+    to a ``SafeTest`` automatically - a human turns it into a vetted template."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    relates_to_risk_id: str | None = None
+    idea: str
+    origin: Literal["llm"] = "llm"
+
+
 class SafeTest(BaseModel):
+    """A vetted safe test (spec Section 14). Only ``template`` or ``human`` origin.
+
+    Every field that keeps the test safe is required by the schema, and
+    ``app/policy/safe_test.py`` re-checks the content before it is attached."""
+
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     title: str
     risk_id: str
+    origin: Literal["template", "human"] = "template"
+    environment: list[SafeTestEnvironment] = Field(min_length=1)
+    scope: str = Field(min_length=1)
+    uses_canary_values: bool
     preconditions: list[str] = Field(default_factory=list)
     setup: list[str] = Field(default_factory=list)
-    steps: list[str] = Field(default_factory=list)
-    expected_secure_behavior: str
-    failure_condition: str
-    cleanup: list[str] = Field(default_factory=list)
+    steps: list[str] = Field(min_length=1)
+    expected_secure_behavior: str = Field(min_length=1)
+    failure_condition: str = Field(min_length=1)
+    cleanup: list[str] = Field(min_length=1)
     requires_human_approval: bool = True
 
 
@@ -131,6 +161,7 @@ class AssessmentResult(BaseModel):
     missing_information: list[MissingInformation] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)
     safe_tests: list[SafeTest] = Field(default_factory=list)
+    safe_test_proposals: list[UntrustedSafeTestProposal] = Field(default_factory=list)
     mitigations: list[Mitigation] = Field(default_factory=list)
     overall_status: OverallStatus
     human_review_required: bool

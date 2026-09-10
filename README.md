@@ -31,7 +31,7 @@ The source of truth for the design is the Google Drive document
 | **M2 — Knowledge Loader + FTS5 Retrieval** | done | `app/ingestion/{loader,chunker}.py`, `app/storage/{db,repository}.py`, `app/retrieval/{base,bm25,hybrid,index}.py`, `scripts/{ingest,build_index}.py` |
 | **M3 — Deterministic Rule Engine** | done | `app/models/rule_clause.py`, `app/reviewer/{facts,clause_eval,rule_loader,rule_engine,normalize,attack_surface,evidence,rollup,assess}.py`, `rules/**` (7 rules), `scripts/validate_rules.py`, `docs/rule-schema.md` |
 | **M4 — LLM Adapter + Reviewer** | done | `app/llm/{base,mock,anthropic_client,factory}.py`, `app/models/{reviewer_output,llm_io}.py`, `app/reviewer/{llm_review,questions}.py`, `assess()` full, `scripts/assess.py` |
-| M5 — Safe Test + Human Gate | not started | |
+| **M5 — Safe Test + Human Gate** | done | `app/models/policy_outcome.py`, `app/policy/{human_gate,knowledge_guard,safe_test}.py`, `app/storage/integrity.py`, `safe_tests/**` (4 templates), `scripts/validate_safe_tests.py` |
 | M6 — Orchestrator + CLI + API | not started | |
 | M7 — Fixtures + Evaluation + starter KUs | not started | |
 | M8 — Docs + hardening | not started | |
@@ -49,8 +49,9 @@ python3.12 -m venv .venv
 .venv/bin/python scripts/ingest.py knowledge
 .venv/bin/python scripts/build_index.py knowledge --db var/index.sqlite
 
-# Validate the deterministic rule catalogue
+# Validate the deterministic rule catalogue and the safe-test templates
 .venv/bin/python scripts/validate_rules.py rules
+.venv/bin/python scripts/validate_safe_tests.py safe_tests
 
 # Run an assessment (provider=none by default: the deterministic engine does the work)
 .venv/bin/python scripts/assess.py tests/fixtures/assessments/V-001-indirect-injection-auto-email.yaml
@@ -71,6 +72,16 @@ has no field for a status or an overall verdict, so it structurally cannot chang
 a deterministic result - it can only add `LLM-OBS-*` observations (capped at
 `WARN`/`UNKNOWN`), questions, and notes. Malformed LLM output is repaired once,
 then discarded (`LLM_PARSE_ERROR`).
+
+**Policy outcomes are typed** (`PolicyOutcome`: `ALLOWED` /
+`HUMAN_APPROVAL_REQUIRED` / `POLICY_BLOCKED` / `READ_ONLY_VIOLATION`), never bare
+strings. The Human Gate fails closed - a recognised high-impact action, or any
+unrecognised one, returns `HUMAN_APPROVAL_REQUIRED`. The Knowledge Repository is
+read-only during assessment. Safe tests are **vetted templates only**
+(`safe_tests/*.yaml`, passed through a deterministic validator that forbids real
+secrets, external destinations, destructive operations and production targets);
+an LLM's `safe_test_suggestions` land in `safe_test_proposals` as untrusted ideas
+and are never promoted to an executable test automatically.
 
 The knowledge root and index path are parameters (`SKOS_KNOWLEDGE_ROOT`,
 `SKOS_DB_PATH`), so the same code serves `knowledge/` today and a Pack Manager's

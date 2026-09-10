@@ -50,7 +50,15 @@ def _has_fts5(conn: sqlite3.Connection) -> bool:
     return True
 
 
-def connect(db_path: str | Path) -> sqlite3.Connection:
+def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connection:
+    if read_only:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        if not _has_fts5(conn):
+            conn.close()
+            raise FTS5Unavailable("SQLite FTS5 is required but not available in this Python build")
+        return conn
+
     if str(db_path) != ":memory:":
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
