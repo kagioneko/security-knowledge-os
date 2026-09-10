@@ -16,7 +16,7 @@ the tests that cover it. Status is updated as milestones land.
 | AC-09 | Safe Tests never require real secrets / real delivery | M5 | done | `test_safe_test.py` |
 | AC-10 | Output carries Evidence / Limitation / Residual Risk | M3/M4 | done | `test_assess_m4.py::test_ac10_*` |
 | AC-11 | Knowledge revision and model info are recorded | M2/M4 | done | `test_assess_m4.py::test_ac11_*` |
-| AC-12 | pytest all pass | all | ongoing | CI |
+| AC-12 | pytest all pass | all | done | 308 passed, 1 skipped (JA-R02, out of scope) |
 | AC-13 | Normal assessment cannot rewrite production knowledge | M5 | done | `test_knowledge_guard.py`, `test_assess_m5.py::test_assess_source_has_no_knowledge_write` |
 | AC-14 | All fixtures complete with no knowledge-write credential | M5 | done | `test_assess_m5.py::test_ac14_*` (read-only sqlite connection) |
 | AC-15 | README states read-only, poisoning risk, update review | M8 | not started | |
@@ -26,13 +26,30 @@ the tests that cover it. Status is updated as milestones land.
 | AC-19 | Insufficient evidence never falls back to PASS | M3 | done | `test_assess.py::test_ac19_*`, `test_rule_engine` |
 | AC-20 | Classification / integrity / Human Gate failures fail closed | M2/M5 | done | `test_fail_closed.py` |
 
-## Deferred acceptance items (registered, not MVP-blocking)
+## Deferred acceptance items (registered)
 
-| ID | Requirement | Target |
+| ID | Requirement | Status |
 | --- | --- | --- |
-| JA-R01 | A Japanese query can reach a Japanese Knowledge Unit | M7 evaluation |
-| JA-R02 | Cross-language retrieval (EN query → JA KU, JA query → EN KU) | future, explicitly out of MVP scope - keep "Japanese support" and "multilingual retrieval" separate |
-| M4-DISP-01 | Retrieval representative-section selection prefers content sections (Summary/Risk/…) over meta sections for display; ranking responsibility stays in retrieval, display selection is separate | M4, only if Reviewer output needs it |
+| JA-R01 | A Japanese query can reach a Japanese Knowledge Unit | **done** (M7) - `test_ja_retrieval.py`; trigram tokenizer + CJK n-gram query terms; KU-0013 is a Japanese KU |
+| JA-R02 | Cross-language retrieval (EN query → JA KU, JA query → EN KU) | out of MVP scope - `test_ja_retrieval.py::test_ja_r02_*` is skipped; future evaluation item |
+| M4-DISP-01 | Retrieval representative-section selection prefers content sections over meta sections for display | not started; only if a Reviewer output needs it |
+
+## §24 Evaluation metrics (M7, `scripts/evaluate.py` over the 12 labelled fixtures + 13 indexed KUs)
+
+| metric | value | gate |
+| --- | --- | --- |
+| Known Risk Recall | 1.000 | — |
+| False Positive Rate | 0.000 | **= 0** ✓ |
+| UNKNOWN Appropriateness | 1.000 | — |
+| Evidence Coverage | 1.000 | — |
+| Citation / Source Match | 1.000 | — |
+| Safe Test Safety Violations | 0 | **= 0** ✓ |
+| Human Review Correction Rate | n/a | needs human labels (not MVP) |
+| Classification Leakage | 0 | **= 0** ✓ (holding, `test_classification_leakage.py`) |
+| Human Gate Bypass | 0 | **= 0** ✓ (holding, `test_human_gate.py`) |
+
+Fixtures are artificial; these numbers show the mechanism separates
+vulnerable / safe / unknown as designed, not real-world detection performance.
 
 ## Initial gates (Spec Section 24) - must stay at zero
 

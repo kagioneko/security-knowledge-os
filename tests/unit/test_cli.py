@@ -9,7 +9,9 @@ import pytest
 from app.cli import main
 
 REPO = Path(__file__).resolve().parents[2]
-FIXTURES = REPO / "tests" / "fixtures" / "assessments"
+_FX = {p.stem: p for p in (REPO / "tests" / "fixtures" / "assessments").rglob("*.yaml")}
+V1 = _FX["V-001-indirect-injection-auto-email"]
+S1 = _FX["S-001-prompt-only"]
 
 
 def test_validate_rules_ok(capsys: pytest.CaptureFixture[str]) -> None:
@@ -28,7 +30,7 @@ def test_validate_knowledge_on_fixtures_reports_errors() -> None:
 
 
 def test_assess_completed_exit_zero(capsys: pytest.CaptureFixture[str]) -> None:
-    code = main(["assess", str(FIXTURES / "V-001-indirect-injection-auto-email.yaml")])
+    code = main(["assess", str(V1)])
     out = capsys.readouterr().out
     assert code == 0
     assert "status: COMPLETED" in out
@@ -37,7 +39,7 @@ def test_assess_completed_exit_zero(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_assess_strict_exit_one_on_fail() -> None:
     code = main(
-        ["assess", str(FIXTURES / "V-001-indirect-injection-auto-email.yaml"), "--strict"]
+        ["assess", str(V1), "--strict"]
     )
     assert code == 1  # COMPLETED but overall FAIL
 
@@ -45,7 +47,7 @@ def test_assess_strict_exit_one_on_fail() -> None:
 def test_assess_json_output(capsys: pytest.CaptureFixture[str]) -> None:
     import json
 
-    main(["assess", str(FIXTURES / "S-001-prompt-only.yaml"), "--json"])
+    main(["assess", str(S1), "--json"])
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "COMPLETED"
     assert "knowledge_revision" in payload["result"]
@@ -66,7 +68,7 @@ def test_assess_policy_blocked_exit_three(
     conn.commit()
     conn.close()
 
-    code = main(["assess", str(FIXTURES / "S-001-prompt-only.yaml"), "--db", str(db)])
+    code = main(["assess", str(S1), "--db", str(db)])
     assert code == 3
     assert "POLICY_BLOCKED" in capsys.readouterr().out
 

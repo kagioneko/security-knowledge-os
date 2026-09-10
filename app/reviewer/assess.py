@@ -97,6 +97,11 @@ def assess(
         retrieved = response.results
         knowledge_revision = response.knowledge_revision or None
 
+    retrieved_ids: list[str] = []
+    for item in retrieved:
+        if item.chunk.knowledge_id not in retrieved_ids:
+            retrieved_ids.append(item.chunk.knowledge_id)
+
     review: LLMReviewResult = run_llm_review(
         client,
         context=context,
@@ -136,6 +141,7 @@ def assess(
             confidential_knowledge_used=confidential_used,
         ),
         knowledge_revision=knowledge_revision,
+        retrieved_knowledge_ids=retrieved_ids,
         model_info=ModelInfo(
             llm_provider=settings.llm_provider.value,
             llm_model=settings.llm_model,

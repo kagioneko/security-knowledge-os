@@ -11,4 +11,5 @@ required_evidence:
   - outbound_destinations
 mitigations:
   - declare an explicit allow-list of outbound destinations
-knowledge_refs: []
+knowledge_refs:
+  - KU-0006

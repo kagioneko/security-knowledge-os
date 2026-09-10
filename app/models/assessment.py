@@ -168,4 +168,5 @@ class AssessmentResult(BaseModel):
     overall_status: OverallStatus
     human_review_required: bool
     knowledge_revision: str | None = None
+    retrieved_knowledge_ids: list[str] = Field(default_factory=list)
     model_info: ModelInfo

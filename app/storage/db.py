@@ -32,9 +32,12 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     search_text,
     content='',
-    tokenize='unicode61'
+    tokenize='trigram'
 );
 """
+# The 'trigram' tokenizer gives substring matching for both English and CJK text
+# (SQLite >= 3.34). It is why a Japanese query can reach a Japanese Knowledge Unit
+# (JA-R01) without a language-specific segmenter.
 
 
 class FTS5Unavailable(RuntimeError):

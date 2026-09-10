@@ -11,4 +11,5 @@ required_evidence:
   - human_approval_policy
 mitigations:
   - define a human approval point for every high-impact action
-knowledge_refs: []
+knowledge_refs:
+  - KU-0012

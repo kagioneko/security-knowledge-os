@@ -11,4 +11,5 @@ required_evidence:
   - tool_permissions_specified
 mitigations:
   - state the permission (read, write, delete, send, shell) for every tool
-knowledge_refs: []
+knowledge_refs:
+  - KU-0004

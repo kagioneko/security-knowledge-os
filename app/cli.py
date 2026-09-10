@@ -174,9 +174,10 @@ def _cmd_test(args: argparse.Namespace, s: Settings) -> int:
     if not fixtures_dir.exists():
         print("fixtures not available in this install", file=sys.stderr)
         return 2
+    by_name = {p.stem: p for p in fixtures_dir.rglob("*.yaml")}
     failures = 0
     for name in _FIXTURES:
-        report = _run(_load_input(fixtures_dir / f"{name}.yaml"), s, args.db)
+        report = _run(_load_input(by_name[name]), s, args.db)
         if report.status is ReportStatus.POLICY_BLOCKED:
             print(f"  {name:44} POLICY_BLOCKED")
             failures += 1

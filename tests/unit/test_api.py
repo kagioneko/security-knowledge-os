@@ -12,6 +12,7 @@ from app.main import app
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURES = REPO / "tests" / "fixtures" / "assessments"
+_BY_NAME = {p.stem: p for p in FIXTURES.rglob("*.yaml")}
 
 
 @pytest.fixture
@@ -20,7 +21,7 @@ def client() -> TestClient:
 
 
 def _input(name: str) -> dict:
-    return yaml.safe_load((FIXTURES / f"{name}.yaml").read_text(encoding="utf-8"))
+    return yaml.safe_load(_BY_NAME[name].read_text(encoding="utf-8"))
 
 
 def test_health(client: TestClient) -> None:

@@ -33,7 +33,7 @@ The source of truth for the design is the Google Drive document
 | **M4 — LLM Adapter + Reviewer** | done | `app/llm/{base,mock,anthropic_client,factory}.py`, `app/models/{reviewer_output,llm_io}.py`, `app/reviewer/{llm_review,questions}.py`, `assess()` full, `scripts/assess.py` |
 | **M5 — Safe Test + Human Gate** | done | `app/models/policy_outcome.py`, `app/policy/{human_gate,knowledge_guard,safe_test}.py`, `app/storage/integrity.py`, `safe_tests/**` (4 templates), `scripts/validate_safe_tests.py` |
 | **M6 — Orchestrator + CLI + API** | done | `app/models/report.py`, `app/reviewer/report.py`, `app/cli.py` (`skos`), `app/main.py` (FastAPI), `app/retrieval/index.py::reindex_atomic` |
-| M7 — Fixtures + Evaluation + starter KUs | not started | |
+| **M7 — Fixtures + Evaluation + starter KUs** | done | `knowledge/public/**` (13 KUs), `tests/fixtures/assessments/{safe,vulnerable,unknown}/`, `app/eval/metrics.py`, `scripts/evaluate.py`, JA retrieval (trigram) |
 | M8 — Docs + hardening | not started | |
 
 ## Quickstart (M1)
@@ -63,9 +63,19 @@ python3.12 -m venv .venv
 # Local API (needs the [api] extra)
 .venv/bin/uvicorn app.main:app
 
+# Evaluate the engine + indexed knowledge against the labelled fixtures (§24 metrics)
+.venv/bin/python scripts/evaluate.py --db var/index.sqlite
+
 # Run the test-suite
 .venv/bin/pytest -q
 ```
+
+The MVP ships **13 public Knowledge Units** (`knowledge/public/`, all from
+published standards - OWASP LLM Top 10 2025, MITRE ATLAS, NIST AI RMF; one in
+Japanese). See `docs/knowledge-corpus.md`. Evaluation over the 12 labelled
+fixtures: known-risk recall 1.0, false-positive rate 0.0, UNKNOWN-appropriateness
+1.0, evidence coverage 1.0, safe-test safety violations 0 (fixtures are
+artificial - this shows the mechanism, not field performance).
 
 ### `skos` CLI
 

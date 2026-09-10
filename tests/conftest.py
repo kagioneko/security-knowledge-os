@@ -62,8 +62,10 @@ def assessments_dir(fixtures_dir: Path) -> Path:
 
 @pytest.fixture(scope="session")
 def load_assessment(assessments_dir: Path) -> Callable[[str], AssessmentInput]:
+    index = {p.stem: p for p in assessments_dir.rglob("*.yaml")}
+
     def _load(name: str) -> AssessmentInput:
-        path = assessments_dir / f"{name}.yaml"
+        path = index[name]
         return AssessmentInput.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
 
     return _load

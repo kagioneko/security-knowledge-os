@@ -17,4 +17,4 @@ mitigations:
   - scope memory to the session unless a wider scope is justified
 safe_test_template: ST-MEM-001
 knowledge_refs:
-  - KU-1010
+  - KU-0007

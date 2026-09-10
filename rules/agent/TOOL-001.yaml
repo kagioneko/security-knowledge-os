@@ -15,4 +15,5 @@ mitigations:
   - remove tool permissions that are not needed
 safe_test_template: ST-TOOL-001
 knowledge_refs:
-  - KU-1020
+  - KU-0004
+  - KU-0005

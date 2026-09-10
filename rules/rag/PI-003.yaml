@@ -21,4 +21,5 @@ mitigations:
   - validate actions before execution
 safe_test_template: ST-IPI-001
 knowledge_refs:
-  - KU-1002
+  - KU-0002
+  - KU-0006
