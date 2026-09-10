@@ -1,0 +1,16 @@
+name: V-002-rag-delete-tool-no-approval
+system_prompt: "You help manage the document store."
+rag:
+  enabled: true
+  sources: [internal_docs]
+memory:
+  enabled: false
+tools:
+  - name: doc_delete
+    permissions: delete
+outbound:
+  enabled: false
+human_approval: {}
+credentials:
+  storage: vault
+  exposed_to_model: "false"

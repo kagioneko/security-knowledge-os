@@ -1,0 +1,14 @@
+id: GOV-001
+title: High-impact actions without full approval coverage
+category: governance
+severity: medium
+conditions:
+  all:
+    - high_impact_actions_present: true
+checks:
+  - high_impact_actions_all_approved: true
+required_evidence:
+  - human_approval_policy
+mitigations:
+  - define a human approval point for every high-impact action
+knowledge_refs: []

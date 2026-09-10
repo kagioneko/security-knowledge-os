@@ -1,0 +1,18 @@
+id: TOOL-001
+title: High-impact tool without a human approval gate
+category: agent-security
+severity: high
+conditions:
+  all:
+    - has_unapproved_high_impact_tool: true
+checks:
+  - has_unapproved_high_impact_tool: false
+required_evidence:
+  - tool_policy
+  - tool_permissions_specified
+mitigations:
+  - require a human approval gate for every write, delete, send, or shell tool
+  - remove tool permissions that are not needed
+safe_test_template: ST-TOOL-001
+knowledge_refs:
+  - KU-1020

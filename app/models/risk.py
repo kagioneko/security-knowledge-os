@@ -7,11 +7,12 @@ create or clear a deterministic ``FAIL``.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.knowledge import KnowledgeCategory
+from app.models.rule_clause import Clause
 
 # Rule ids: PI-003, MEM-001, TOOL-002, CRED-001, ... and LLM-OBS-00001 for LLM findings.
 RULE_ID_PATTERN = r"^[A-Z][A-Z0-9]*(-[A-Z0-9]+)*-\d{3,}$"
@@ -34,11 +35,16 @@ class FindingStatus(StrEnum):
 
 
 class RuleConditions(BaseModel):
-    """Trigger conditions. Each clause is a single-key mapping over AssessmentContext
-    fields, e.g. ``{"external_content_ingestion": true}``."""
+    """Trigger conditions, expressed as data-only clauses over whitelisted facts.
 
-    all: list[dict[str, Any]] = Field(default_factory=list)
-    any: list[dict[str, Any]] = Field(default_factory=list)
+    A rule triggers when every clause in ``all`` is TRUE and (if ``any`` is
+    non-empty) at least one clause in ``any`` is TRUE.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    all: list[Clause] = Field(default_factory=list)
+    any: list[Clause] = Field(default_factory=list)
 
 
 class RiskRule(BaseModel):
@@ -49,10 +55,15 @@ class RiskRule(BaseModel):
     category: KnowledgeCategory
     severity: Severity
     conditions: RuleConditions = Field(default_factory=RuleConditions)
-    checks: list[str] = Field(default_factory=list)
+    checks: list[Clause] = Field(default_factory=list)
     required_evidence: list[str] = Field(default_factory=list)
+    manual_review: bool = False
     mitigations: list[str] = Field(default_factory=list)
     safe_test_template: str | None = None
+    knowledge_refs: list[str] = Field(default_factory=list)
+
+    def clauses(self) -> list[Clause]:
+        return [*self.conditions.all, *self.conditions.any, *self.checks]
 
 
 class Evidence(BaseModel):

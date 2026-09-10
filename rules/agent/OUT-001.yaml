@@ -1,0 +1,14 @@
+id: OUT-001
+title: Outbound enabled without a stated destination allow-list
+category: agent-security
+severity: medium
+conditions:
+  all:
+    - outbound_enabled: true
+    - outbound_destinations_specified: false
+checks: []
+required_evidence:
+  - outbound_destinations
+mitigations:
+  - declare an explicit allow-list of outbound destinations
+knowledge_refs: []

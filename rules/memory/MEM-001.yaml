@@ -1,0 +1,20 @@
+id: MEM-001
+title: Persistent memory exposed to untrusted content
+category: memory-security
+severity: high
+manual_review: true
+conditions:
+  all:
+    - memory_persistent: true
+    - external_content_ingestion: true
+checks: []
+required_evidence:
+  - memory_spec
+  - rag_pipeline
+mitigations:
+  - separate the memory write path from the read-back path
+  - require review before content derived from untrusted input is stored
+  - scope memory to the session unless a wider scope is justified
+safe_test_template: ST-MEM-001
+knowledge_refs:
+  - KU-1010

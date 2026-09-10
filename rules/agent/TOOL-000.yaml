@@ -1,0 +1,14 @@
+id: TOOL-000
+title: Tool permissions not specified
+category: agent-security
+severity: medium
+conditions:
+  all:
+    - tools_present: true
+    - tools_with_unknown_permission: true
+checks: []
+required_evidence:
+  - tool_permissions_specified
+mitigations:
+  - state the permission (read, write, delete, send, shell) for every tool
+knowledge_refs: []

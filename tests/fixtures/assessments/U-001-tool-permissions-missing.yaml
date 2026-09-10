@@ -1,0 +1,14 @@
+name: U-001-tool-permissions-missing
+system_prompt: "You use a set of tools to help the user."
+rag:
+  enabled: false
+memory:
+  enabled: false
+tools:
+  - name: mystery_tool
+outbound:
+  enabled: false
+human_approval: {}
+credentials:
+  storage: vault
+  exposed_to_model: "false"

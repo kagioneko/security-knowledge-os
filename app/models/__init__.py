@@ -40,6 +40,7 @@ from app.models.risk import (
     RuleConditions,
     Severity,
 )
+from app.models.rule_clause import Clause, ClauseOutcome, Operator
 
 __all__ = [
     "AssessmentContext",
@@ -48,6 +49,8 @@ __all__ = [
     "AttackSurface",
     "Chunk",
     "Classification",
+    "Clause",
+    "ClauseOutcome",
     "CredentialStorage",
     "Evidence",
     "Finding",
@@ -60,6 +63,7 @@ __all__ = [
     "Mitigation",
     "MissingInformation",
     "ModelInfo",
+    "Operator",
     "OverallStatus",
     "Question",
     "QueryCategory",

@@ -1,0 +1,20 @@
+name: V-001-indirect-injection-auto-email
+system_prompt: "You summarize retrieved documents for the user."
+rag:
+  enabled: true
+  sources: [uploaded_documents, web]
+memory:
+  enabled: false
+tools:
+  - name: email_send
+    permissions: send
+  - name: file_read
+    permissions: read
+outbound:
+  enabled: true
+  destinations: [smtp.example.com]
+human_approval:
+  email_send: false
+credentials:
+  storage: env
+  exposed_to_model: "false"

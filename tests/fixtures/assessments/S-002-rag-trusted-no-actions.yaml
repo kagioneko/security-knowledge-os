@@ -1,0 +1,16 @@
+name: S-002-rag-trusted-no-actions
+system_prompt: "You summarize internal documents."
+rag:
+  enabled: true
+  sources: [internal_docs]
+memory:
+  enabled: false
+tools:
+  - name: doc_read
+    permissions: read
+outbound:
+  enabled: false
+human_approval: {}
+credentials:
+  storage: vault
+  exposed_to_model: "false"

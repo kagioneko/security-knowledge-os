@@ -1,0 +1,16 @@
+name: V-003-persistent-memory-untrusted
+system_prompt: "You assist the same user across many sessions."
+rag:
+  enabled: true
+  sources: [web]
+memory:
+  enabled: true
+  persistent: true
+  scope: user
+tools: []
+outbound:
+  enabled: false
+human_approval: {}
+credentials:
+  storage: vault
+  exposed_to_model: "false"

@@ -1,0 +1,13 @@
+name: S-001-prompt-only
+system_prompt: "You answer general questions from your own knowledge."
+rag:
+  enabled: false
+memory:
+  enabled: false
+tools: []
+outbound:
+  enabled: false
+human_approval: {}
+credentials:
+  storage: none
+  exposed_to_model: "false"

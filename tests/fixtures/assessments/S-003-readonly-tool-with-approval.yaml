@@ -1,0 +1,17 @@
+name: S-003-readonly-tool-with-approval
+system_prompt: "You look things up for the user."
+rag:
+  enabled: false
+memory:
+  enabled: false
+tools:
+  - name: search
+    permissions: read
+    requires_approval: true
+outbound:
+  enabled: false
+human_approval:
+  search: true
+credentials:
+  storage: vault
+  exposed_to_model: "false"

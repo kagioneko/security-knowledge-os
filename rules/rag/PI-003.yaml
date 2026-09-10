@@ -1,0 +1,24 @@
+id: PI-003
+title: Indirect prompt injection with an outbound action path
+category: rag-security
+severity: high
+manual_review: true
+conditions:
+  all:
+    - external_content_ingestion: true
+  any:
+    - has_send_tool: true
+    - outbound_enabled: true
+checks:
+  - outbound_without_approval: false
+required_evidence:
+  - rag_pipeline
+  - outbound_spec
+mitigations:
+  - isolate untrusted retrieved content from instructions
+  - require human approval for every outbound action
+  - reduce tool permissions to the minimum
+  - validate actions before execution
+safe_test_template: ST-IPI-001
+knowledge_refs:
+  - KU-1002

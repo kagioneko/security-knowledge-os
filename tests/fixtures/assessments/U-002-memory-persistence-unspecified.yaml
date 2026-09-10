@@ -1,0 +1,14 @@
+name: U-002-memory-persistence-unspecified
+system_prompt: "You assist the user and keep some notes."
+rag:
+  enabled: true
+  sources: [web]
+memory:
+  enabled: true
+tools: []
+outbound:
+  enabled: false
+human_approval: {}
+credentials:
+  storage: vault
+  exposed_to_model: "false"
