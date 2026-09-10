@@ -2,7 +2,7 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "metadata": {
-    "timestamp": "2026-09-10T15:22:22.184649+00:00",
+    "timestamp": "2026-09-10T15:34:16.670011+00:00",
     "component": {
       "type": "application",
       "name": "security-knowledge-os",
