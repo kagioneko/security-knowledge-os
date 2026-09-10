@@ -27,10 +27,12 @@ from pydantic import BaseModel
 from app.config import Settings
 from app.ingestion.validator import Level, validate_markdown
 from app.llm.factory import get_client
+from app.models.answer import AnswerPatch
 from app.models.assessment import AssessmentInput
 from app.models.report import AssessmentReport, ReportStatus
 from app.policy.safe_test import load_safe_test_templates
 from app.retrieval.index import ReindexReport, reindex_atomic
+from app.reviewer.answers import AnswerValidationError, apply_patch
 from app.reviewer.report import build_report, render_text
 from app.reviewer.rule_loader import load_rules
 from app.storage.db import connect
@@ -88,32 +90,53 @@ def get_assessment(assessment_id: str) -> AssessmentReport:
     return entry[1]
 
 
-class Answers(BaseModel):
-    answers: dict[str, Any]
-
-
-_ANSWER_FIELDS = {
-    "system_prompt": lambda inp, v: inp.model_copy(update={"system_prompt": v}),
-}
-
-
 @app.post("/v1/assessments/{assessment_id}/answers", response_model=AssessmentReport)
-def submit_answers(assessment_id: str, payload: Answers) -> AssessmentReport:
+def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
     entry = _STORE.get(assessment_id)
     if entry is None:
         raise HTTPException(status_code=404, detail="assessment not found")
-    original, _ = entry
-    updated = original.model_dump()
-    for key, value in payload.answers.items():
-        if key in AssessmentInput.model_fields:
-            updated[key] = value
-    new_input = AssessmentInput.model_validate(updated)
-    settings = _settings()
-    report = _run(new_input, settings)
+    if patch.is_empty():
+        raise HTTPException(status_code=422, detail="the answer patch is empty")
+
+    original_input, original_report = entry
+    try:
+        new_input = apply_patch(original_input, patch)
+    except AnswerValidationError as exc:
+        raise HTTPException(status_code=422, detail={"rejected": exc.reasons}) from exc
+
+    report = _run(new_input, _settings())
     if report.result is not None:
+        prev_revision = (
+            original_report.result.revision if original_report.result is not None else 1
+        )
+        report.result.supersedes = assessment_id
+        report.result.revision = prev_revision + 1
         _STORE[report.result.assessment_id] = (new_input, report)
-        _STORE[assessment_id] = (new_input, report)
     return _respond(report)
+
+
+@app.get("/v1/assessments/{assessment_id}/history")
+def get_history(assessment_id: str) -> list[dict[str, Any]]:
+    """The revision chain, oldest first, reached by following ``supersedes``."""
+    chain: list[dict[str, Any]] = []
+    current: str | None = assessment_id
+    seen: set[str] = set()
+    while current is not None and current not in seen:
+        seen.add(current)
+        entry = _STORE.get(current)
+        if entry is None or entry[1].result is None:
+            break
+        r = entry[1].result
+        chain.append(
+            {
+                "assessment_id": r.assessment_id,
+                "revision": r.revision,
+                "supersedes": r.supersedes,
+                "overall_status": r.overall_status.value,
+            }
+        )
+        current = r.supersedes
+    return list(reversed(chain))
 
 
 @app.get("/v1/assessments/{assessment_id}/report")

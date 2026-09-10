@@ -156,6 +156,8 @@ class AssessmentResult(BaseModel):
     created_at: datetime
     mode: str
     scope: str | None = None
+    supersedes: str | None = None  # the assessment_id this one re-evaluates (M6.1 /answers)
+    revision: int = 1
     attack_surface: AttackSurface = Field(default_factory=AttackSurface)
     findings: list[Finding] = Field(default_factory=list)
     missing_information: list[MissingInformation] = Field(default_factory=list)

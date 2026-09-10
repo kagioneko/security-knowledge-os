@@ -76,9 +76,24 @@ failure with `--strict`, `2` usage/input error, `3` `POLICY_BLOCKED`.
 ### API (`app/main.py`)
 
 `POST /v1/assessments` · `GET /v1/assessments/{id}` ·
-`POST /v1/assessments/{id}/answers` · `GET /v1/assessments/{id}/report` ·
-`POST /v1/knowledge/validate` (read-only) · `POST /v1/knowledge/reindex` ·
-`GET /health`.
+`POST /v1/assessments/{id}/answers` · `GET /v1/assessments/{id}/history` ·
+`GET /v1/assessments/{id}/report` · `POST /v1/knowledge/validate` (read-only) ·
+`POST /v1/knowledge/reindex` · `GET /health`.
+
+`/answers` takes a **typed `AnswerPatch`** (an allow-list of fields that follow-up
+questions can fill: `memory_persistent`, `memory_scope`, `outbound_enabled`,
+`credential_storage`, `tool_permissions.<known-tool>`, `human_approval.<known-action>`,
+…). There is no generic deep-merge and no field carries a raw secret. Unknown
+fields, unknown tools/actions and type mismatches are rejected (HTTP 422). The
+patched input is **re-assessed from scratch** - findings are never edited in place
+- and the new result records `supersedes` and `revision`.
+
+### Deviation from the spec
+
+Spec Section 5 recommends **Typer** for the CLI; this build uses stdlib `argparse`
+so the core install needs only `pydantic` + `pyyaml`. Spec Section 18's
+`POST /v1/knowledge/reindex` is implemented as index-only re-derivation (it never
+accepts or changes knowledge content).
 
 **There is no endpoint that changes knowledge content.** `/v1/knowledge/reindex`
 only re-derives the FTS index from the already-verified read-only knowledge root

@@ -57,15 +57,43 @@ def test_unknown_assessment_is_404(client: TestClient) -> None:
     assert client.get("/v1/assessments/nope").status_code == 404
 
 
-def test_answers_reassesses(client: TestClient) -> None:
-    created = client.post("/v1/assessments", json=_input("U-001-tool-permissions-missing")).json()
+def test_answers_reassesses_and_tracks_history(client: TestClient) -> None:
+    created = client.post(
+        "/v1/assessments", json=_input("U-002-memory-persistence-unspecified")
+    ).json()
+    aid = created["result"]["assessment_id"]
+    assert created["result"]["overall_status"] == "UNKNOWN"
+
+    resp = client.post(f"/v1/assessments/{aid}/answers", json={"memory_persistent": True})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "COMPLETED"
+    assert body["result"]["overall_status"] == "CONDITIONAL"
+    assert body["result"]["supersedes"] == aid
+    assert body["result"]["revision"] == 2
+
+    history = client.get(f"/v1/assessments/{body['result']['assessment_id']}/history").json()
+    assert [h["revision"] for h in history] == [1, 2]
+
+
+def test_answers_rejects_unknown_field(client: TestClient) -> None:
+    created = client.post("/v1/assessments", json=_input("S-001-prompt-only")).json()
+    aid = created["result"]["assessment_id"]
+    resp = client.post(f"/v1/assessments/{aid}/answers", json={"bogus_field": 1})
+    assert resp.status_code == 422
+
+
+def test_answers_rejects_unknown_tool(client: TestClient) -> None:
+    created = client.post(
+        "/v1/assessments", json=_input("U-001-tool-permissions-missing")
+    ).json()
     aid = created["result"]["assessment_id"]
     resp = client.post(
         f"/v1/assessments/{aid}/answers",
-        json={"answers": {"system_prompt": "You only read files."}},
+        json={"tool_permissions": {"nonexistent": "read"}},
     )
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "COMPLETED"
+    assert resp.status_code == 422
+    assert "unknown tool" in str(resp.json()["detail"])
 
 
 def test_knowledge_validate_is_read_only(client: TestClient) -> None:
