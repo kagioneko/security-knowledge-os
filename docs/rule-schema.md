@@ -67,13 +67,19 @@ string lists such as `tool_permissions`, `high_impact_actions`).
 
 ```
 rule does not apply                    -> no finding
-cannot tell if the rule applies        -> UNKNOWN (high/critical only)
+cannot tell if the rule applies:
+  high / critical                       -> UNKNOWN (always)
+  medium / low, a trigger clause is TRUE -> UNKNOWN (relevant surface present)
+  medium / low, every trigger undetermined -> no finding (no signal)
 required evidence missing              -> UNKNOWN
 a check is FALSE                        -> FAIL (high/critical) or WARN
 a check is UNKNOWN                      -> UNKNOWN
 all checks TRUE, manual_review: true    -> WARN
 all checks TRUE                         -> PASS (suppressed if the rule has no checks)
 ```
+
+The applicability-unknown policy exists so that missing evidence for a medium rule
+whose surface is clearly present is never silently read as "not applicable".
 
 A rule is **never** `PASS` while any check was `UNKNOWN` or any required evidence
 was missing (AC-19).

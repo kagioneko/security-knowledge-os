@@ -56,6 +56,20 @@ def evaluate_conditions(conditions: RuleConditions, facts: dict[str, Fact]) -> A
     return Applicability.INDETERMINATE
 
 
+def _emit_indeterminate(rule: RiskRule, facts: dict[str, Fact]) -> bool:
+    """Applicability-unknown policy.
+
+    high / critical: always surface an UNKNOWN - never let missing evidence read
+    as "not applicable".
+    medium / low: surface an UNKNOWN only when at least one trigger clause is
+    already TRUE (a relevant attack surface is present); if every trigger clause
+    is itself undetermined there is no signal to report and we suppress.
+    """
+    if rule.severity in _SEVERE:
+        return True
+    return "true" in _outcomes([*rule.conditions.all, *rule.conditions.any], facts)
+
+
 def _evidence(rule: RiskRule) -> list[Evidence]:
     seen: list[str] = []
     for clause in rule.clauses():
@@ -74,7 +88,7 @@ def evaluate_rule(
     missing = [key for key in rule.required_evidence if key not in available_evidence]
 
     if applicability is Applicability.INDETERMINATE:
-        if rule.severity not in _SEVERE:
+        if not _emit_indeterminate(rule, facts):
             return None
         return _finding(
             rule,
