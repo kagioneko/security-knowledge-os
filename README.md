@@ -27,8 +27,8 @@ The source of truth for the design is the Google Drive document
 
 | Milestone | State | Deliverables |
 | --- | --- | --- |
-| **M1 — Skeleton + Schema + Validator** | in progress | directory tree, `app/models/*`, `app/ingestion/validator.py`, `scripts/validate_knowledge.py`, `docs/knowledge-schema.md` |
-| M2 — Knowledge Loader + FTS5 Retrieval | not started | |
+| **M1 — Skeleton + Schema + Validator** | done | directory tree, `app/models/*`, `app/ingestion/validator.py`, `scripts/validate_knowledge.py`, `docs/knowledge-schema.md` |
+| **M2 — Knowledge Loader + FTS5 Retrieval** | done | `app/ingestion/{loader,chunker}.py`, `app/storage/{db,repository}.py`, `app/retrieval/{base,bm25,hybrid,index}.py`, `scripts/{ingest,build_index}.py` |
 | M3 — Deterministic Rule Engine | not started | |
 | M4 — LLM Adapter + Reviewer | not started | |
 | M5 — Safe Test + Human Gate | not started | |
@@ -45,9 +45,18 @@ python3.12 -m venv .venv
 # Validate the knowledge base (empty on a fresh checkout -> 0 issues)
 .venv/bin/python scripts/validate_knowledge.py knowledge
 
+# Load-check a knowledge root, then build the FTS5 index from it
+.venv/bin/python scripts/ingest.py knowledge
+.venv/bin/python scripts/build_index.py knowledge --db var/index.sqlite
+
 # Run the test-suite
 .venv/bin/pytest -q
 ```
+
+The knowledge root and index path are parameters (`SKOS_KNOWLEDGE_ROOT`,
+`SKOS_DB_PATH`), so the same code serves `knowledge/` today and a Pack Manager's
+`active/knowledge/` later. `top_k` counts Knowledge Units; secret-classified units
+never enter the index.
 
 `scripts/validate_knowledge.py` exits non-zero when any `ERROR`-level issue is found
 (use `--strict` to also fail on warnings).

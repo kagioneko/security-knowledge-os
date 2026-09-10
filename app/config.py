@@ -42,6 +42,7 @@ class Settings:
     llm_provider: LLMProvider = LLMProvider.NONE
     llm_model: str | None = None
     knowledge_root: str = "knowledge"
+    db_path: str = "var/index.sqlite"
     top_k: int = 5
 
     @property
@@ -56,5 +57,6 @@ class Settings:
             llm_provider=LLMProvider(_env("SKOS_LLM_PROVIDER", LLMProvider.NONE.value)),
             llm_model=_env("SKOS_LLM_MODEL", "") or None,
             knowledge_root=_env("SKOS_KNOWLEDGE_ROOT", "knowledge"),
+            db_path=_env("SKOS_DB_PATH", "var/index.sqlite"),
             top_k=int(_env("SKOS_TOP_K", "5")),
         )

@@ -26,6 +26,12 @@ from app.models.knowledge import (
     KnowledgeUnitFrontMatter,
     SourceType,
 )
+from app.models.retrieval import (
+    Chunk,
+    QueryCategory,
+    RetrievalResponse,
+    RetrievedChunk,
+)
 from app.models.risk import (
     Evidence,
     Finding,
@@ -40,6 +46,7 @@ __all__ = [
     "AssessmentInput",
     "AssessmentResult",
     "AttackSurface",
+    "Chunk",
     "Classification",
     "CredentialStorage",
     "Evidence",
@@ -55,6 +62,9 @@ __all__ = [
     "ModelInfo",
     "OverallStatus",
     "Question",
+    "QueryCategory",
+    "RetrievalResponse",
+    "RetrievedChunk",
     "RiskRule",
     "RuleConditions",
     "SafeTest",
