@@ -13,7 +13,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from app.ingestion.parser import FrontMatterError, read_markdown
+from app.ingestion.parser import FrontMatterError, read_markdown, split_front_matter
 from app.models.knowledge import Classification, KnowledgeCategory, KnowledgeUnitFrontMatter
 from app.models.risk import RULE_ID_PATTERN
 from app.policy.classification import expected_relative_dir
@@ -80,6 +80,54 @@ def _relative_posix(path: Path, knowledge_root: Path) -> str | None:
         return path.resolve().relative_to(knowledge_root.resolve()).as_posix()
     except ValueError:
         return None
+
+
+def validate_markdown(text: str, *, source: str = "<input>") -> list[ValidationIssue]:
+    """Validate one Knowledge Unit given as text (no filesystem, no path check).
+
+    Used by the read-only ``POST /v1/knowledge/validate`` endpoint - it never
+    writes anything."""
+    issues: list[ValidationIssue] = []
+    try:
+        front_matter, body = split_front_matter(text)
+    except FrontMatterError as exc:
+        return [ValidationIssue(Level.ERROR, "front-matter", str(exc), source)]
+
+    try:
+        model = KnowledgeUnitFrontMatter.model_validate(front_matter)
+    except ValidationError as exc:
+        for err in exc.errors():
+            loc = ".".join(str(part) for part in err["loc"]) or "<root>"
+            issues.append(ValidationIssue(Level.ERROR, "schema", f"{loc}: {err['msg']}", source))
+        return issues
+
+    if model.classification is Classification.SECRET:
+        issues.append(
+            ValidationIssue(
+                Level.ERROR,
+                "secret-in-repo",
+                "classification 'secret' must live outside the repository",
+                source,
+            )
+        )
+        return issues
+
+    for rid in model.risk_ids:
+        if not _RULE_ID_RE.match(rid):
+            issues.append(
+                ValidationIssue(
+                    Level.WARNING, "risk-id-format", f"risk id '{rid}' malformed", source
+                )
+            )
+    present = _headings(body)
+    for section in RECOMMENDED_SECTIONS:
+        if section.casefold() not in present:
+            issues.append(
+                ValidationIssue(
+                    Level.WARNING, "missing-section", f"'## {section}' is absent", source
+                )
+            )
+    return issues
 
 
 def validate_file(path: Path, knowledge_root: Path) -> list[ValidationIssue]:

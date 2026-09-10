@@ -32,7 +32,7 @@ The source of truth for the design is the Google Drive document
 | **M3 — Deterministic Rule Engine** | done | `app/models/rule_clause.py`, `app/reviewer/{facts,clause_eval,rule_loader,rule_engine,normalize,attack_surface,evidence,rollup,assess}.py`, `rules/**` (7 rules), `scripts/validate_rules.py`, `docs/rule-schema.md` |
 | **M4 — LLM Adapter + Reviewer** | done | `app/llm/{base,mock,anthropic_client,factory}.py`, `app/models/{reviewer_output,llm_io}.py`, `app/reviewer/{llm_review,questions}.py`, `assess()` full, `scripts/assess.py` |
 | **M5 — Safe Test + Human Gate** | done | `app/models/policy_outcome.py`, `app/policy/{human_gate,knowledge_guard,safe_test}.py`, `app/storage/integrity.py`, `safe_tests/**` (4 templates), `scripts/validate_safe_tests.py` |
-| M6 — Orchestrator + CLI + API | not started | |
+| **M6 — Orchestrator + CLI + API** | done | `app/models/report.py`, `app/reviewer/report.py`, `app/cli.py` (`skos`), `app/main.py` (FastAPI), `app/retrieval/index.py::reindex_atomic` |
 | M7 — Fixtures + Evaluation + starter KUs | not started | |
 | M8 — Docs + hardening | not started | |
 
@@ -54,11 +54,41 @@ python3.12 -m venv .venv
 .venv/bin/python scripts/validate_safe_tests.py safe_tests
 
 # Run an assessment (provider=none by default: the deterministic engine does the work)
-.venv/bin/python scripts/assess.py tests/fixtures/assessments/V-001-indirect-injection-auto-email.yaml
+.venv/bin/skos assess tests/fixtures/assessments/V-001-indirect-injection-auto-email.yaml
+.venv/bin/skos test          # run all 12 fixtures as a smoke test
+
+# Rebuild the FTS index (atomic + fail-closed; never touches knowledge content)
+.venv/bin/skos reindex knowledge --db var/index.sqlite
+
+# Local API (needs the [api] extra)
+.venv/bin/uvicorn app.main:app
 
 # Run the test-suite
 .venv/bin/pytest -q
 ```
+
+### `skos` CLI
+
+`validate-knowledge` · `validate-rules` · `validate-safe-tests` · `ingest` ·
+`reindex` · `assess` · `report` · `test`. Exit codes: `0` ok, `1` findings
+failure with `--strict`, `2` usage/input error, `3` `POLICY_BLOCKED`.
+
+### API (`app/main.py`)
+
+`POST /v1/assessments` · `GET /v1/assessments/{id}` ·
+`POST /v1/assessments/{id}/answers` · `GET /v1/assessments/{id}/report` ·
+`POST /v1/knowledge/validate` (read-only) · `POST /v1/knowledge/reindex` ·
+`GET /health`.
+
+**There is no endpoint that changes knowledge content.** `/v1/knowledge/reindex`
+only re-derives the FTS index from the already-verified read-only knowledge root
+(classification + integrity checked before an atomic swap; the old index is kept
+on any failure).
+
+HTTP status and policy outcome are separate layers: a policy-blocked assessment
+is HTTP 422 with `status: "POLICY_BLOCKED"` and the `policy_decision` in the body,
+never HTTP 200 with empty findings. `human_review_required` is a workflow flag
+inside a `COMPLETED` (HTTP 200) body, not an error.
 
 Rules are **data, never code** - see `docs/rule-schema.md`. The deterministic
 assessment path (`app/reviewer/assess.py`) runs with no LLM: it normalizes the

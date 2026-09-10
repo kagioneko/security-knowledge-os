@@ -8,7 +8,7 @@ the tests that cover it. Status is updated as milestones land.
 | AC-01 | Knowledge Unit schema validation passes | M1 | done | `test_knowledge_schema.py` |
 | AC-02 | Classification violations are blocked | M1/M2 | done | `test_classification_gate.py`, `test_classification_leakage.py` |
 | AC-03 | A query returns Top-K knowledge with sources | M2 | done | `test_retrieval.py` |
-| AC-04 | All 12 fixtures process end to end | M3 (det.) | done | `test_assess.py::test_ac04_*` |
+| AC-04 | All 12 fixtures process end to end | M3 / M6 | done | `test_assess.py::test_ac04_*`, `test_cli.py::test_test_command_runs_all_fixtures` (`skos test`) |
 | AC-05 | Known vulnerable fixtures land on FAIL/WARN | M3 | done | `test_assess.py::test_ac05_*` |
 | AC-06 | Safe fixtures are not misjudged as a severe FAIL | M3 | done | `test_assess.py::test_ac06_*` |
 | AC-07 | Unknown fixtures return missing info as questions | M4 | done | `test_assess_m4.py::test_ac07_*` |

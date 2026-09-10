@@ -1,0 +1,84 @@
+"""Run an assessment and shape it into an ``AssessmentReport`` (spec Section 12
+step 13). A ``PolicyStop`` becomes a POLICY_BLOCKED report - never a silent
+empty result."""
+
+from __future__ import annotations
+
+import sqlite3
+
+from app.config import Settings
+from app.llm.base import LLMClient
+from app.models.assessment import AssessmentInput, SafeTest
+from app.models.policy_outcome import PolicyStop
+from app.models.report import AssessmentReport
+from app.reviewer.assess import assess
+from app.reviewer.rule_loader import RuleCatalogue
+
+
+def build_report(
+    inp: AssessmentInput,
+    catalogue: RuleCatalogue,
+    *,
+    settings: Settings | None = None,
+    client: LLMClient | None = None,
+    index_conn: sqlite3.Connection | None = None,
+    safe_tests: dict[str, SafeTest] | None = None,
+) -> AssessmentReport:
+    try:
+        result = assess(
+            inp,
+            catalogue,
+            settings=settings,
+            client=client,
+            index_conn=index_conn,
+            safe_tests=safe_tests,
+        )
+    except PolicyStop as stop:
+        return AssessmentReport.blocked(stop.decision)
+    return AssessmentReport.completed(result)
+
+
+def render_text(report: AssessmentReport) -> str:
+    lines: list[str] = [f"status: {report.status.value}"]
+
+    if report.policy_decision is not None:
+        d = report.policy_decision
+        lines.append(f"policy_outcome: {d.outcome.value}")
+        lines.append(f"subject: {d.subject}")
+        for reason in d.reasons:
+            lines.append(f"  - {reason}")
+        return "\n".join(lines)
+
+    assert report.result is not None
+    r = report.result
+    lines += [
+        f"scope: {r.scope}",
+        f"overall_status: {r.overall_status.value}",
+        f"human_review_required: {r.human_review_required}",
+        f"knowledge_revision: {r.knowledge_revision}",
+        f"model: {r.model_info.llm_provider} "
+        f"(deterministic_only={r.model_info.deterministic_only})",
+        "",
+        "findings:",
+    ]
+    for f in r.findings:
+        lines.append(f"  [{f.status.value:7}] {f.risk_id:12} {f.title}  ({f.origin})")
+        if f.reasoning_summary:
+            lines.append(f"            {f.reasoning_summary}")
+    if r.questions:
+        lines.append("")
+        lines.append("questions:")
+        lines += [f"  - {q.text}" for q in r.questions]
+    if r.safe_tests:
+        lines.append("")
+        lines.append("safe tests (vetted templates):")
+        lines += [
+            f"  - {t.id} [{'+'.join(e.value for e in t.environment)}] "
+            f"approval={t.requires_human_approval}"
+            for t in r.safe_tests
+        ]
+    if r.safe_test_proposals:
+        lines.append("")
+        lines.append("safe test proposals (LLM, untrusted - not executable):")
+        lines += [f"  - {p.title}" for p in r.safe_test_proposals]
+    return "\n".join(lines)
