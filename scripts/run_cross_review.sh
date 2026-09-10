@@ -65,15 +65,22 @@ Do NOT modify any file. For each attack give: preconditions, steps, impact,
 severity, mitigation. End with an overall verdict: PASS / PASS-with-nits /
 CHANGES-REQUIRED, and reference commit ${COMMIT}."
 
+# Explicitly NOT fast mode: pin full reasoning depth for a security audit.
+# 'codex exec' carries no persistent "fast" toggle (that is TUI session state),
+# but we set the reasoning effort explicitly so the audit does not run light.
+CODEX_MODEL_OPTS=(-c 'model_reasoning_effort="high"')
+
 run_codex() {
   local f="$OUT/codex-${STAMP}-${COMMIT}.md"
-  echo ">> Codex code audit -> $f"
+  echo ">> Codex code audit (reasoning_effort=high, not fast) -> $f"
   {
     echo "# Codex code audit"
     echo "commit: ${COMMIT}   date: $(date -Iseconds)"
+    echo "config: model_reasoning_effort=high (explicit; fast mode off)"
     echo
   } > "$f"
-  timeout "$TIMEOUT" codex exec -C "$REPO" -s read-only --skip-git-repo-check \
+  timeout "$TIMEOUT" codex exec "${CODEX_MODEL_OPTS[@]}" \
+    -C "$REPO" -s read-only --skip-git-repo-check \
     "$CODEX_PROMPT" 2>&1 | tee -a "$f" || {
       echo "!! codex exec failed or timed out (exit $?)" | tee -a "$f"; }
   echo "   done: $f"
