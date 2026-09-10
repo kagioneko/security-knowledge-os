@@ -234,7 +234,22 @@ See `.env.example`.
 
 ## Documentation
 
-- `docs/knowledge-schema.md` — Knowledge Unit schema (front matter + body)
-- `docs/safety-boundaries.md` — confirmed decisions A1/A3/A6/A7/A8, Human Gate list
-- `docs/architecture.md` — component overview (stub until M8)
-- `docs/threat-model.md` — threat model (stub until M8)
+- `docs/architecture.md` — component overview and configurability seams
+- `docs/threat-model.md` — assets, trust boundary, threats & controls, residual risks
+- `docs/safety-boundaries.md` — decisions A1/A3/A6/A7/A8, Human Gate, §32 read-only, §33 trust boundary
+- `docs/knowledge-schema.md` — Knowledge Unit schema (front matter + `provenance` + body)
+- `docs/rule-schema.md` — data-only rule schema and operators
+- `docs/safe-test-schema.md` — safe-test schema, validator rules, Human Gate, read-only guard
+- `docs/knowledge-corpus.md` — the 13 shipped Knowledge Units and their sources
+- `docs/attribution.md` — third-party sources, licences, derivation status
+- `docs/acceptance-criteria.md` — AC-01..20 status and §24 evaluation metrics
+
+## Licence
+
+Apache License 2.0 — see `LICENSE` and `NOTICE`.
+
+The engine code is licensed under Apache-2.0. The Knowledge Units under
+`knowledge/public/` are original prose licensed under the same terms; they cite
+public standards (OWASP, MITRE ATLAS, NIST) and do not reproduce third-party text
+verbatim (see `docs/attribution.md`). A future commercial "Update Pack" would be
+licensed separately (see the Update Pack / Distribution specification).

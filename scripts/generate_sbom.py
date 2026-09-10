@@ -78,6 +78,7 @@ def build_sbom() -> dict[str, object]:
                 "type": "application",
                 "name": "security-knowledge-os",
                 "version": "0.1.0",
+                "licenses": [{"license": {"id": "Apache-2.0"}}],
             },
             "tools": [{"name": "generate_sbom.py"}],
         },

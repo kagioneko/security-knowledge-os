@@ -63,6 +63,12 @@ def _no_private_or_secret_tracked() -> bool:
     return ok
 
 
+def _license_files_present() -> bool:
+    ok = (ROOT / "LICENSE").exists() and (ROOT / "NOTICE").exists()
+    print(f"[{'ok ' if ok else 'FAIL'}] LICENSE and NOTICE present")
+    return ok
+
+
 def main() -> int:
     py = sys.executable
     checks = [
@@ -76,10 +82,10 @@ def main() -> int:
         _run("sbom", [py, "scripts/generate_sbom.py"]),
         _tracked_knowledge_all_public(),
         _no_private_or_secret_tracked(),
+        _license_files_present(),
     ]
 
     print("\nManual gates still required before publishing:")
-    print("  - choose a project licence (pyproject currently declares Proprietary)")
     print("  - cross-AI review (Codex / Antigravity) per AI_RULES.md, recorded in HANDOFF.md")
     print("  - confirm no real customer / private material in any commit")
 

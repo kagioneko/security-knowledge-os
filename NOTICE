@@ -1,0 +1,35 @@
+Security Knowledge OS
+Copyright 2026 The Security Knowledge OS authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Third-party knowledge sources
+--------------------------------------------------------------------------------
+
+The Knowledge Units under knowledge/public/ are original prose that summarises
+publicly documented security concepts. They do not reproduce third-party text
+verbatim. Each unit records its source in a `provenance` block; docs/attribution.md
+lists every source and its licence. In summary:
+
+  * OWASP Top 10 for LLM Applications 2025 (OWASP GenAI Security Project)
+    https://genai.owasp.org/  - CC-BY-SA-4.0
+    Referenced as the authoritative description of the risk categories.
+    The Knowledge Units are original wording, not derivative works of the
+    OWASP text.
+
+  * MITRE ATLAS - https://atlas.mitre.org/
+    MITRE ATLAS / ATT&CK Terms of Use (free use with attribution).
+
+  * NIST AI 600-1 (Generative AI Profile) and NIST AI Risk Management
+    Framework 1.0 - https://www.nist.gov/
+    U.S. Government works, not subject to copyright.
+
+  * simonwillison.net - referenced for context only; not reproduced.
+
+--------------------------------------------------------------------------------
+Runtime dependencies
+--------------------------------------------------------------------------------
+
+  pydantic (MIT), PyYAML (MIT); optional: fastapi (MIT), uvicorn (BSD-3-Clause),
+  anthropic (MIT). See sbom.json.

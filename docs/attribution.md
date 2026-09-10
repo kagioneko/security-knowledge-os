@@ -37,7 +37,12 @@ Runtime: `pydantic` (MIT), `PyYAML` (MIT). Optional: `fastapi` (MIT),
 
 ## Project licence
 
-**Not yet chosen.** `pyproject.toml` currently declares `Proprietary` as a safe
-default. A licence must be selected (e.g. Apache-2.0 or MIT for the engine, with
-the knowledge corpus and any commercial packs licensed separately - see the
-Update Pack / Distribution spec) before public release.
+**Apache License 2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`).
+
+The engine code and the shipped Knowledge Units are Apache-2.0. The Knowledge
+Units are original prose - not derivative works of any specific third-party text -
+so the CC-BY-SA-4.0 ShareAlike obligation of the OWASP material does not attach to
+them at this time. If a future unit is marked `derivation: adaptation` (reworded
+from a specific source), the ShareAlike question must be revisited for that unit
+and for any pack that distributes it. A commercial Update Pack would be licensed
+separately (see the Update Pack / Distribution specification).
