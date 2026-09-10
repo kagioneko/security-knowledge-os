@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# Secrets & local config (decision A3, 2026-09-10)
+.env
+*.local
+*.key
+*.pem
+
+# --- Knowledge classification isolation (decision A1, 2026-09-10) ---
+# Secret-classified knowledge must live OUTSIDE this repository, under a separate root.
+/secret/
+
+# Internal / confidential knowledge: keep the folder skeleton, ignore the content.
+/knowledge/private/*
+!/knowledge/private/README.md
+!/knowledge/private/internal/
+!/knowledge/private/confidential/
+/knowledge/private/internal/*
+!/knowledge/private/internal/.gitkeep
+!/knowledge/private/internal/README.md
+/knowledge/private/confidential/*
+!/knowledge/private/confidential/.gitkeep
+!/knowledge/private/confidential/README.md
+
+# Local assessment artifacts / indexes
+/var/
+*.sqlite
+*.sqlite3
+*.db
