@@ -70,17 +70,26 @@ CHANGES-REQUIRED, and reference commit ${COMMIT}."
 # but we set the reasoning effort explicitly so the audit does not run light.
 CODEX_MODEL_OPTS=(-c 'model_reasoning_effort="high"')
 
+# Codex's read-only sandbox uses bubblewrap, which cannot create a user
+# namespace on this host (kernel.apparmor_restrict_unprivileged_userns=1) and
+# dies with "bwrap: loopback: Failed RTM_NEWADDR". Every sandbox mode hits this,
+# so we run without the OS sandbox. It is still a read-only audit by intent:
+# approval_policy=never, the prompt forbids edits, and the tree is git-tracked
+# (any stray write is `git checkout`-recoverable). Override with
+# CODEX_SANDBOX=read-only once the host allows unprivileged userns.
+CODEX_SANDBOX="${CODEX_SANDBOX:-danger-full-access}"
+
 run_codex() {
   local f="$OUT/codex-${STAMP}-${COMMIT}.md"
-  echo ">> Codex code audit (reasoning_effort=high, not fast) -> $f"
+  echo ">> Codex code audit (reasoning_effort=high, not fast; sandbox=${CODEX_SANDBOX}) -> $f"
   {
     echo "# Codex code audit"
     echo "commit: ${COMMIT}   date: $(date -Iseconds)"
-    echo "config: model_reasoning_effort=high (explicit; fast mode off)"
+    echo "config: model_reasoning_effort=high (explicit; fast mode off); sandbox=${CODEX_SANDBOX}"
     echo
   } > "$f"
   timeout "$TIMEOUT" codex exec "${CODEX_MODEL_OPTS[@]}" \
-    -C "$REPO" -s read-only --skip-git-repo-check \
+    -C "$REPO" -s "$CODEX_SANDBOX" --skip-git-repo-check \
     "$CODEX_PROMPT" 2>&1 | tee -a "$f" || {
       echo "!! codex exec failed or timed out (exit $?)" | tee -a "$f"; }
   echo "   done: $f"
