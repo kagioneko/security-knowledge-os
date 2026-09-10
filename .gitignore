@@ -15,6 +15,12 @@ build/
 *.local
 *.key
 *.pem
+.claude/
+
+# Pack Manager local state (Update Pack / Distribution Spec)
+/packs/
+/active/
+/var/audit/
 
 # --- Knowledge classification isolation (decision A1, 2026-09-10) ---
 # Secret-classified knowledge must live OUTSIDE this repository, under a separate root.
