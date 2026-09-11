@@ -260,6 +260,22 @@ def iter_knowledge_files(knowledge_root: Path) -> list[Path]:
 
 
 def validate_tree(knowledge_root: Path) -> list[ValidationIssue]:
+    # Codex cross-review finding #4 (2026-09-11): a missing/non-directory root
+    # used to produce zero issues (rglob on it silently yields nothing) - a
+    # "clean" validation result. reindex_atomic() treats "no ERROR-level
+    # issues" as the green light to build and swap in the index, so a typo'd
+    # or unmounted knowledge root would replace a real index with an empty one
+    # that still passes integrity checking (0 chunks is internally consistent).
+    if not knowledge_root.is_dir():
+        return [
+            ValidationIssue(
+                Level.ERROR,
+                "missing-root",
+                f"knowledge root does not exist or is not a directory: {knowledge_root}",
+                str(knowledge_root),
+            )
+        ]
+
     issues: list[ValidationIssue] = []
     seen_ids: dict[str, str] = {}
 

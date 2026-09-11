@@ -94,6 +94,14 @@ def test_symlinked_ku_is_never_loaded_into_the_corpus(
     assert any("evil.md" in path for path, _ in report.skipped)
 
 
+def test_missing_knowledge_root_is_a_hard_error(tmp_path: Path) -> None:
+    """Codex cross-review finding #4 (2026-09-11): validate_tree() on a missing
+    root used to return zero issues (a false "clean" result)."""
+    issues = validate_tree(tmp_path / "no-such-root")
+    assert has_errors(issues)
+    assert any(i.code == "missing-root" and i.level is Level.ERROR for i in issues)
+
+
 def test_out_of_root_ku_is_a_hard_error(tmp_path: Path) -> None:
     outside = tmp_path / "outside.md"
     outside.write_text("id: X\n", encoding="utf-8")

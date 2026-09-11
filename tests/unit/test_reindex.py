@@ -57,6 +57,25 @@ def test_reindex_fails_closed_and_keeps_the_old_index(
     assert not (tmp_path / "idx.sqlite.staging").exists()
 
 
+def test_reindex_from_a_missing_root_fails_closed_and_keeps_the_old_index(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex cross-review finding #4 (2026-09-11): a missing
+    knowledge root used to validate as "clean" (rglob on it yields nothing, so
+    zero issues) and reindex would happily replace a real index with an empty
+    one - the empty index still passes integrity checking, since 0 chunks is
+    internally consistent."""
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    good_revision = good.new_revision
+
+    bad = reindex_atomic(tmp_path / "no-such-knowledge-root", db)
+    assert not bad.ok
+    assert bad.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert _revision(db) == good_revision  # existing index untouched, NOT emptied
+    assert not (tmp_path / "idx.sqlite.staging").exists()
+
+
 def test_reindex_signature_takes_no_content() -> None:
     import inspect
 
