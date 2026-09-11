@@ -183,5 +183,34 @@ How do you fool this system itself?
 
 | role | reviewer | date | verdict (PASS / PASS-with-nits / CHANGES-REQUIRED) | notes |
 | --- | --- | --- | --- | --- |
-| Code audit | | | | |
-| Adversarial design audit | | | | |
+| Code audit | Codex (gpt-6-astra, reasoning_effort=high) | 2026-09-11 | CHANGES-REQUIRED | 15 findings (2 HIGH, 9 MEDIUM, 4 LOW) against commit `865085a`. Full report `reviews/codex-20260911-075156-865085a.md` (gitignored, not tracked). |
+| Adversarial design audit | Antigravity | 2026-09-11 | CHANGES-REQUIRED | 4 findings (1 HIGH/BLOCKING, 2 MEDIUM, 1 LOW) against commit `776305a`, all other attack vectors (B1,B2,B4,B5.1,B7.2,B8,B9) PASS. Full report `reviews/antigravity-20260911-074706-776305a.md` (gitignored, not tracked). |
+
+### Findings resolution (all 19; see `HANDOFF.md` for the full write-up)
+
+| finding | severity | resolution | commit |
+| --- | --- | --- | --- |
+| ADV-01 unknown tool permission → false PASS | HIGH/BLOCKING | fixed | `1e8f8cf` |
+| Codex#1 missing rule catalogue → false PASS | HIGH | fixed | `1e8f8cf` |
+| Codex#2 symlink/out-of-root KU accepted | HIGH | fixed | `5145585` |
+| Codex#8 LLM parse failure vanished | MEDIUM | fixed | `9c90afc` |
+| ADV-02 suppressed rule dropped its question | MEDIUM | fixed | `e9c6e29` |
+| Codex#4 missing knowledge root → index emptied | MEDIUM | fixed | `88f7357` |
+| Codex#5 read-only URI misparsed; assess.py opened RW | MEDIUM | fixed | `890eb74` |
+| Codex#3 / ADV-B6.2 reindex race + no restore on failure | MEDIUM | fixed | `5654f65` |
+| Codex#6 rebuild() twice crashed (contentless FTS5) | MEDIUM | fixed | `6a60f83` |
+| Codex#7 integrity check missed truncation, crashed on missing table | MEDIUM | fixed | `7b4a6a1` |
+| Codex#9 misspelled rule `conditions` key silently dropped | MEDIUM | fixed | `2bec9de` |
+| Codex#10 unbounded store / no-op re-assessment cost | MEDIUM | fixed | `1b6c5c8` |
+| Codex#11 reindex accepted any Host/Origin | MEDIUM | fixed | `1b6c5c8` |
+| Codex#12 SBOM omitted transitive dependencies | MEDIUM | fixed | `8535cb6` |
+| Codex#14 report COMPLETED/POLICY_BLOCKED XOR not fully enforced | LOW | fixed | `4b846f7` |
+| Codex#15 `KnowledgeDoc` allowed unknown fields | LOW | fixed | `4b846f7` |
+| Codex#13 `Finding` A8 bypassable via `model_copy(update=...)` | LOW | accepted (documented in `PUBLICATION_MANIFEST.md`) | — |
+| ADV-04 `SafeTest` deny-list bypassable by a future execution engine | LOW | accepted (documented in `PUBLICATION_MANIFEST.md`) | — |
+| ADV-B5.2 findings should be keyed by `risk_id`, not `title` | LOW/info | documented (`docs/architecture.md`) | — |
+
+Every "fixed" row has a regression test; for the ones checked, the test was
+confirmed to fail against the pre-fix code and pass after the fix (not merely
+written and left unverified). `355` tests total (354 pass, 1 skip), ruff +
+mypy --strict clean at commit `8535cb6`.

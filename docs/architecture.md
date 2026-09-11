@@ -54,3 +54,18 @@ AssessmentReport { status, result?, policy_decision? }
 - **Index path** (`SKOS_DB_PATH`), **rules root** (`SKOS_RULES_ROOT`),
   **safe-tests root** (`SKOS_SAFE_TESTS_ROOT`), **mode** (`SKOS_MODE`,
   public / private), **top-k** (`SKOS_TOP_K`).
+
+## Integration note: identify a Finding by `risk_id`, never by `title`
+
+Antigravity cross-review finding B5.2 (2026-09-11): `merge_findings()` (decision
+A8) appends LLM observations after the deterministic rule findings, so
+`AssessmentResult.findings` can in principle contain a rule finding and an
+`LLM-OBS-*` finding with a similar or identical `title` (an LLM cannot invent a
+colliding `risk_id` - `_enforce_llm_boundary` rejects that - but nothing stops
+it from choosing similar wording). The engine itself is unaffected either way:
+`compute_overall_status()` folds every finding by its worst status regardless of
+title, so a same-titled LLM observation can never mask or downgrade a rule
+verdict. A downstream integration that deduplicates or indexes findings by
+`title` instead of `risk_id` could still display the wrong one, though - always
+key on `risk_id` (deterministic findings use the rule's own id; LLM
+observations are always `LLM-OBS-NNNNN`, `origin="llm"`).
