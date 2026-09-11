@@ -158,6 +158,7 @@ def assess(
             findings,
             high_impact_present=bool(surface.high_impact_actions),
             confidential_knowledge_used=confidential_used,
+            missing_information_present=bool(missing),
         ),
         knowledge_revision=knowledge_revision,
         retrieved_knowledge_ids=retrieved_ids,

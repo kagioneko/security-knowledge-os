@@ -56,6 +56,29 @@ def test_human_review_false_when_clean() -> None:
     )
 
 
+def test_human_review_triggers_on_missing_information_alone() -> None:
+    """Regression for SKOS-ADV-07 (Antigravity, round 2, 2026-09-11): a
+    suppressed medium/low rule (all trigger clauses undetermined) leaves
+    zero findings but a non-empty missing_information - previously nothing
+    keyed on that, so human_review_required stayed False despite an open
+    question about the rule's applicability."""
+    assert requires_human_review(
+        [],
+        high_impact_present=False,
+        confidential_knowledge_used=False,
+        missing_information_present=True,
+    )
+
+
+def test_human_review_still_false_when_truly_clean() -> None:
+    assert not requires_human_review(
+        [_f(FindingStatus.PASS)],
+        high_impact_present=False,
+        confidential_knowledge_used=False,
+        missing_information_present=False,
+    )
+
+
 def test_merge_findings_adds_llm_obs() -> None:
     rule = [_f(FindingStatus.FAIL)]
     llm = [_f(FindingStatus.WARN, risk_id="LLM-OBS-00001", origin="llm")]

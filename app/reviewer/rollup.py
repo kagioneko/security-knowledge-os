@@ -33,8 +33,19 @@ def requires_human_review(
     *,
     high_impact_present: bool,
     confidential_knowledge_used: bool,
+    missing_information_present: bool = False,
 ) -> bool:
-    if high_impact_present or confidential_knowledge_used:
+    # SKOS-ADV-07 (Antigravity, round 2, 2026-09-11): a medium/low rule whose
+    # trigger clauses are ALL undetermined is deliberately left with no
+    # Finding (rule_engine._emit_indeterminate - no signal worth a finding),
+    # but questions.py::build_missing_information() still surfaces the
+    # clarifying question in `missing_information` (fix for the round-1
+    # ADV-02 gap). With zero findings, this function previously had nothing
+    # to key on and returned False: an automated consumer reading only
+    # overall_status/human_review_required would see a clean PASS despite an
+    # open question about the rule's applicability. Unanswered
+    # missing_information is itself a reason a human should look.
+    if high_impact_present or confidential_knowledge_used or missing_information_present:
         return True
     flagged = {FindingStatus.FAIL, FindingStatus.WARN, FindingStatus.UNKNOWN}
     return any(
