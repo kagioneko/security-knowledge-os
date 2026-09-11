@@ -106,6 +106,21 @@ def test_empty_rules_root_is_rejected(tmp_path: Path) -> None:
         load_rules(root)
 
 
+def test_unknown_key_under_conditions_is_rejected(tmp_path: Path) -> None:
+    """Regression for Codex cross-review finding #9 (2026-09-11): a misspelled
+    key under 'conditions' (e.g. 'alll' instead of 'all') used to be silently
+    dropped by the shorthand-conversion step, leaving the rule with an empty
+    'all'/'any' - which is vacuously TRIGGERED for every assessment - instead
+    of raising, even though RuleConditions itself has extra='forbid'."""
+    root = _write_rule(
+        tmp_path,
+        "id: X-007\ntitle: t\ncategory: agent-security\nseverity: low\n"
+        "conditions:\n  alll:\n    - tools_present: true\n",
+    )
+    with pytest.raises(RuleLoadError, match="conditions"):
+        load_rules(root)
+
+
 def test_symlinked_rule_file_is_rejected(tmp_path: Path) -> None:
     """Codex cross-review finding #2 (2026-09-11): confinement must be
     consistent across knowledge/rule/safe-test loaders."""

@@ -20,6 +20,7 @@ from app.reviewer.clause_eval import ClauseError, validate_clause
 from app.reviewer.evidence import EVIDENCE_KEYS
 
 _CLAUSE_KEYS = {"field", "op", "value"}
+_CONDITIONS_KEYS = {"all", "any"}
 
 
 class RuleLoadError(Exception):
@@ -60,6 +61,24 @@ def parse_clause(raw: Any) -> Clause:
 def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
     payload = dict(data)
     conditions = payload.get("conditions", {}) or {}
+    # Codex cross-review finding #9 (2026-09-11): RuleConditions has
+    # extra="forbid", but it never got the chance to enforce it - this
+    # shorthand-conversion step rebuilt 'conditions' from scratch using only
+    # conditions.get("all"/"any"), so a misspelled/unknown key (e.g. "alll")
+    # was silently dropped instead of raising, and the rule quietly ended up
+    # with an empty (== unconditionally TRIGGERED, since an empty 'all' list
+    # is vacuously true) or incomplete condition set instead of the one the
+    # author wrote.
+    if not isinstance(conditions, dict):
+        raise RuleLoadError(
+            f"{source}: 'conditions' must be a mapping, got {type(conditions).__name__}"
+        )
+    unknown_condition_keys = set(conditions) - _CONDITIONS_KEYS
+    if unknown_condition_keys:
+        raise RuleLoadError(
+            f"{source}: unknown key(s) under 'conditions': {sorted(unknown_condition_keys)}"
+            f" (only {sorted(_CONDITIONS_KEYS)} are allowed)"
+        )
     payload["conditions"] = {
         "all": [parse_clause(c) for c in conditions.get("all", [])],
         "any": [parse_clause(c) for c in conditions.get("any", [])],
