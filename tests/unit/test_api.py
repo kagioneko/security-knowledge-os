@@ -77,6 +77,43 @@ def test_answers_reassesses_and_tracks_history(client: TestClient) -> None:
     assert [h["revision"] for h in history] == [1, 2]
 
 
+def test_answers_repeated_identical_patch_against_same_parent_is_idempotent(
+    client: TestClient,
+) -> None:
+    """Regression for Codex cross-review finding #6, part 2 (round 2,
+    2026-09-11), reproduced as reported: repeating the SAME (non-no-op)
+    patch against the SAME parent three times used to produce three separate
+    assessments/store entries with byte-for-byte identical content - e.g. a
+    client retrying after a dropped response paid for (and stored) full
+    duplicate re-assessments."""
+    created = client.post(
+        "/v1/assessments", json=_input("U-002-memory-persistence-unspecified")
+    ).json()
+    aid = created["result"]["assessment_id"]
+
+    ids = set()
+    for _ in range(3):
+        resp = client.post(f"/v1/assessments/{aid}/answers", json={"memory_persistent": True})
+        assert resp.status_code == 200
+        ids.add(resp.json()["result"]["assessment_id"])
+
+    assert len(ids) == 1  # all three calls returned the SAME assessment
+    history = client.get(f"/v1/assessments/{next(iter(ids))}/history").json()
+    assert [h["revision"] for h in history] == [1, 2]  # only one new revision, not three
+
+
+def test_assessment_input_rejects_an_oversized_prompt(client: TestClient) -> None:
+    """Regression for Codex cross-review finding #6 (round 2, 2026-09-11),
+    reproduced close to the reviewer's own repro: an assessment containing a
+    huge user_prompts string used to be accepted (200) and retained in full
+    in the in-memory store. AssessmentInput now bounds field sizes."""
+    resp = client.post(
+        "/v1/assessments",
+        json={"name": "t", "user_prompts": ["x" * 1_000_000]},
+    )
+    assert resp.status_code == 422
+
+
 def test_answers_noop_merge_does_not_create_a_new_revision(client: TestClient) -> None:
     """Regression for Codex cross-review finding #10 (2026-09-11): patch.is_empty()
     only catches every field being None. {"human_approval": {}} sets a field to a

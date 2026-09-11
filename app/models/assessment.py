@@ -4,60 +4,67 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.risk import Finding, Severity
 
+# Codex cross-review finding #6 (round 2, 2026-09-11): AssessmentInput had no
+# field-level size bounds at all - a single request with e.g. a 1 MiB
+# user_prompts string was accepted (200) and retained in full in app/main.py's
+# _STORE. The entry-count cap (_MAX_STORE_ENTRIES) added in round 1 bounds how
+# many assessments are kept, not how large any ONE of them is; a store full of
+# maximum-size entries can still be multi-gigabyte. These are generous-but-
+# finite bounds on free text / list sizes, not a tuned production limit.
+_Short = Annotated[str, Field(max_length=500)]
+_Text = Annotated[str, Field(max_length=50_000)]
 
-# --------------------------------------------------------------------------- #
-# Input (spec Section 20)
-# --------------------------------------------------------------------------- #
+
 class RagInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool | None = None
-    sources: list[str] = Field(default_factory=list)
+    sources: list[_Short] = Field(default_factory=list, max_length=200)
 
 
 class MemoryInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool | None = None
     persistent: bool | None = None
-    scope: str | None = None
+    scope: str | None = Field(default=None, max_length=100)
 
 
 class ToolInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    name: str
-    permissions: str | None = None
+    name: str = Field(max_length=200)
+    permissions: str | None = Field(default=None, max_length=100)
     requires_approval: bool | None = None
 
 
 class OutboundInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool | None = None
-    destinations: list[str] = Field(default_factory=list)
+    destinations: list[_Short] = Field(default_factory=list, max_length=200)
 
 
 class CredentialInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    storage: str | None = None
-    exposed_to_model: str | None = None  # "true" | "false" | "unknown"
+    storage: str | None = Field(default=None, max_length=100)
+    exposed_to_model: str | None = Field(default=None, max_length=100)  # "true"|"false"|"unknown"
 
 
 class AssessmentInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str
-    system_prompt: str | None = None
-    developer_prompt: str | None = None
-    user_prompts: list[str] = Field(default_factory=list)
+    name: str = Field(max_length=500)
+    system_prompt: str | None = Field(default=None, max_length=50_000)
+    developer_prompt: str | None = Field(default=None, max_length=50_000)
+    user_prompts: list[_Text] = Field(default_factory=list, max_length=200)
     rag: RagInput = Field(default_factory=RagInput)
     memory: MemoryInput = Field(default_factory=MemoryInput)
-    tools: list[ToolInput] = Field(default_factory=list)
+    tools: list[ToolInput] = Field(default_factory=list, max_length=200)
     outbound: OutboundInput = Field(default_factory=OutboundInput)
-    human_approval: dict[str, bool] = Field(default_factory=dict)
+    human_approval: dict[_Short, bool] = Field(default_factory=dict, max_length=200)
     credentials: CredentialInput = Field(default_factory=CredentialInput)
 
 

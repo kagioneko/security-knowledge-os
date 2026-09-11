@@ -48,11 +48,30 @@ app = FastAPI(title="Security Knowledge OS", version="0.1.0")
 _MAX_STORE_ENTRIES = 5000
 _STORE: dict[str, tuple[AssessmentInput, AssessmentReport]] = {}
 
+# Codex cross-review finding #6, part 2 (round 2, 2026-09-11): resubmitting
+# the SAME (non-no-op) patch against the SAME parent repeatedly used to create
+# a brand-new assessment + store entry every time - each call is a full
+# re-assessment (LLM/provider cost too, when configured) for a result that is
+# byte-for-byte identical to one already computed. Cached by
+# (parent_assessment_id, resulting merged-input hash) -> the assessment_id
+# that patch already produced, so a repeat returns the existing result instead
+# of paying to recompute (and store) a duplicate. Bounded the same way as
+# _STORE; a cache miss (evicted or never seen) just re-runs, same as before -
+# this is a cost/dedup optimization, not a correctness requirement.
+_MAX_ANSWER_CACHE_ENTRIES = 5000
+_ANSWER_CACHE: dict[tuple[str, str], str] = {}
+
 
 def _store_put(assessment_id: str, entry: tuple[AssessmentInput, AssessmentReport]) -> None:
     _STORE[assessment_id] = entry
     while len(_STORE) > _MAX_STORE_ENTRIES:
         _STORE.pop(next(iter(_STORE)))  # evict oldest (dict preserves insertion order)
+
+
+def _answer_cache_put(key: tuple[str, str], assessment_id: str) -> None:
+    _ANSWER_CACHE[key] = assessment_id
+    while len(_ANSWER_CACHE) > _MAX_ANSWER_CACHE_ENTRIES:
+        _ANSWER_CACHE.pop(next(iter(_ANSWER_CACHE)))
 
 
 # Codex cross-review finding #11 (2026-09-11): /v1/knowledge/reindex accepted
@@ -173,6 +192,20 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
     if new_input == original_input:
         return _respond(original_report)
 
+    # Codex cross-review finding #6, part 2 (round 2, 2026-09-11): a repeat of
+    # the SAME (non-no-op) patch against the SAME parent - e.g. a client
+    # retrying after a dropped response - used to re-run the full assessment
+    # and create yet another store entry every time, even though the result
+    # is byte-for-byte identical to one already computed. new_input's own
+    # canonical JSON is deterministic (pydantic v2 preserves field-declaration
+    # order), so it doubles as the dedup key - no need to hash the raw patch.
+    cache_key = (assessment_id, new_input.model_dump_json())
+    cached_id = _ANSWER_CACHE.get(cache_key)
+    if cached_id is not None:
+        cached_entry = _STORE.get(cached_id)
+        if cached_entry is not None:
+            return _respond(cached_entry[1])
+
     report = _run(new_input, _settings())
     if report.result is not None:
         prev_revision = (
@@ -181,6 +214,7 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
         report.result.supersedes = assessment_id
         report.result.revision = prev_revision + 1
         _store_put(report.result.assessment_id, (new_input, report))
+        _answer_cache_put(cache_key, report.result.assessment_id)
     return _respond(report)
 
 
