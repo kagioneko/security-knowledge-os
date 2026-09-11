@@ -28,6 +28,16 @@ def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
         data = yaml.safe_load(match.group("fm"))
     except yaml.YAMLError as exc:
         raise FrontMatterError(f"invalid YAML in front matter: {exc}") from exc
+    except ValueError as exc:
+        # Codex cross-review finding #8 (round 2, 2026-09-11): a
+        # syntactically-shaped but semantically invalid scalar (e.g. the
+        # timestamp "2026-99-99" - matches PyYAML's timestamp regex, but
+        # month=99 fails datetime construction) raises a bare ValueError from
+        # the resolver/constructor, not a yaml.YAMLError subclass - it was
+        # not caught here, and POST /v1/knowledge/validate (meant to always
+        # return a clean {valid: false, errors: [...]} response for exactly
+        # this kind of bad input) returned an HTTP 500 instead.
+        raise FrontMatterError(f"invalid value in front matter: {exc}") from exc
     if not isinstance(data, dict):
         raise FrontMatterError("front matter must be a YAML mapping")
     return data, match.group("body")

@@ -137,6 +137,21 @@ def test_knowledge_validate_rejects_unknown_fields(client: TestClient) -> None:
     assert resp.status_code == 422
 
 
+def test_knowledge_validate_handles_an_invalid_date_cleanly(client: TestClient) -> None:
+    """Regression for Codex cross-review finding #8 (round 2, 2026-09-11),
+    reproduced exactly as reported: a syntactically YAML-timestamp-shaped but
+    semantically invalid date (month=99) made PyYAML's constructor raise a
+    bare ValueError, not caught by the existing yaml.YAMLError handler -
+    POST /v1/knowledge/validate returned a 500 instead of a clean
+    {valid: false} response."""
+    resp = client.post(
+        "/v1/knowledge/validate",
+        json={"content": "---\nlast_reviewed: 2026-99-99\n---\nbody"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["valid"] is False
+
+
 def test_knowledge_validate_is_read_only(client: TestClient) -> None:
     good = "\n".join(
         [
