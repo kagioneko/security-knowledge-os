@@ -3,22 +3,25 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `8535cb6` (M8.2 — cross-review findings addressed, **not yet pushed**)
+- Commit: `bcd9519` (M8.3 — cross-review round 2 findings addressed, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **198**
-- Tests: **355** items (354 pass, 1 skip = JA-R02)
+- Tracked files: **199**
+- Tests: **371** items (370 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS**
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design audit),
-  2026-09-11, both initially **CHANGES-REQUIRED** — all 19 findings addressed
-  (16 fixed with regression tests, 3 accepted/documented). See `HANDOFF.md` and
-  `REVIEW_CHECKLIST.md` sign-off table.
+  **two rounds**, 2026-09-11. Round 1 (commits `865085a`/`776305a`):
+  CHANGES-REQUIRED, 19 findings, 16 fixed + 3 accepted/documented. Round 2
+  — re-review of the round-1 fixes (commit `28e3c06`): CHANGES-REQUIRED
+  again, 13 new findings (independent of round 1's, mostly in code paths
+  round 1 did not touch), **all 13 fixed**. See `HANDOFF.md` and
+  `REVIEW_CHECKLIST.md` sign-off tables (both rounds).
 
 ## Tracked files by area
 
 | area | files | notes |
 | --- | --- | --- |
 | `app/` | 56 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
-| `tests/` | 69 | 39 test modules + fixtures |
+| `tests/` | 70 | 38 test modules + fixtures |
 | `knowledge/` | 23 | 13 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
 | `rules/` | 13 | 7 rule YAMLs + category `.gitkeep`s |
 | `safe_tests/` | 4 | 4 vetted templates |
@@ -88,9 +91,9 @@ Safe-test templates (4): `ST-IPI-001`, `ST-MEM-001`, `ST-TOOL-001`, `ST-CRED-001
 
 ## Fixtures
 
-- Assessment fixtures: **13** in `tests/fixtures/assessments/{safe,vulnerable,unknown}/`
-  (4 safe, 4 vulnerable, 5 unknown — U-005 added for the ADV-01 regression).
-  Labels drive `scripts/evaluate.py`.
+- Assessment fixtures: **14** in `tests/fixtures/assessments/{safe,vulnerable,unknown}/`
+  (4 safe, 5 vulnerable, 5 unknown — U-005 for the ADV-01 regression, V-005
+  for the round-2 ADV-05 regression). Labels drive `scripts/evaluate.py`.
 - Knowledge/validator fixtures: 16 `.md` under `tests/fixtures/` (valid, invalid,
   secret-in-repo, corpus, corpus_alt) — test data only, `source_license: "test
   fixture - not for distribution"`.
@@ -135,7 +138,7 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
 
 | item | status |
 | --- | --- |
-| API assessment store in-memory (now size-bounded, FIFO cap 5000) | accepted (spec §18 localhost scope) — Codex#10 |
+| API assessment store in-memory (FIFO cap 5000 entries; `AssessmentInput` fields size-bounded; repeated-patch results deduped) | accepted (spec §18 localhost scope) — round-1 Codex#10, round-2 Codex#6 |
 | integrity = SHA-256 (content, not authenticity) | accepted (signature is Pack Manager, M9-M10) — Antigravity ADV-03 |
 | `Finding` A8 boundary can be bypassed via direct Python `model_copy(update=...)` | accepted — Codex#13: no code path in this app does this; Pydantic's construction bypass is a library property, not a security boundary; the actual boundary is the LLM's JSON output going through `model_validate_json` + schema `extra="forbid"`, which cannot be bypassed this way |
 | `SafeTest._FORBIDDEN` regex deny-list would be bypassable by a determined author if a future execution engine is added | accepted / architectural note — Antigravity ADV-04: no execution engine exists yet (safe tests are non-executable templates only); M9-M10 must use sandboxed execution (gVisor/bubblewrap), not regex filtering, when one is added |
@@ -146,18 +149,25 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
 | CLI uses argparse, not Typer (spec §5) | accepted, documented |
 | Pack Manager (M9-M10) not in repo | out of scope; ZIP-import attack surface is future work |
 
-## Cross-AI review — closed
+## Cross-AI review — two rounds, both closed
 
-1. **Cross-AI review** (Codex code audit + Antigravity adversarial design
-   audit) per `AI_RULES.md` — **done**, 2026-09-11, recorded in `HANDOFF.md`.
-   Both initial verdicts: **CHANGES-REQUIRED**.
-2. **Findings addressed**: 16 of 19 fixed (with regression tests confirmed to
-   fail against the pre-fix code where practical), 3 accepted/documented above.
-   See `REVIEW_CHECKLIST.md` sign-off table for the full list mapped to
-   commits.
-3. `scripts/preflight.py`: **PASS** after fixes (355 tests, ruff + mypy --strict
-   clean).
-4. Re-review of the fixes: recommended before push per AI_RULES ("修正した上で
-   再レビューを受けること"); not yet run at commit `8535cb6`.
+1. **Round 1** (Codex code audit + Antigravity adversarial design audit) per
+   `AI_RULES.md`, 2026-09-11, recorded in `HANDOFF.md`. Both verdicts:
+   **CHANGES-REQUIRED**, 19 findings. 16 fixed (regression tests confirmed
+   to fail against the pre-fix code), 3 accepted/documented above.
+2. **Round 2** — re-review of the round-1 fixes, same two reviewers, same
+   date, against commit `28e3c06`. Both verdicts: **CHANGES-REQUIRED** again
+   — 13 NEW findings, independent of round 1's (mostly in code paths round 1
+   did not touch: RAG-source trust default, the `assess()`/`build_index()`
+   library entry points, reindex publish ordering, CSRF via Origin vs Host, a
+   second unguarded symlink read, SQLite/YAML edge cases, SBOM schema
+   compliance, request size limits). Round 1's fixes themselves held up under
+   re-review. **All 13 fixed** — see `REVIEW_CHECKLIST.md` for both rounds'
+   full findings-to-commit tables.
+3. `scripts/preflight.py`: **PASS** after both rounds' fixes (371 tests, ruff
+   + mypy --strict clean, commit `bcd9519`).
+4. A third re-review round is queued to confirm the round-2 fixes before
+   push, per the same AI_RULES requirement ("修正した上で再レビューを受ける
+   こと") applied a second time.
 5. Human confirmation: no real customer / private material in any commit —
    still to confirm before push.

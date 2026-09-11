@@ -210,6 +210,43 @@ How do you fool this system itself?
 | ADV-04 `SafeTest` deny-list bypassable by a future execution engine | LOW | accepted (documented in `PUBLICATION_MANIFEST.md`) | — |
 | ADV-B5.2 findings should be keyed by `risk_id`, not `title` | LOW/info | documented (`docs/architecture.md`) | — |
 
+## Round 2 (re-review of the round-1 fixes)
+
+| role | reviewer | date | verdict | notes |
+| --- | --- | --- | --- | --- |
+| Code audit | Codex (gpt-6-astra, reasoning_effort=high) | 2026-09-11 | CHANGES-REQUIRED | 10 findings (1 HIGH, 5 MEDIUM, 4 LOW) against commit `28e3c06`. Confirmed ADV-01 remediation (B3.3). Full report `reviews/codex-20260911-223249-28e3c06.md` (gitignored). |
+| Adversarial design audit | Antigravity | 2026-09-11 | CHANGES-REQUIRED | 6 findings (1 HIGH/BLOCKING, 4 MEDIUM, 1 LOW) against commit `28e3c06`. Confirmed ADV-01 and (mostly) ADV-02 remediation. Full report `reviews/antigravity-20260911-223249-28e3c06.md` (gitignored). |
+
+Round 1's fixes held up; round 2 found new, independent issues - mostly in
+code paths round 1 did not touch (RAG-source trust default, the library
+`assess()`/`build_index()` entry points bypassing loader-level guards,
+reindex publish ordering, CSRF via Origin vs Host, a second unguarded
+symlink read, SQLite type/YAML-timestamp edge cases, SBOM schema
+compliance, request size limits). This is the expected shape of a second
+pass, not a sign the first round was rushed.
+
+### Round-2 findings resolution (13; see `HANDOFF.md` for the full write-up)
+
+| finding | severity | resolution | commit |
+| --- | --- | --- | --- |
+| ADV-05 RAG source not on deny-list → fail-open | HIGH/BLOCKING | fixed | `83ed352` |
+| ADV-06 / Codex#1 empty `RuleCatalogue()` via library API → false PASS | HIGH | fixed | `83ed352` |
+| ADV-08 / Codex#2 reindex publish missing-path window + not exception-safe | MEDIUM | fixed | `66a66f7` |
+| ADV-09 / Codex#3 local-origin check inspected Host, not Origin (CSRF) | MEDIUM | fixed | `51bd49b` |
+| ADV-10 / Codex#4 `validate_tree()` reopened a rejected symlink | MEDIUM | fixed | `53210b5` |
+| Codex#5 `build_index()` bypassed fail-closed root check when called directly | MEDIUM | fixed | `bf36bec` |
+| Codex#7(2) malformed SQLite row type (BLOB) crashed instead of POLICY_BLOCKED | LOW | fixed | `2c71cba` |
+| Codex#8 invalid YAML timestamp crashed `/v1/knowledge/validate` (500) | LOW | fixed | `e5f75ea` |
+| Codex#9 SBOM missing schema-required top-level `version` | LOW | fixed | `206e31e` |
+| Codex#10 manifest said dependency licences "all permissive" (pathspec is MPL-2.0) | LOW | fixed | `206e31e` |
+| ADV-07 `missing_information` alone did not require human review | LOW | fixed | `3937379` |
+| Codex#6(1) `AssessmentInput` had no field-level size bounds | MEDIUM | fixed | `bcd9519` |
+| Codex#6(2) repeated identical patch against same parent created duplicates | MEDIUM | fixed | `bcd9519` |
+
+All 13 fixed, all with regression tests; every one confirmed to fail against
+the pre-fix code before the fix landed. 371 tests total (370 pass, 1 skip),
+ruff + mypy --strict clean at commit `bcd9519`.
+
 Every "fixed" row has a regression test; for the ones checked, the test was
 confirmed to fail against the pre-fix code and pass after the fix (not merely
 written and left unverified). `355` tests total (354 pass, 1 skip), ruff +
