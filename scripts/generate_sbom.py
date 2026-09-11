@@ -13,20 +13,6 @@ import sys
 from importlib import metadata
 from pathlib import Path
 
-_ROOT_DISTS = {
-    "security-knowledge-os",
-    "pydantic",
-    "pyyaml",
-    "fastapi",
-    "uvicorn",
-    "anthropic",
-    "httpx",
-    "pytest",
-    "ruff",
-    "mypy",
-}
-
-
 # PyPI packages whose licence metadata is not machine-readable in older formats.
 _KNOWN_LICENSES = {
     "pydantic": "MIT",
@@ -36,6 +22,7 @@ _KNOWN_LICENSES = {
     "ruff": "MIT",
     "uvicorn": "BSD-3-Clause",
     "anthropic": "MIT",
+    "pathspec": "MPL-2.0",
 }
 
 
@@ -55,11 +42,21 @@ def _license(dist: metadata.Distribution) -> str:
 
 
 def build_sbom() -> dict[str, object]:
+    # Codex cross-review finding #12 (2026-09-11): a hand-maintained allowlist
+    # of "root" package names omitted every installed TRANSITIVE dependency
+    # (pydantic-core, annotated-types, typing-extensions, typing-inspection,
+    # starlette, anyio were all installed but not in the SBOM) - it drifts out
+    # of sync with reality by construction. List every distribution actually
+    # installed in this (dedicated project) environment instead, deduped by
+    # name in case of duplicate metadata entries.
+    seen: set[str] = set()
     components = []
     for dist in sorted(metadata.distributions(), key=lambda d: d.metadata["Name"].lower()):
         name = dist.metadata["Name"]
-        if name.lower() not in {d.lower() for d in _ROOT_DISTS}:
+        key = name.lower()
+        if key in seen:
             continue
+        seen.add(key)
         components.append(
             {
                 "type": "library",
