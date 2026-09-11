@@ -127,6 +127,27 @@ def test_truncated_index_with_stale_chunk_count_fails_closed(
         conn.close()
 
 
+def test_blob_row_type_fails_closed_not_a_raw_attributeerror(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex cross-review finding #7, part 2 (round 2,
+    2026-09-11): SQLite's default (non-STRICT) tables do not enforce column
+    types. Inserting a BLOB into `chunks.text` made `.encode()` raise a bare
+    AttributeError instead of the POLICY_BLOCKED this function exists to
+    return - the assessment aborted rather than falsely passing, but via an
+    unhandled exception, not the fail-closed contract callers rely on."""
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        conn.execute("UPDATE chunks SET text = ? WHERE rowid = 1", (b"\x00\x01binary",))
+        conn.commit()
+        decision = verify_chunk_hashes(conn)  # must not raise
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    finally:
+        conn.close()
+
+
 def test_missing_meta_table_fails_closed_not_a_raw_exception(
     tmp_path: Path, corpus_root: Path
 ) -> None:

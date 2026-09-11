@@ -22,12 +22,29 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
     """
     try:
         mismatches: list[str] = []
+        malformed: list[str] = []
         actual_count = 0
         for row in conn.execute("SELECT chunk_id, text, hash FROM chunks"):
             actual_count += 1
+            # Codex cross-review finding #7, part 2 (round 2, 2026-09-11):
+            # SQLite's default (non-STRICT) tables do not enforce column
+            # types - a BLOB (or any non-TEXT value) in `text`/`hash` made
+            # `.encode()` raise AttributeError, an unhandled exception that
+            # skipped the caller's fail-closed handling instead of producing
+            # the POLICY_BLOCKED this function exists to return.
+            if not isinstance(row["text"], str) or not isinstance(row["hash"], str):
+                malformed.append(row["chunk_id"])
+                continue
             expected = hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
             if expected != row["hash"]:
                 mismatches.append(row["chunk_id"])
+        if malformed:
+            return stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "knowledge-index",
+                f"malformed row type (text/hash not TEXT) for {malformed[:5]}"
+                + ("" if len(malformed) <= 5 else f" (+{len(malformed) - 5} more)"),
+            )
         if mismatches:
             return stop(
                 PolicyOutcome.POLICY_BLOCKED,
