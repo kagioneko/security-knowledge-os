@@ -79,3 +79,28 @@ def test_duplicate_rule_id_is_rejected(tmp_path: Path) -> None:
     (root / "b.yaml").write_text(text, encoding="utf-8")
     with pytest.raises(RuleLoadError, match="duplicate"):
         load_rules(root)
+
+
+def test_missing_rules_root_is_rejected(tmp_path: Path) -> None:
+    """Regression for Codex cross-review finding #1 (2026-09-11): a rule root
+    that does not exist used to silently load an empty catalogue -> every
+    assessment evaluated zero rules and settled on a false PASS. Must be a hard
+    load error instead."""
+    with pytest.raises(RuleLoadError, match="does not exist"):
+        load_rules(tmp_path / "no-such-dir")
+
+
+def test_rules_root_that_is_a_file_is_rejected(tmp_path: Path) -> None:
+    f = tmp_path / "not-a-dir.yaml"
+    f.write_text("id: X-005\n", encoding="utf-8")
+    with pytest.raises(RuleLoadError, match="not a directory"):
+        load_rules(f)
+
+
+def test_empty_rules_root_is_rejected(tmp_path: Path) -> None:
+    """A directory that exists but contains no rule YAML files must also be a
+    hard error - the same false-PASS risk as a missing directory."""
+    root = tmp_path / "rules"
+    root.mkdir()
+    with pytest.raises(RuleLoadError, match="no rule files"):
+        load_rules(root)

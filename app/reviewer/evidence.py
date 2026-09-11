@@ -8,6 +8,8 @@ never guesses (spec Section 33 fail-closed, AC-19).
 from __future__ import annotations
 
 from app.models.assessment import AssessmentInput
+from app.models.context import ToolPermission
+from app.reviewer.normalize import parse_permission
 
 # The complete set of evidence keys a rule may require.
 EVIDENCE_KEYS: frozenset[str] = frozenset(
@@ -39,7 +41,15 @@ def available_evidence(inp: AssessmentInput) -> set[str]:
         evidence.add("rag_pipeline")
     if inp.tools:
         evidence.add("tool_policy")
-        if all(tool.permissions for tool in inp.tools):
+        # "specified" means every tool's permission string normalizes to a KNOWN
+        # ToolPermission - not merely a non-empty string (ADV-01: an arbitrary
+        # unrecognized string such as "custom_permission" must NOT count as
+        # specified, or TOOL-000's required_evidence check is satisfied vacuously
+        # and the rule never surfaces the unrecognized permission at all).
+        if all(
+            parse_permission(tool.permissions) is not ToolPermission.UNKNOWN
+            for tool in inp.tools
+        ):
             evidence.add("tool_permissions_specified")
     if inp.memory.enabled is not None:
         evidence.add("memory_spec")

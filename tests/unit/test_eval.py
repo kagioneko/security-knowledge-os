@@ -54,7 +54,7 @@ def test_metrics_separate_the_three_classes(
     labelled: list[LabelledResult], catalogue: RuleCatalogue
 ) -> None:
     m = compute_metrics(labelled, catalogue)
-    assert m.n_vulnerable == 4 and m.n_safe == 4 and m.n_unknown == 4
+    assert m.n_vulnerable == 4 and m.n_safe == 4 and m.n_unknown == 5
     assert m.known_risk_recall == 1.0
     assert m.false_positive_rate == 0.0
     assert m.unknown_appropriateness == 1.0

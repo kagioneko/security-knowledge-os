@@ -87,6 +87,14 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
 
 def load_rules(rules_root: Path | str) -> RuleCatalogue:
     rules_root = Path(rules_root)
+    # Codex cross-review finding #1 (2026-09-11): Path.rglob() on a missing or
+    # empty directory silently yields nothing - previously that produced an
+    # EMPTY catalogue, so every assessment evaluated zero rules and settled on
+    # a false PASS. A misconfigured/missing rule root must be a hard load
+    # error, never a clean bill of health.
+    if not rules_root.is_dir():
+        raise RuleLoadError(f"rules root does not exist or is not a directory: {rules_root}")
+
     catalogue = RuleCatalogue()
     seen: dict[str, Path] = {}
 
@@ -105,5 +113,8 @@ def load_rules(rules_root: Path | str) -> RuleCatalogue:
             )
         seen[rule.id] = path
         catalogue.rules.append(rule)
+
+    if not catalogue.rules:
+        raise RuleLoadError(f"no rule files (*.yaml) found under {rules_root}")
 
     return catalogue

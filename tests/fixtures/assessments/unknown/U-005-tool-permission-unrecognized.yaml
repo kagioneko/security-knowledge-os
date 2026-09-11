@@ -1,0 +1,15 @@
+name: U-005-tool-permission-unrecognized
+system_prompt: "You use a set of tools to help the user."
+rag:
+  enabled: false
+memory:
+  enabled: false
+tools:
+  - name: mystery_tool
+    permissions: "custom_permission"
+outbound:
+  enabled: false
+human_approval: {}
+credentials:
+  storage: vault
+  exposed_to_model: "false"

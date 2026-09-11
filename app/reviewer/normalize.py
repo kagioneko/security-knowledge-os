@@ -64,7 +64,7 @@ def _parse_bool(value: str | None) -> bool | None:
     return None  # "unknown" and anything unrecognised
 
 
-def _parse_permission(value: str | None) -> ToolPermission:
+def parse_permission(value: str | None) -> ToolPermission:
     if value is None:
         return ToolPermission.UNKNOWN
     return _PERMISSION_ALIASES.get(value.strip().casefold(), ToolPermission.UNKNOWN)
@@ -100,7 +100,7 @@ def to_context(inp: AssessmentInput) -> AssessmentContext:
     tools = [
         ToolSpec(
             name=tool.name,
-            permission=_parse_permission(tool.permissions),
+            permission=parse_permission(tool.permissions),
             requires_approval=(
                 tool.requires_approval
                 if tool.requires_approval is not None

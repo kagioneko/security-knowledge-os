@@ -29,6 +29,7 @@ UNKNOWN = [
     "U-002-memory-persistence-unspecified",
     "U-003-outbound-destination-unspecified",
     "U-004-credential-handling-unspecified",
+    "U-005-tool-permission-unrecognized",
 ]
 ALL = VULNERABLE + SAFE + UNKNOWN
 
@@ -122,3 +123,22 @@ def test_findings_carry_evidence(
     for finding in result.findings:
         assert finding.evidence
         assert finding.reasoning_summary
+
+
+def test_adv01_unrecognized_tool_permission_never_silently_passes(
+    load_assessment: Loader, catalogue: RuleCatalogue, settings: Settings
+) -> None:
+    """Regression for cross-review finding SKOS-ADV-01 (Antigravity, 2026-09-11):
+    an arbitrary/unrecognized ``permissions`` string used to satisfy
+    ``tool_permissions_specified`` by truthiness alone, so TOOL-000's
+    ``required_evidence`` check was vacuously met, TOOL-000 (``checks: []``)
+    emitted no finding, and TOOL-001 didn't count the unknown permission as
+    high-impact - the assessment settled on ``PASS`` with
+    ``human_review_required=False``. Must instead be UNKNOWN + human review."""
+    result = assess_deterministic(
+        load_assessment("U-005-tool-permission-unrecognized"), catalogue, settings=settings
+    )
+    assert result.overall_status is OverallStatus.UNKNOWN
+    assert result.human_review_required is True
+    by_id = {f.risk_id: f for f in result.findings}
+    assert by_id["TOOL-000"].status is FindingStatus.UNKNOWN
