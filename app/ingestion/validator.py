@@ -280,7 +280,17 @@ def validate_tree(knowledge_root: Path) -> list[ValidationIssue]:
     seen_ids: dict[str, str] = {}
 
     for md_path in iter_knowledge_files(knowledge_root):
-        issues.extend(validate_file(md_path, knowledge_root))
+        file_issues = validate_file(md_path, knowledge_root)
+        issues.extend(file_issues)
+        # ADV-10 / Codex#4 (round 2, 2026-09-11): validate_file() rejects a
+        # symlinked or out-of-root candidate as an ERROR before ever reading
+        # it - but this loop used to unconditionally call read_markdown() on
+        # the same path again right afterwards for the duplicate-id check,
+        # reopening (and reading through) exactly the file that was just
+        # rejected. Never reopen a path validate_file already flagged an
+        # ERROR on; there is nothing trustworthy left to read.
+        if any(issue.level is Level.ERROR for issue in file_issues):
+            continue
         try:
             front_matter, _ = read_markdown(md_path)
         except FrontMatterError:

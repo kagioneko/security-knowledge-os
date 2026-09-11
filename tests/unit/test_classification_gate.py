@@ -94,6 +94,39 @@ def test_symlinked_ku_is_never_loaded_into_the_corpus(
     assert any("evil.md" in path for path, _ in report.skipped)
 
 
+def test_validate_tree_never_reopens_a_rejected_symlink(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for SKOS-ADV-10 / Codex#4 (round 2, 2026-09-11): validate_file()
+    rejects a symlinked candidate as an ERROR before reading it, but
+    validate_tree()'s own duplicate-id pass unconditionally called
+    read_markdown() on the same path again right after - reopening (and
+    reading through) the very file that was just rejected."""
+    import app.ingestion.validator as validator_module
+
+    real_target = next(corpus_alt_root.glob("public/**/*.md"))
+    root = tmp_path / "knowledge"
+    (root / "public" / "prompt-security").mkdir(parents=True)
+    link = root / "public" / "prompt-security" / "evil.md"
+    link.symlink_to(real_target)
+
+    read_paths: list[str] = []
+    original_read = validator_module.read_markdown
+
+    def _spy(path: Path):  # type: ignore[no-untyped-def]
+        read_paths.append(str(path))
+        return original_read(path)
+
+    validator_module.read_markdown = _spy  # type: ignore[assignment]
+    try:
+        issues = validate_tree(root)
+    finally:
+        validator_module.read_markdown = original_read  # type: ignore[assignment]
+
+    assert any(i.code == "symlink-not-allowed" for i in issues)
+    assert not any("evil.md" in p for p in read_paths)
+
+
 def test_missing_knowledge_root_is_a_hard_error(tmp_path: Path) -> None:
     """Codex cross-review finding #4 (2026-09-11): validate_tree() on a missing
     root used to return zero issues (a false "clean" result)."""
