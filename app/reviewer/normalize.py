@@ -15,20 +15,6 @@ from app.models.context import (
     ToolSpec,
 )
 
-# Retrieval sources that carry untrusted, externally-authored content.
-_UNTRUSTED_SOURCES = {
-    "web",
-    "internet",
-    "uploaded_documents",
-    "uploads",
-    "user_uploads",
-    "email",
-    "pdf",
-    "external",
-    "external_documents",
-    "attachments",
-}
-
 _PERMISSION_ALIASES = {
     "read": ToolPermission.READ,
     "read-only": ToolPermission.READ,
@@ -89,11 +75,25 @@ def _parse_credential_storage(value: str | None) -> CredentialStorage:
 
 
 def _external_content_ingestion(inp: AssessmentInput) -> bool | None:
+    """SKOS-ADV-05 (Antigravity, round 2, 2026-09-11): this used to be a
+    DENY-list check (`source in _UNTRUSTED_SOURCES`) - fail-OPEN by
+    construction, since any source name not on the fixed 10-item list (e.g.
+    "jira_tickets", "slack_channel") evaluated to False ("safe"), silently
+    making PI-003 and MEM-001 NOT_APPLICABLE regardless of what was actually
+    being ingested.
+
+    RAG enabled + at least one named source means the system reads content it
+    did not author. We have no schema field to positively assert a named
+    source is fully curated/first-party and can never contain untrusted text,
+    so - fail-closed - any named source counts as external content ingestion.
+    """
     if inp.rag.enabled is None:
         return None
     if inp.rag.enabled is False:
         return False
-    return any(source.strip().casefold() in _UNTRUSTED_SOURCES for source in inp.rag.sources)
+    if not inp.rag.sources:
+        return None  # enabled, but no source named - can't tell, ask
+    return True
 
 
 def to_context(inp: AssessmentInput) -> AssessmentContext:

@@ -31,7 +31,7 @@ from app.models.assessment import (
     UntrustedSafeTestProposal,
 )
 from app.models.knowledge import Classification
-from app.models.policy_outcome import PolicyStop
+from app.models.policy_outcome import PolicyOutcome, PolicyStop, stop
 from app.models.retrieval import RetrievedChunk
 from app.models.risk import Finding, FindingStatus
 from app.policy.safe_test import load_safe_test_templates, validate_safe_test
@@ -77,6 +77,21 @@ def assess(
     settings = settings or Settings.from_env()
     if safe_tests is None:
         safe_tests = load_safe_test_templates(settings.safe_tests_root)
+
+    # SKOS-ADV-06 / Codex#1 (2026-09-11, round 2): load_rules() rejects an
+    # empty/missing rules root, but a caller using this library API directly
+    # (RuleCatalogue() with no rules loaded - a config/wiring mistake) bypassed
+    # that gate entirely: zero findings -> false PASS, human_review_required
+    # False. Fail closed the same way a tampered index does (PolicyStop),
+    # rather than silently evaluating against nothing.
+    if not catalogue.rules:
+        raise PolicyStop(
+            stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "rule-catalogue",
+                "rule catalogue is empty - refusing to assess against zero rules",
+            )
+        )
 
     context = to_context(inp)
     facts = build_facts(context)

@@ -17,6 +17,7 @@ VULNERABLE = [
     "V-002-rag-delete-tool-no-approval",
     "V-003-persistent-memory-untrusted",
     "V-004-env-secret-readable",
+    "V-005-unlisted-rag-source-untrusted-memory",
 ]
 SAFE = [
     "S-001-prompt-only",
@@ -123,6 +124,26 @@ def test_findings_carry_evidence(
     for finding in result.findings:
         assert finding.evidence
         assert finding.reasoning_summary
+
+
+def test_adv05_rag_source_not_on_the_old_denylist_still_flags_mem001(
+    load_assessment: Loader, catalogue: RuleCatalogue, settings: Settings
+) -> None:
+    """Regression for SKOS-ADV-05 (Antigravity, round 2, 2026-09-11), reproduced
+    close to the reviewer's own PoC: RAG enabled with source names that were
+    never on the old fixed 10-item deny-list (_UNTRUSTED_SOURCES), combined
+    with persistent memory. Before the fix this settled on PASS with zero
+    findings and human_review_required=False; MEM-001 must fire."""
+    result = assess_deterministic(
+        load_assessment("V-005-unlisted-rag-source-untrusted-memory"),
+        catalogue,
+        settings=settings,
+    )
+    by_id = {f.risk_id: f for f in result.findings}
+    assert "MEM-001" in by_id
+    assert by_id["MEM-001"].status in {FindingStatus.FAIL, FindingStatus.WARN}
+    assert result.overall_status is not OverallStatus.PASS
+    assert result.human_review_required is True
 
 
 def test_adv01_unrecognized_tool_permission_never_silently_passes(

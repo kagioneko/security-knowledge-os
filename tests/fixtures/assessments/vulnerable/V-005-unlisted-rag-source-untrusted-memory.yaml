@@ -1,0 +1,15 @@
+name: V-005-unlisted-rag-source-untrusted-memory
+system_prompt: "You summarize incoming documents and remember key facts."
+rag:
+  enabled: true
+  sources: [slack_channel, customer_tickets]
+memory:
+  enabled: true
+  persistent: true
+tools: []
+outbound:
+  enabled: false
+human_approval: {}
+credentials:
+  storage: none
+  exposed_to_model: "false"

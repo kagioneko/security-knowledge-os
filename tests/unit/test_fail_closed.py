@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from app.config import Mode, Settings
-from app.models.assessment import SafeTest, SafeTestEnvironment
+from app.models.assessment import AssessmentInput, SafeTest, SafeTestEnvironment
 from app.models.knowledge import Classification
 from app.models.policy_outcome import PolicyOutcome, PolicyStop
 from app.policy.classification import PolicyBlocked, assert_indexable
@@ -23,6 +24,25 @@ from app.storage.integrity import verify_chunk_hashes
 def test_classification_gate_fails_closed_on_secret() -> None:
     with pytest.raises(PolicyBlocked):
         assert_indexable(Classification.SECRET)
+
+
+def test_empty_catalogue_fails_closed_not_false_pass(
+    load_assessment: Callable[[str], AssessmentInput],
+) -> None:
+    """Regression for SKOS-ADV-06 / Codex#1 (round 2, 2026-09-11): load_rules()
+    rejects an empty/missing rules root, but assess() itself did not - a
+    caller using the library API directly with RuleCatalogue() (a wiring
+    mistake, zero rules loaded) got a silent PASS, human_review_required=False,
+    instead of a refusal."""
+    empty_catalogue = RuleCatalogue()
+    assert empty_catalogue.rules == []
+    with pytest.raises(PolicyStop) as exc:
+        assess(
+            load_assessment("S-001-prompt-only"),
+            empty_catalogue,
+            settings=Settings(mode=Mode.PRIVATE),
+        )
+    assert exc.value.decision.outcome is PolicyOutcome.POLICY_BLOCKED
 
 
 def test_human_gate_fails_closed_on_unknown_action() -> None:

@@ -17,9 +17,24 @@ def test_untrusted_rag_source_marks_external_ingestion(load_assessment: Loader) 
     assert ctx.external_content_ingestion is True
 
 
-def test_trusted_only_rag_is_not_external_ingestion(load_assessment: Loader) -> None:
+def test_any_named_rag_source_marks_external_ingestion(load_assessment: Loader) -> None:
+    """Regression for SKOS-ADV-05 (Antigravity, round 2, 2026-09-11): a named
+    source used to be checked against a fixed DENY-list of "known untrusted"
+    names, so an unlisted-but-still-external source (or, as here, a source
+    the fixture's author simply called "internal_docs") evaluated to False -
+    fail-open. There is no schema field to positively assert a source is
+    first-party/curated, so any named source now means ingestion of content
+    the system did not author, regardless of what it's called."""
     ctx = to_context(load_assessment("S-002-rag-trusted-no-actions"))
-    assert ctx.external_content_ingestion is False
+    assert ctx.external_content_ingestion is True
+
+
+def test_rag_enabled_with_no_named_source_is_indeterminate(load_assessment: Loader) -> None:
+    from app.models.assessment import AssessmentInput, RagInput
+
+    inp = AssessmentInput(name="t", rag=RagInput(enabled=True, sources=[]))
+    ctx = to_context(inp)
+    assert ctx.external_content_ingestion is None
 
 
 def test_disabled_memory_makes_persistence_false_not_none(load_assessment: Loader) -> None:
