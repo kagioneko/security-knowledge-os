@@ -206,6 +206,35 @@ def test_reindex_rejects_a_foreign_host_header(
     assert resp.status_code == 403
 
 
+def test_reindex_rejects_cross_origin_csrf_with_a_legitimate_host(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for SKOS-ADV-09 / Codex#3 (round 2, 2026-09-11): the Host
+    header names the DESTINATION the client is connecting to, which is always
+    correct/local for a request that actually reaches this loopback service -
+    it does not identify who INITIATED the request. A cross-origin POST from
+    an attacker's page (Origin: https://attacker.example) still carries a
+    perfectly legitimate Host header; only Origin (or Referer) reveals it."""
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(REPO / "tests" / "fixtures" / "corpus_alt"))
+    monkeypatch.setenv("SKOS_DB_PATH", str(tmp_path / "idx.sqlite"))
+    resp = client.post(
+        "/v1/knowledge/reindex",
+        headers={"Origin": "https://attacker.example"},  # Host stays "testserver"
+    )
+    assert resp.status_code == 403
+
+
+def test_reindex_allows_a_legitimate_same_origin_request(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(REPO / "tests" / "fixtures" / "corpus_alt"))
+    monkeypatch.setenv("SKOS_DB_PATH", str(tmp_path / "idx.sqlite"))
+    resp = client.post(
+        "/v1/knowledge/reindex", headers={"Origin": "http://testserver"}
+    )
+    assert resp.status_code == 200
+
+
 def test_store_is_bounded_and_evicts_oldest() -> None:
     """Regression for Codex cross-review finding #10 (2026-09-11): _STORE had
     no size bound at all."""

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict
@@ -65,8 +66,37 @@ def _store_put(assessment_id: str, entry: tuple[AssessmentInput, AssessmentRepor
 _ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "testserver"}
 
 
+def _hostname_only(value: str) -> str:
+    """Strip a port (and IPv6 brackets) from a Host/Origin/Referer authority."""
+    value = value.strip()
+    if value.startswith("["):
+        return value[1:].split("]", 1)[0]
+    head, sep, tail = value.rpartition(":")
+    return head if sep and tail.isdigit() else value
+
+
 def _require_local_origin(request: Request) -> None:
-    host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
+    """ADV-09 / Codex#3 (round 2, 2026-09-11): the original check inspected
+    only the Host header. Host names the DESTINATION the client is connecting
+    to - for a request routed to this loopback service, Host is always
+    "localhost"/"127.0.0.1" regardless of who initiated it. Origin (or,
+    failing that, Referer) names the PAGE that initiated the request, which is
+    what actually distinguishes "this app called itself" from "a page on
+    https://attacker.example made a cross-origin POST that happened to land
+    here" - the real CSRF vector. Only a client that sends neither header
+    (curl, httpx, this app's own scripts - never a browser navigation/fetch
+    doing a real cross-origin request) falls back to the Host check.
+    """
+    for header in ("origin", "referer"):
+        value = request.headers.get(header)
+        if value:
+            authority = urlsplit(value).netloc
+            if _hostname_only(authority) not in _ALLOWED_HOSTS:
+                raise HTTPException(
+                    status_code=403, detail="this endpoint only serves local clients"
+                )
+            return
+    host = _hostname_only(request.headers.get("host") or "")
     if host not in _ALLOWED_HOSTS:
         raise HTTPException(status_code=403, detail="this endpoint only serves local clients")
 
