@@ -30,7 +30,8 @@ def test_reindex_from_scratch(tmp_path: Path, corpus_alt_root: Path) -> None:
     assert report.old_revision is None
     assert report.new_revision is not None
     assert _revision(db) == report.new_revision
-    assert not (tmp_path / "idx.sqlite.staging").exists()
+    assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
+    assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
 
 
 def test_reindex_replaces_and_reports_old_revision(tmp_path: Path, corpus_alt_root: Path) -> None:
@@ -54,7 +55,8 @@ def test_reindex_fails_closed_and_keeps_the_old_index(
     assert not bad.ok
     assert bad.decision.outcome is PolicyOutcome.POLICY_BLOCKED
     assert _revision(db) == good_revision  # existing index untouched
-    assert not (tmp_path / "idx.sqlite.staging").exists()
+    assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
+    assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
 
 
 def test_reindex_from_a_missing_root_fails_closed_and_keeps_the_old_index(
@@ -73,7 +75,83 @@ def test_reindex_from_a_missing_root_fails_closed_and_keeps_the_old_index(
     assert not bad.ok
     assert bad.decision.outcome is PolicyOutcome.POLICY_BLOCKED
     assert _revision(db) == good_revision  # existing index untouched, NOT emptied
-    assert not (tmp_path / "idx.sqlite.staging").exists()
+    assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
+    assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
+
+
+def test_reindex_restores_previous_index_on_post_swap_failure(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex cross-review finding #3 / Antigravity B6.2
+    (2026-09-11): a failed post-swap integrity check used to leave the freshly
+    (and now known-bad) swapped-in index live, with the previous good index
+    already gone - reindex_atomic reported POLICY_BLOCKED but the system was
+    left serving a broken index. The previous index must be restored.
+
+    Uses a second corpus with genuinely different content (not just a second
+    build of the same corpus) so the revision left in db afterwards can only
+    match good_revision if it was actually restored, not by coincidence."""
+    import shutil
+
+    import app.retrieval.index as index_module
+
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    good_revision = good.new_revision
+    assert _revision(db) == good_revision
+
+    corpus2 = tmp_path / "corpus2"
+    shutil.copytree(corpus_alt_root, corpus2)
+    ku = next(corpus2.glob("public/**/*.md"))
+    ku.write_text(ku.read_text(encoding="utf-8").replace("0.1", "0.2"), encoding="utf-8")
+
+    class _FakeStop:
+        is_allowed = False
+        reasons = ["simulated post-swap corruption"]
+
+    original = index_module.verify_chunk_hashes
+    calls = {"n": 0}
+
+    def _flaky(conn):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 2:  # 1st call = staging check (let it pass); 2nd = post-swap
+            return _FakeStop()
+        return original(conn)
+
+    index_module.verify_chunk_hashes = _flaky  # type: ignore[assignment]
+    try:
+        bad = reindex_atomic(corpus2, db)
+    finally:
+        index_module.verify_chunk_hashes = original  # type: ignore[assignment]
+
+    assert not bad.ok
+    assert bad.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert bad.new_revision != good_revision  # the *attempted* new content really differed
+    assert _revision(db) == good_revision  # but db was restored, not left on the bad content
+    assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
+    assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
+
+
+def test_concurrent_reindex_calls_do_not_corrupt_or_collide(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Codex cross-review finding #3 (2026-09-11): two reindex_atomic() calls
+    sharing a fixed staging path could unlink() each other's in-progress file.
+    Run several concurrently against the same db_path (thread pool - flock and
+    file I/O both release the GIL) and require every call to finish cleanly
+    with the index left in a valid, readable state and no leftover staging/
+    backup files."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    db = tmp_path / "idx.sqlite"
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        reports = list(pool.map(lambda _: reindex_atomic(corpus_alt_root, db), range(5)))
+
+    assert all(r.ok for r in reports), [r.decision.reasons for r in reports]
+    assert _revision(db) is not None
+    assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
+    assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
 
 
 def test_reindex_signature_takes_no_content() -> None:

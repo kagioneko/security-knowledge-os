@@ -6,10 +6,13 @@ later it can point at ``active/knowledge/`` populated by the Pack Manager.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import BaseModel, computed_field
 
@@ -138,10 +141,32 @@ def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexRe
 
     This never changes knowledge *content* - it only re-derives the FTS index.
     classification + integrity are verified before the swap; on any failure the
-    existing index is left untouched (no partial update).
+    existing index is left untouched (no partial update). Serialized across
+    concurrent callers (same or different process) via an flock on a sibling
+    ``.lock`` file, and the previous index is restored if the post-swap
+    integrity check fails (Codex cross-review finding #3 / Antigravity B6.2,
+    2026-09-11).
     """
     knowledge_root = Path(knowledge_root)
     db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = db_path.with_suffix(db_path.suffix + ".lock")
+
+    with open(lock_path, "a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            return _reindex_atomic_locked(knowledge_root, db_path)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def _cleanup(*paths: Path) -> None:
+    for p in paths:
+        with contextlib.suppress(OSError):  # best-effort - never let cleanup itself raise
+            p.unlink(missing_ok=True)
+
+
+def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport:
     old_revision = _current_revision(db_path)
 
     # 1. knowledge must validate clean (no ERROR-level issues)
@@ -157,10 +182,15 @@ def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexRe
             old_revision=old_revision,
         )
 
-    # 2. build into a staging database
-    staging = db_path.with_suffix(db_path.suffix + ".staging")
-    if staging.exists():
-        staging.unlink()
+    # 2. build into a per-call, uniquely-named staging database. A unique name
+    # (not the old fixed "<db>.staging") means no exists()-then-unlink() race
+    # with another caller and no risk of deleting an unrelated file at a
+    # predictable path; the flock above still serializes callers, but this
+    # holds even without it.
+    unique = f"{os.getpid()}-{uuid4().hex[:8]}"
+    staging = db_path.with_suffix(db_path.suffix + f".staging.{unique}")
+    backup = db_path.with_suffix(db_path.suffix + f".bak.{unique}")
+
     try:
         build = build_index(knowledge_root, staging)
 
@@ -174,32 +204,45 @@ def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexRe
             conn.close()
         if not integrity.is_allowed:
             raise _ReindexAbort(f"staging integrity check failed: {integrity.reasons}")
-
-        # 4. atomic swap, then re-verify the live index
-        os.replace(staging, db_path)
-        conn = connect(db_path, read_only=True)
-        try:
-            post = verify_chunk_hashes(conn)
-        finally:
-            conn.close()
-        if not post.is_allowed:
-            return ReindexReport(
-                decision=stop(
-                    PolicyOutcome.POLICY_BLOCKED,
-                    "reindex",
-                    f"post-swap integrity check failed: {post.reasons}",
-                ),
-                old_revision=old_revision,
-                new_revision=build.knowledge_revision,
-            )
-    except _ReindexAbort as abort:
-        if staging.exists():
-            staging.unlink()
+    except (_ReindexAbort, OSError) as abort:
+        # any failure before the swap - including an unexpected OSError while
+        # building, not just our own _ReindexAbort - leaves db_path untouched.
+        _cleanup(staging)
         return ReindexReport(
             decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", str(abort)),
             old_revision=old_revision,
         )
 
+    # 4. publish: move the current index aside (if any) instead of discarding
+    # it, so a failed post-swap check can restore it rather than leaving a
+    # corrupt/empty index live.
+    had_existing = db_path.exists()
+    if had_existing:
+        os.replace(db_path, backup)
+    os.replace(staging, db_path)
+
+    conn = connect(db_path, read_only=True)
+    try:
+        post = verify_chunk_hashes(conn)
+    finally:
+        conn.close()
+
+    if not post.is_allowed:
+        if had_existing:
+            os.replace(backup, db_path)  # restore - never leave a broken index live
+        else:
+            _cleanup(db_path)
+        return ReindexReport(
+            decision=stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "reindex",
+                f"post-swap integrity check failed: {post.reasons}; previous index restored",
+            ),
+            old_revision=old_revision,
+            new_revision=build.knowledge_revision,
+        )
+
+    _cleanup(backup)
     return ReindexReport(
         decision=allow("reindex"),
         old_revision=old_revision,
