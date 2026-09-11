@@ -95,6 +95,10 @@ def load_safe_test_templates(root: Path | str) -> dict[str, SafeTest]:
     root = Path(root)
     templates: dict[str, SafeTest] = {}
     for path in sorted(root.rglob("*.yaml")):
+        if path.is_symlink():
+            # Codex cross-review finding #2 (2026-09-11): consistent confinement
+            # across all three loaders (knowledge/rules/safe-tests).
+            raise SafeTestLoadError(f"{path}: symlinked safe-test files are not allowed")
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         try:
             test = SafeTest.model_validate(raw)

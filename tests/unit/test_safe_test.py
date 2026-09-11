@@ -3,11 +3,18 @@ LLM proposal is never promoted to an executable test automatically."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.models.assessment import SafeTest, SafeTestEnvironment, UntrustedSafeTestProposal
 from app.models.policy_outcome import PolicyOutcome
-from app.policy.safe_test import promote_proposal, validate_safe_test
+from app.policy.safe_test import (
+    SafeTestLoadError,
+    load_safe_test_templates,
+    promote_proposal,
+    validate_safe_test,
+)
 
 
 def _base(**over: object) -> SafeTest:
@@ -84,3 +91,20 @@ def test_proposal_schema_has_no_executable_fields() -> None:
         "idea",
         "origin",
     }
+
+
+def test_symlinked_safe_test_template_is_rejected(tmp_path: Path) -> None:
+    """Codex cross-review finding #2 (2026-09-11): confinement must be
+    consistent across knowledge/rule/safe-test loaders."""
+    real = tmp_path / "outside.yaml"
+    real.write_text(
+        "id: ST-X-006\ntitle: t\nrisk_id: PI-003\norigin: template\n"
+        "environment: [sandbox]\nscope: s\nsteps: [a]\nsuccess_criteria: c\n"
+        "requires_human_approval: true\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "safe_tests"
+    root.mkdir()
+    (root / "linked.yaml").symlink_to(real)
+    with pytest.raises(SafeTestLoadError, match="symlink"):
+        load_safe_test_templates(root)

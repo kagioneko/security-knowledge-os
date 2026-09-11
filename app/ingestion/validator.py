@@ -134,6 +134,35 @@ def validate_file(path: Path, knowledge_root: Path) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     location = str(path)
 
+    # --- containment (decision A1 / Codex cross-review finding #2, 2026-09-11) #
+    # Checked BEFORE reading any content. A symlinked file is rejected outright
+    # regardless of where it points (it could resolve to an in-root file with a
+    # DIFFERENT declared classification, which the directory check below cannot
+    # catch since it trusts the resolved target's own front matter). A file
+    # whose real (resolved) location is outside the root is rejected too. Both
+    # used to be only a WARNING and the file was still loaded into the corpus -
+    # a classification/confinement bypass.
+    if path.is_symlink():
+        return [
+            ValidationIssue(
+                Level.ERROR,
+                "symlink-not-allowed",
+                "Knowledge Unit files must be plain files, not symlinks (a symlink "
+                "can point outside the knowledge root or at a differently "
+                "classified file)",
+                location,
+            )
+        ]
+    if _relative_posix(path, knowledge_root) is None:
+        return [
+            ValidationIssue(
+                Level.ERROR,
+                "outside-root",
+                f"file is not under the knowledge root {knowledge_root}",
+                location,
+            )
+        ]
+
     try:
         front_matter, body = read_markdown(path)
     except FrontMatterError as exc:
@@ -162,18 +191,12 @@ def validate_file(path: Path, knowledge_root: Path) -> list[ValidationIssue]:
         )
         return issues
 
+    # containment was already enforced above (hard error, before any read); rel
+    # is guaranteed non-None here.
     rel = _relative_posix(path, knowledge_root)
+    assert rel is not None
     expected = expected_relative_dir(model.classification)
-    if rel is None:
-        issues.append(
-            ValidationIssue(
-                Level.WARNING,
-                "outside-root",
-                f"file is not under the knowledge root {knowledge_root}",
-                location,
-            )
-        )
-    elif not (rel == f"{expected}/{path.name}" or rel.startswith(f"{expected}/")):
+    if not (rel == f"{expected}/{path.name}" or rel.startswith(f"{expected}/")):
         issues.append(
             ValidationIssue(
                 Level.ERROR,

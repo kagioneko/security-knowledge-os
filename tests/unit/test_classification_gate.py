@@ -62,6 +62,49 @@ def test_mislabeled_public_ku_outside_public_dir_is_error(
     assert any(i.code == "wrong-directory" and i.level is Level.ERROR for i in issues)
 
 
+# --- Codex cross-review finding #2 (2026-09-11): confinement must be checked
+# BEFORE any read, and must be a hard ERROR (it used to be a WARNING and the
+# file was still loaded into the corpus).
+
+def test_symlinked_ku_is_a_hard_error(tmp_path: Path, corpus_alt_root: Path) -> None:
+    real_target = next(corpus_alt_root.glob("public/**/*.md"))
+    root = tmp_path / "knowledge"
+    (root / "public" / "prompt-security").mkdir(parents=True)
+    link = root / "public" / "prompt-security" / "evil.md"
+    link.symlink_to(real_target)
+
+    issues = validate_file(link, root)
+    assert has_errors(issues)
+    assert any(i.code == "symlink-not-allowed" and i.level is Level.ERROR for i in issues)
+
+
+def test_symlinked_ku_is_never_loaded_into_the_corpus(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    from app.ingestion.loader import load_corpus
+
+    real_target = next(corpus_alt_root.glob("public/**/*.md"))
+    root = tmp_path / "knowledge"
+    (root / "public" / "prompt-security").mkdir(parents=True)
+    link = root / "public" / "prompt-security" / "evil.md"
+    link.symlink_to(real_target)
+
+    report = load_corpus(root)
+    assert report.units == []
+    assert any("evil.md" in path for path, _ in report.skipped)
+
+
+def test_out_of_root_ku_is_a_hard_error(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.md"
+    outside.write_text("id: X\n", encoding="utf-8")
+    root = tmp_path / "knowledge"
+    (root / "public" / "prompt-security").mkdir(parents=True)
+
+    issues = validate_file(outside, root)
+    assert has_errors(issues)
+    assert any(i.code == "outside-root" and i.level is Level.ERROR for i in issues)
+
+
 @pytest.mark.parametrize(
     ("classification", "mode", "allow_confidential", "expected"),
     [

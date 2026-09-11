@@ -104,3 +104,17 @@ def test_empty_rules_root_is_rejected(tmp_path: Path) -> None:
     root.mkdir()
     with pytest.raises(RuleLoadError, match="no rule files"):
         load_rules(root)
+
+
+def test_symlinked_rule_file_is_rejected(tmp_path: Path) -> None:
+    """Codex cross-review finding #2 (2026-09-11): confinement must be
+    consistent across knowledge/rule/safe-test loaders."""
+    real = tmp_path / "outside.yaml"
+    real.write_text(
+        "id: X-006\ntitle: t\ncategory: agent-security\nseverity: low\n", encoding="utf-8"
+    )
+    root = tmp_path / "rules"
+    root.mkdir()
+    (root / "linked.yaml").symlink_to(real)
+    with pytest.raises(RuleLoadError, match="symlink"):
+        load_rules(root)

@@ -99,6 +99,11 @@ def load_rules(rules_root: Path | str) -> RuleCatalogue:
     seen: dict[str, Path] = {}
 
     for path in sorted(rules_root.rglob("*.yaml")):
+        if path.is_symlink():
+            # Codex cross-review finding #2 (2026-09-11): consistent confinement
+            # across all three loaders (knowledge/rules/safe-tests) - a symlink
+            # could point outside rules_root at an arbitrary file.
+            raise RuleLoadError(f"{path}: symlinked rule files are not allowed")
         try:
             raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         except yaml.YAMLError as exc:
