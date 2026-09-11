@@ -80,8 +80,30 @@ def chunks_for_unit(unit: LoadedUnit) -> list[Chunk]:
     return chunks
 
 
+class IndexBuildError(Exception):
+    """The knowledge root failed validation; refusing to build/write an index."""
+
+
 def build_index(knowledge_root: Path | str, db_path: Path | str) -> IndexBuildReport:
     knowledge_root = Path(knowledge_root)
+    # Codex cross-review finding #5 (round 2, 2026-09-11): reindex_atomic()
+    # checks validate_tree() for a missing root before ever calling
+    # build_index() - but build_index() itself never checked, so any DIRECT
+    # caller (scripts/build_index.py, a library user) bypassed the gate
+    # entirely. build_index("README.md", db) - a file, not a directory -
+    # used to succeed with zero units/chunks and no reported skips, silently
+    # overwriting db_path with an empty index.
+    #
+    # This checks ONLY "is knowledge_root a directory", not "zero ERROR-level
+    # issues anywhere in the tree": load_corpus() is deliberately
+    # skip-and-continue for per-file problems (a secret-classified file, one
+    # invalid unit) so the REST of a real corpus still indexes - that broader,
+    # stricter "must be provably clean" bar belongs to reindex_atomic(), which
+    # already enforces it before it ever calls this function.
+    if not knowledge_root.is_dir():
+        raise IndexBuildError(
+            f"knowledge root does not exist or is not a directory: {knowledge_root}"
+        )
     load = load_corpus(knowledge_root)
     revision = compute_knowledge_revision(load.units)
 
@@ -205,7 +227,7 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
             conn.close()
         if not integrity.is_allowed:
             raise _ReindexAbort(f"staging integrity check failed: {integrity.reasons}")
-    except (_ReindexAbort, OSError) as abort:
+    except (_ReindexAbort, IndexBuildError, OSError) as abort:
         # any failure before the swap - including an unexpected OSError while
         # building, not just our own _ReindexAbort - leaves db_path untouched.
         _cleanup(staging)

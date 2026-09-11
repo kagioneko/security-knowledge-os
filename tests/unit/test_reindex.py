@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.models.policy_outcome import PolicyOutcome
-from app.retrieval.index import reindex_atomic
+from app.retrieval.index import IndexBuildError, build_index, reindex_atomic
 from app.storage.db import connect
 from app.storage.repository import ChunkRepository
 
@@ -186,6 +188,17 @@ def test_concurrent_reindex_calls_do_not_corrupt_or_collide(
     assert _revision(db) is not None
     assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
     assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
+
+
+def test_build_index_rejects_a_file_as_root(tmp_path: Path) -> None:
+    """Regression for Codex cross-review finding #5 (round 2, 2026-09-11),
+    reproduced exactly as reported: build_index() given a FILE (not a
+    directory) as knowledge_root used to succeed with zero units/chunks and
+    no reported skips - a typo'd root would silently write an empty index."""
+    a_file = tmp_path / "README.md"
+    a_file.write_text("not a knowledge root", encoding="utf-8")
+    with pytest.raises(IndexBuildError, match="not a directory"):
+        build_index(a_file, tmp_path / "idx.sqlite")
 
 
 def test_reindex_signature_takes_no_content() -> None:

@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings  # noqa: E402
-from app.retrieval.index import build_index  # noqa: E402
+from app.retrieval.index import IndexBuildError, build_index  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,11 +27,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default=settings.db_path, type=Path, help="index database path")
     args = parser.parse_args(argv)
 
-    if not args.root.exists():
-        print(f"knowledge root not found: {args.root}", file=sys.stderr)
+    # Codex cross-review finding #5 (round 2, 2026-09-11): exists() accepts a
+    # plain FILE as "root" too (e.g. a typo'd --root pointing at README.md);
+    # is_dir() is the actual requirement.
+    if not args.root.is_dir():
+        print(f"knowledge root does not exist or is not a directory: {args.root}", file=sys.stderr)
         return 2
 
-    report = build_index(args.root, args.db)
+    try:
+        report = build_index(args.root, args.db)
+    except IndexBuildError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     print(f"knowledge_root : {report.knowledge_root}")
     print(f"db_path        : {report.db_path}")
     print(f"units_indexed  : {report.units_indexed}")
