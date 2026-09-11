@@ -41,6 +41,7 @@ from app.reviewer.evidence import available_evidence
 from app.reviewer.facts import build_facts
 from app.reviewer.llm_review import (
     LLMReviewResult,
+    degraded_review_finding,
     observations_to_findings,
     run_llm_review,
 )
@@ -110,6 +111,9 @@ def assess(
         retrieved=retrieved,
     )
     llm_findings = observations_to_findings(review.observations)
+    degraded = degraded_review_finding(review)
+    if degraded is not None:
+        llm_findings.append(degraded)
     findings = merge_findings(rule_findings, llm_findings)
 
     missing = build_missing_information(evaluations)

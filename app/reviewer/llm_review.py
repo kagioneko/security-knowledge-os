@@ -189,3 +189,41 @@ def observations_to_findings(observations: ReviewerObservations) -> list[Finding
             )
         )
     return findings
+
+
+def degraded_review_finding(result: LLMReviewResult) -> Finding | None:
+    """Codex cross-review finding #8 (2026-09-11): a requested-but-failed LLM
+    review (``LLM_PARSE_ERROR``, after the repair attempt) used to vanish -
+    ``review.observations`` stayed empty, so no ``LLM-OBS-*`` finding was added
+    and nothing else in the result recorded that assistance was requested and
+    did not happen. An assessment that completed on rule findings alone (e.g.
+    an all-PASS fixture) could therefore report ``PASS`` /
+    ``human_review_required=False`` with zero trace of the failure.
+
+    Surfaced as a normal ``LLM-OBS-00000`` finding (origin='llm', capped at
+    UNKNOWN by the same A8 boundary as any other LLM observation) so it flows
+    through the existing merge / roll-up / human-review machinery instead of
+    needing new plumbing: it pulls ``overall_status`` to at least UNKNOWN and
+    ``human_review_required`` to True, same as any other unresolved finding.
+
+    Returns ``None`` when there was nothing to report (LLM skipped entirely, or
+    it answered successfully) - that is a normal configuration, not a failure.
+    """
+    if result.parse_status is not ParseStatus.LLM_PARSE_ERROR:
+        return None
+    detail = f": {result.error}" if result.error else ""
+    return Finding(
+        risk_id="LLM-OBS-00000",
+        title="LLM-assisted review did not complete",
+        severity=Severity.MEDIUM,
+        status=FindingStatus.UNKNOWN,
+        origin="llm",
+        reasoning_summary=(
+            "an LLM reviewer was configured and invoked, but its output could not be "
+            f"parsed after one repair attempt (LLM_PARSE_ERROR){detail}"
+        ),
+        limitations=[
+            "no LLM observations were produced for this assessment; only the "
+            "deterministic rule findings below were evaluated"
+        ],
+    )
