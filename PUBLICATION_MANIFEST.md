@@ -100,9 +100,17 @@ Safe-test templates (4): `ST-IPI-001`, `ST-MEM-001`, `ST-TOOL-001`, `ST-CRED-001
 29 components — every distribution actually installed in the project `.venv`
 (Codex finding #12 fixed the previous hand-maintained allowlist, which
 silently omitted transitive dependencies). Core install = `pydantic` +
-`pyyaml`; the rest are `[api]`/`[llm]` extras or dev/test-only. All permissive
-(MIT / BSD / Apache-2.0 / MPL-2.0 / PSF-2.0); zero `UNKNOWN`; none conflict
-with Apache-2.0 for a separate work. Full list in `sbom.json`.
+`pyyaml`; the rest are `[api]`/`[llm]` extras or dev/test-only. Zero
+`UNKNOWN` licences. Licences present: MIT, BSD (2/3-Clause), Apache-2.0,
+PSF-2.0 — permissive — plus **`pathspec` under MPL-2.0** (Codex finding #10,
+round 2, 2026-09-11: an earlier draft of this doc said "all permissive",
+which was inaccurate). MPL-2.0 is file-level (weak) copyleft, not permissive,
+but it does not require this Apache-2.0 project to relicense anything — its
+copyleft obligations attach only to `pathspec`'s own source files, and
+`pathspec` is a transitive dependency of `ruff` (a **dev-only** tool; it is
+never imported by, bundled with, or distributed as part of `app/`). None of
+the 29 components conflict with Apache-2.0 distribution of this project.
+Full list in `sbom.json`.
 
 ## §24 evaluation (internal fixtures — not real-world performance)
 

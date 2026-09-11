@@ -69,6 +69,12 @@ def build_sbom() -> dict[str, object]:
     return {
         "bomFormat": "CycloneDX",
         "specVersion": "1.5",
+        # Codex cross-review finding #9 (round 2, 2026-09-11): the CycloneDX
+        # 1.5 schema requires this top-level integer field (the BOM's own
+        # serial/edition number, not a dependency version); a schema-
+        # validating consumer could reject the whole document without it,
+        # despite preflight reporting success.
+        "version": 1,
         "metadata": {
             "timestamp": dt.datetime.now(dt.UTC).isoformat(),
             "component": {

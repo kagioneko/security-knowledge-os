@@ -36,3 +36,13 @@ def test_sbom_components_have_a_version_and_license() -> None:
     for c in sbom["components"]:
         assert c["version"]
         assert c["licenses"][0]["license"].get("name") or c["licenses"][0]["license"].get("id")
+
+
+def test_sbom_has_the_schema_required_top_level_version() -> None:
+    """Regression for Codex cross-review finding #9 (round 2, 2026-09-11): the
+    CycloneDX 1.5 schema requires a top-level integer 'version' field (the
+    BOM's own edition number). It was missing; a schema-validating consumer
+    could reject the document despite preflight reporting success."""
+    sbom = build_sbom()
+    assert sbom.get("version") == 1
+    assert isinstance(sbom["version"], int)
