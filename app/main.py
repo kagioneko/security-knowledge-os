@@ -21,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from app.config import Settings
@@ -39,7 +39,36 @@ from app.storage.db import connect
 
 app = FastAPI(title="Security Knowledge OS", version="0.1.0")
 
+# Codex cross-review finding #10 (2026-09-11): the in-memory store had no size
+# bound at all. Accepted as in-memory for the MVP (spec Section 18, localhost
+# scope), but unbounded growth from repeated /v1/assessments or /answers calls
+# is still a resource-exhaustion vector on its own. Simple FIFO cap - not a
+# full LRU/expiry policy, but it turns "unbounded" into "bounded" cheaply.
+_MAX_STORE_ENTRIES = 5000
 _STORE: dict[str, tuple[AssessmentInput, AssessmentReport]] = {}
+
+
+def _store_put(assessment_id: str, entry: tuple[AssessmentInput, AssessmentReport]) -> None:
+    _STORE[assessment_id] = entry
+    while len(_STORE) > _MAX_STORE_ENTRIES:
+        _STORE.pop(next(iter(_STORE)))  # evict oldest (dict preserves insertion order)
+
+
+# Codex cross-review finding #11 (2026-09-11): /v1/knowledge/reindex accepted
+# requests regardless of Host/Origin - a form-encoded POST from any page could
+# trigger it. The service is documented as loopback/localhost-only (spec
+# Section 18); this makes that assumption an enforced check, not just a
+# deployment note, without requiring authentication for the MVP. "testserver"
+# is Starlette TestClient's own fixed default Host header, not a real,
+# externally-routable hostname - allowing it only enables this app's own test
+# suite, it grants nothing to an actual remote client.
+_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "testserver"}
+
+
+def _require_local_origin(request: Request) -> None:
+    host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
+    if host not in _ALLOWED_HOSTS:
+        raise HTTPException(status_code=403, detail="this endpoint only serves local clients")
 
 
 def _settings() -> Settings:
@@ -78,7 +107,7 @@ def create_assessment(inp: AssessmentInput) -> AssessmentReport:
     settings = _settings()
     report = _run(inp, settings)
     if report.result is not None:
-        _STORE[report.result.assessment_id] = (inp, report)
+        _store_put(report.result.assessment_id, (inp, report))
     return _respond(report)
 
 
@@ -104,6 +133,16 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
     except AnswerValidationError as exc:
         raise HTTPException(status_code=422, detail={"rejected": exc.reasons}) from exc
 
+    # Codex cross-review finding #10 (2026-09-11): patch.is_empty() only catches
+    # "no field set at all" (every field None); a patch that sets a field to a
+    # value that merges to a no-op (e.g. human_approval={}, which .update()s
+    # into the existing dict and changes nothing) passed is_empty() and still
+    # triggered a full re-assessment + a new stored revision every single call
+    # - a free, repeatable cost/storage-growth amplifier. Comparing the merged
+    # input to the original catches every such no-op, not just the empty case.
+    if new_input == original_input:
+        return _respond(original_report)
+
     report = _run(new_input, _settings())
     if report.result is not None:
         prev_revision = (
@@ -111,7 +150,7 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
         )
         report.result.supersedes = assessment_id
         report.result.revision = prev_revision + 1
-        _STORE[report.result.assessment_id] = (new_input, report)
+        _store_put(report.result.assessment_id, (new_input, report))
     return _respond(report)
 
 
@@ -166,11 +205,12 @@ def validate_knowledge_doc(doc: KnowledgeDoc) -> dict[str, Any]:
 
 
 @app.post("/v1/knowledge/reindex", response_model=ReindexReport)
-def reindex() -> ReindexReport:
+def reindex(request: Request) -> ReindexReport:
     """Re-derive the FTS index from the existing verified read-only knowledge root.
 
     This does not accept or change knowledge content. classification + integrity
     are verified before the atomic swap; on failure the existing index is kept."""
+    _require_local_origin(request)
     settings = _settings()
     report = reindex_atomic(settings.knowledge_root, settings.db_path)
     if not report.ok:

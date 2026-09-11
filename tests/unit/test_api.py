@@ -77,6 +77,27 @@ def test_answers_reassesses_and_tracks_history(client: TestClient) -> None:
     assert [h["revision"] for h in history] == [1, 2]
 
 
+def test_answers_noop_merge_does_not_create_a_new_revision(client: TestClient) -> None:
+    """Regression for Codex cross-review finding #10 (2026-09-11): patch.is_empty()
+    only catches every field being None. {"human_approval": {}} sets a field to a
+    non-None value that merges (.update()) to a no-op, so it used to bypass the
+    empty-patch check and trigger a full free re-assessment + new stored revision
+    on every repeated call - a repeatable cost/storage amplifier."""
+    created = client.post(
+        "/v1/assessments", json=_input("U-002-memory-persistence-unspecified")
+    ).json()
+    aid = created["result"]["assessment_id"]
+
+    resp = client.post(f"/v1/assessments/{aid}/answers", json={"human_approval": {}})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["result"]["assessment_id"] == aid  # same assessment returned, not a new one
+    assert body["result"]["revision"] == created["result"]["revision"]
+
+    history = client.get(f"/v1/assessments/{aid}/history").json()
+    assert len(history) == 1  # no new revision was appended
+
+
 def test_answers_rejects_unknown_field(client: TestClient) -> None:
     created = client.post("/v1/assessments", json=_input("S-001-prompt-only")).json()
     aid = created["result"]["assessment_id"]
@@ -160,6 +181,39 @@ def test_reindex_fails_closed_returns_422(
     resp = client.post("/v1/knowledge/reindex")
     assert resp.status_code == 422
     assert resp.json()["detail"]["decision"]["outcome"] == "POLICY_BLOCKED"
+
+
+def test_reindex_rejects_a_foreign_host_header(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex cross-review finding #11 (2026-09-11): the endpoint
+    accepted a request regardless of Host/Origin - a form-encoded POST from any
+    page could trigger it. It is documented as loopback-only; that must be an
+    enforced check."""
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(REPO / "tests" / "fixtures" / "corpus_alt"))
+    monkeypatch.setenv("SKOS_DB_PATH", str(tmp_path / "idx.sqlite"))
+    resp = client.post("/v1/knowledge/reindex", headers={"Host": "attacker.example.com"})
+    assert resp.status_code == 403
+
+
+def test_store_is_bounded_and_evicts_oldest() -> None:
+    """Regression for Codex cross-review finding #10 (2026-09-11): _STORE had
+    no size bound at all."""
+    import app.main as main_module
+
+    original = dict(main_module._STORE)
+    original_max = main_module._MAX_STORE_ENTRIES
+    main_module._STORE.clear()
+    main_module._MAX_STORE_ENTRIES = 3
+    try:
+        for i in range(5):
+            main_module._store_put(f"id-{i}", (object(), object()))  # type: ignore[arg-type]
+        assert len(main_module._STORE) == 3
+        assert set(main_module._STORE) == {"id-2", "id-3", "id-4"}  # oldest 2 evicted
+    finally:
+        main_module._MAX_STORE_ENTRIES = original_max
+        main_module._STORE.clear()
+        main_module._STORE.update(original)
 
 
 def test_no_knowledge_write_endpoint(client: TestClient) -> None:
