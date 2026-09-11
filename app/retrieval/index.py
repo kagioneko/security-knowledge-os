@@ -10,6 +10,7 @@ import contextlib
 import fcntl
 import hashlib
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
@@ -213,19 +214,40 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
             old_revision=old_revision,
         )
 
-    # 4. publish: move the current index aside (if any) instead of discarding
-    # it, so a failed post-swap check can restore it rather than leaving a
-    # corrupt/empty index live.
+    # 4. publish. ADV-08 / Codex#2 (round 2, 2026-09-11): the previous version
+    # moved db_path OUT of the way first (os.replace(db_path, backup)), then
+    # moved staging in - a real window where db_path does not exist at all, so
+    # a concurrent reader (assess() calls take no lock; only reindex_atomic
+    # callers serialize against each other) could see a missing index and
+    # silently skip retrieval. It also was not exception-safe: an OSError
+    # between those two calls, or on the swap itself, could leave db_path
+    # permanently missing with the old content stranded in `backup`.
+    #
+    # Fixed: COPY (not move) the existing index to `backup` - db_path is never
+    # touched until the swap - then publish with a single os.replace(), which
+    # is atomic and always leaves *something* valid at db_path. The whole
+    # publish step is wrapped so any failure restores/cleans up rather than
+    # leaving a stranded backup or a missing index.
     had_existing = db_path.exists()
-    if had_existing:
-        os.replace(db_path, backup)
-    os.replace(staging, db_path)
-
-    conn = connect(db_path, read_only=True)
     try:
-        post = verify_chunk_hashes(conn)
-    finally:
-        conn.close()
+        if had_existing:
+            shutil.copy2(db_path, backup)
+        os.replace(staging, db_path)  # atomic; db_path is never absent
+
+        conn = connect(db_path, read_only=True)
+        try:
+            post = verify_chunk_hashes(conn)
+        finally:
+            conn.close()
+    except OSError as exc:
+        _cleanup(staging, backup)
+        return ReindexReport(
+            decision=stop(
+                PolicyOutcome.POLICY_BLOCKED, "reindex", f"publication failed: {exc}"
+            ),
+            old_revision=old_revision,
+            new_revision=build.knowledge_revision,
+        )
 
     if not post.is_allowed:
         if had_existing:

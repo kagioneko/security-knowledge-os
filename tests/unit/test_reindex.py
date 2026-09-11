@@ -132,6 +132,40 @@ def test_reindex_restores_previous_index_on_post_swap_failure(
     assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
 
 
+def test_reindex_publish_never_leaves_db_path_missing(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for SKOS-ADV-08 / Codex#2 (round 2, 2026-09-11): publish used
+    to move the existing index OUT of the way first (os.replace(db_path,
+    backup)) before moving staging in - a real window where db_path did not
+    exist at all, observable by a concurrent reader. Publish must now be a
+    single atomic os.replace(staging, db_path); the existing index is copied
+    (not moved) to the backup path beforehand, so db_path itself is never
+    touched until the one atomic swap."""
+    import app.retrieval.index as index_module
+
+    db = tmp_path / "idx.sqlite"
+    reindex_atomic(corpus_alt_root, db)  # first build: nothing to observe yet
+    assert db.exists()
+
+    seen_missing = []
+    original_replace = index_module.os.replace
+
+    def _spy(src, dst):  # type: ignore[no-untyped-def]
+        if str(dst) == str(db):
+            seen_missing.append(not db.exists())  # was db_path missing right before?
+        return original_replace(src, dst)
+
+    index_module.os.replace = _spy  # type: ignore[assignment]
+    try:
+        second = reindex_atomic(corpus_alt_root, db)
+    finally:
+        index_module.os.replace = original_replace  # type: ignore[assignment]
+
+    assert second.ok
+    assert seen_missing == [False]  # db_path existed at the moment of the swap
+
+
 def test_concurrent_reindex_calls_do_not_corrupt_or_collide(
     tmp_path: Path, corpus_alt_root: Path
 ) -> None:
