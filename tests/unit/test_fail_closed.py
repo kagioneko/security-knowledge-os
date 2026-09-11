@@ -79,3 +79,48 @@ def test_missing_revision_meta_fails_closed(tmp_path: Path, corpus_root: Path) -
         assert verify_chunk_hashes(conn).outcome is PolicyOutcome.POLICY_BLOCKED
     finally:
         conn.close()
+
+
+def test_truncated_index_with_stale_chunk_count_fails_closed(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex cross-review finding #7 (2026-09-11): an index
+    whose chunks table was emptied (or never fully written) but whose
+    recorded meta.chunk_count still claims the old, larger count used to pass
+    - the hash loop has nothing to check when chunks is empty, and nothing
+    compared the actual row count against what the index claims to contain."""
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        real_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        assert real_count > 0
+        conn.execute("DELETE FROM chunks")
+        # chunks_fts is contentless - 'delete-all' is the correct wipe here too
+        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('delete-all')")
+        conn.commit()
+        # meta.chunk_count still says real_count (untouched) - the lie this test targets
+        decision = verify_chunk_hashes(conn)
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        assert "chunk_count" in " ".join(decision.reasons)
+    finally:
+        conn.close()
+
+
+def test_missing_meta_table_fails_closed_not_a_raw_exception(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex cross-review finding #7 (2026-09-11): a corrupted
+    or partially-written index (a required table missing entirely) used to
+    raise a bare sqlite3.OperationalError instead of a policy decision,
+    breaking the fail-closed contract every caller relies on."""
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        conn.execute("DROP TABLE meta")
+        conn.commit()
+        decision = verify_chunk_hashes(conn)  # must not raise
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    finally:
+        conn.close()
