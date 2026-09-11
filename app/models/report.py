@@ -32,10 +32,27 @@ class AssessmentReport(BaseModel):
 
     @model_validator(mode="after")
     def _check_shape(self) -> AssessmentReport:
-        if self.status is ReportStatus.COMPLETED and self.result is None:
-            raise ValueError("a COMPLETED report must carry a result")
-        if self.status is ReportStatus.POLICY_BLOCKED and self.policy_decision is None:
-            raise ValueError("a POLICY_BLOCKED report must carry a policy_decision")
+        # Codex cross-review finding #14 (2026-09-11): this only checked the
+        # required side of each case ("COMPLETED has a result",
+        # "POLICY_BLOCKED has a decision") - a COMPLETED report carrying a
+        # policy_decision too, or a POLICY_BLOCKED report carrying a result
+        # too (or an ALLOWED-outcome decision, contradicting its own status),
+        # all validated. status must be a true XOR over (result,
+        # policy_decision), matching the module docstring's own contract.
+        if self.status is ReportStatus.COMPLETED:
+            if self.result is None:
+                raise ValueError("a COMPLETED report must carry a result")
+            if self.policy_decision is not None:
+                raise ValueError("a COMPLETED report must not carry a policy_decision")
+        elif self.status is ReportStatus.POLICY_BLOCKED:
+            if self.policy_decision is None:
+                raise ValueError("a POLICY_BLOCKED report must carry a policy_decision")
+            if self.result is not None:
+                raise ValueError("a POLICY_BLOCKED report must not carry a result")
+            if self.policy_decision.is_allowed:
+                raise ValueError(
+                    "a POLICY_BLOCKED report's policy_decision must not be an allowed outcome"
+                )
         return self
 
     @classmethod

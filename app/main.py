@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.config import Settings
 from app.ingestion.validator import Level, validate_markdown
@@ -187,6 +187,11 @@ def get_assessment_report(assessment_id: str) -> Response:
 
 
 class KnowledgeDoc(BaseModel):
+    # Codex cross-review finding #15 (2026-09-11): every other externally-fed
+    # request model (AssessmentInput, AnswerPatch, ...) is extra="forbid";
+    # this one silently discarded unknown fields instead of rejecting them.
+    model_config = ConfigDict(extra="forbid")
+
     content: str
     source: str = "<api>"
 

@@ -59,6 +59,38 @@ def test_report_shape_is_enforced() -> None:
         AssessmentReport(status=ReportStatus.POLICY_BLOCKED)
 
 
+def test_report_shape_xor_is_enforced(
+    load_assessment: Loader, catalogue: RuleCatalogue
+) -> None:
+    """Regression for Codex cross-review finding #14 (2026-09-11): the
+    validator only checked the required side of each case, so a COMPLETED
+    report could also carry a policy_decision, and a POLICY_BLOCKED report
+    could also carry a result or an ALLOWED-outcome decision - all
+    contradicting the module's own documented "status determines exactly one
+    of the two payloads" contract."""
+    from app.models.policy_outcome import PolicyDecision, PolicyOutcome
+
+    completed = build_report(load_assessment("S-001-prompt-only"), catalogue)
+    assert completed.result is not None
+    blocked_decision = PolicyDecision(
+        outcome=PolicyOutcome.POLICY_BLOCKED, subject="test", reasons=["r"]
+    )
+    allowed_decision = PolicyDecision(outcome=PolicyOutcome.ALLOWED, subject="test", reasons=[])
+
+    with pytest.raises(ValueError, match="must not carry a policy_decision"):
+        AssessmentReport(
+            status=ReportStatus.COMPLETED, result=completed.result, policy_decision=blocked_decision
+        )
+    with pytest.raises(ValueError, match="must not carry a result"):
+        AssessmentReport(
+            status=ReportStatus.POLICY_BLOCKED,
+            result=completed.result,
+            policy_decision=blocked_decision,
+        )
+    with pytest.raises(ValueError, match="must not be an allowed outcome"):
+        AssessmentReport(status=ReportStatus.POLICY_BLOCKED, policy_decision=allowed_decision)
+
+
 def test_render_text_covers_both_shapes(
     load_assessment: Loader, catalogue: RuleCatalogue
 ) -> None:

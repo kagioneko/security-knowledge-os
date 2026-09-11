@@ -127,6 +127,16 @@ def test_answers_rejects_bad_permission_value(client: TestClient) -> None:
     assert resp.status_code == 422
 
 
+def test_knowledge_validate_rejects_unknown_fields(client: TestClient) -> None:
+    """Regression for Codex cross-review finding #15 (2026-09-11): KnowledgeDoc
+    silently discarded unknown fields instead of rejecting them, unlike every
+    other externally-fed request model."""
+    resp = client.post(
+        "/v1/knowledge/validate", json={"content": "x", "unknown_field": True}
+    )
+    assert resp.status_code == 422
+
+
 def test_knowledge_validate_is_read_only(client: TestClient) -> None:
     good = "\n".join(
         [
