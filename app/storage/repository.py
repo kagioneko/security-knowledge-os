@@ -44,7 +44,13 @@ class ChunkRepository:
     def rebuild(self, chunks: Iterable[Chunk], knowledge_revision: str) -> int:
         cur = self.conn.cursor()
         cur.execute("DELETE FROM chunks")
-        cur.execute("DELETE FROM chunks_fts")
+        # Codex cross-review finding #6 (2026-09-11): chunks_fts is a
+        # *contentless* FTS5 table (content=''); a plain DELETE against it
+        # raises "cannot DELETE from contentless fts5 table" once it holds any
+        # rows, breaking every rebuild() after the first. 'delete-all' is
+        # FTS5's dedicated special command for wiping a table of any content
+        # mode, without needing the original per-row column values back.
+        cur.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('delete-all')")
         cur.execute("DELETE FROM meta")
 
         count = 0
