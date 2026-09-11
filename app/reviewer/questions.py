@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from app.models.assessment import MissingInformation, Question
 from app.models.reviewer_output import ReviewerObservations
-from app.reviewer.rule_engine import RuleEvaluation
+from app.reviewer.rule_engine import Applicability, RuleEvaluation
 
 _EVIDENCE_PROMPT = {
     "system_prompt": "Provide the system prompt (or confirm there is none).",
@@ -37,7 +37,15 @@ def build_missing_information(
     by_field: dict[str, list[str]] = {}
     prompts: dict[str, str] = {}
     for ev in evaluations:
-        if ev.finding is None:
+        # SKOS-ADV-02 (Antigravity, 2026-09-11): gating on "no finding" used to
+        # drop a rule's undetermined_fields whenever _emit_indeterminate
+        # suppressed the finding for a medium/low rule whose trigger clauses
+        # were ALL undetermined - the operator was then never asked the
+        # clarifying question that could resolve it. NOT_APPLICABLE is the
+        # only case that should be skipped: a rule that definitely does not
+        # apply has nothing useful to ask about, regardless of whether a
+        # finding happened to be emitted.
+        if ev.applicability is Applicability.NOT_APPLICABLE:
             continue
         for key in ev.missing_evidence:
             by_field.setdefault(key, []).append(ev.rule.id)
