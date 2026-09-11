@@ -93,6 +93,28 @@ def test_read_only_connection_cannot_write(tmp_path: Path, corpus_root: Path) ->
         conn.close()
 
 
+def test_read_only_survives_a_hash_in_the_path(tmp_path: Path, corpus_root: Path) -> None:
+    """Regression for Codex cross-review finding #5 (2026-09-11): building the
+    read-only URI as a bare f"file:{db_path}?mode=ro" let a '#' in the path put
+    "?mode=ro" inside the URI *fragment*, which is discarded - AND the path
+    itself gets truncated at '#', so the connection silently opens the WRONG
+    (truncated) path rather than the intended file. Both properties must hold:
+    it opens the real file (content matches) AND write is still refused."""
+    import sqlite3
+
+    db = tmp_path / "idx#with a?weird%name.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db, read_only=True)
+    try:
+        # proves it opened the *intended* file, not a truncated/different one
+        (count,) = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
+        assert count > 0
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("DELETE FROM chunks")
+    finally:
+        conn.close()
+
+
 def test_safe_tests_are_attached_for_flagged_findings(
     load_assessment: Loader, catalogue: RuleCatalogue
 ) -> None:

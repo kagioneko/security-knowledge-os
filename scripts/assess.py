@@ -41,7 +41,12 @@ def main(argv: list[str] | None = None) -> int:
     catalogue = load_rules(args.rules)
     client = get_client(settings)
 
-    conn = connect(args.db) if args.db else None
+    # Codex cross-review finding #5 (2026-09-11): the assessment path must never
+    # write to the knowledge index (every other caller - app/main.py, app/cli.py,
+    # scripts/evaluate.py, reindex_atomic's own verification reads - opens it
+    # read_only=True). This one didn't, and would silently create+write an empty
+    # schema into a not-yet-built --db path instead of treating it as absent.
+    conn = connect(args.db, read_only=True) if args.db and args.db.exists() else None
     try:
         result = assess(inp, catalogue, settings=settings, client=client, index_conn=conn)
     finally:
