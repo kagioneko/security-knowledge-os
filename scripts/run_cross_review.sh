@@ -106,9 +106,14 @@ run_antigravity() {
   # --mode plan keeps it read-only (no edits); --dangerously-skip-permissions is
   # required so headless mode does not auto-deny read tools (grep/find/cat) it
   # cannot prompt for. plan mode bounds the "dangerously": it still cannot write.
+  # --print-timeout: agy's own print-mode wait defaults to 5m regardless of the
+  # outer `timeout "$TIMEOUT"` wrapper - a real audit at --effort high routinely
+  # runs past 5m and was observed returning a "partial output" stub instead of
+  # a verdict (2026-09-11). Match it to $TIMEOUT so agy's own deadline is the
+  # binding one.
   timeout "$TIMEOUT" agy -p "$ANTIGRAVITY_PROMPT" \
     --add-dir "$REPO" --effort high --mode plan --dangerously-skip-permissions \
-    --output-format text 2>&1 | tee -a "$f" || {
+    --print-timeout "${TIMEOUT}s" --output-format text 2>&1 | tee -a "$f" || {
       echo "!! agy failed or timed out (exit $?)" | tee -a "$f"; }
   echo "   done: $f"
 }
