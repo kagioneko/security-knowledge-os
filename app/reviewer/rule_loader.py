@@ -58,9 +58,32 @@ def parse_clause(raw: Any) -> Clause:
     return Clause(field=str(fact_key), op=Operator.EQ, value=literal)
 
 
+def _as_list(value: Any, *, field: str, source: Path) -> list[Any]:
+    # Codex cross-review finding #1 (round 4, 2026-09-12), reproduced exactly
+    # as reported (`conditions: false`, `checks: {}`): iterating a non-list
+    # value that merely happens to be *iterable* (a dict iterates its keys, a
+    # string iterates its characters) silently produces zero or nonsense
+    # clauses instead of an error - and an empty 'all'/'checks' list is
+    # vacuously true, so a malformed rule silently becomes a rule that always
+    # passes rather than one that fails to load.
+    if not isinstance(value, list):
+        raise RuleLoadError(f"{source}: '{field}' must be a list, got {type(value).__name__}")
+    return value
+
+
 def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
     payload = dict(data)
-    conditions = payload.get("conditions", {}) or {}
+    conditions = payload.get("conditions")
+    # Codex cross-review finding #1 (round 4, 2026-09-12): the previous
+    # `payload.get("conditions", {}) or {}` ran the `or {}` fallback BEFORE
+    # the isinstance check below ever saw the raw value - `or` treats any
+    # falsy value (False, 0, "", [], {}) the same as "absent", so
+    # `conditions: false` silently became `{}` and the isinstance(dict) check
+    # a few lines down was checking the ALREADY-COERCED value, never the
+    # author's actual `false`. Absent (None) is now the only case defaulted;
+    # anything else that is not a dict is rejected.
+    if conditions is None:
+        conditions = {}
     # Codex cross-review finding #9 (2026-09-11): RuleConditions has
     # extra="forbid", but it never got the chance to enforce it - this
     # shorthand-conversion step rebuilt 'conditions' from scratch using only
@@ -80,10 +103,19 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
             f" (only {sorted(_CONDITIONS_KEYS)} are allowed)"
         )
     payload["conditions"] = {
-        "all": [parse_clause(c) for c in conditions.get("all", [])],
-        "any": [parse_clause(c) for c in conditions.get("any", [])],
+        "all": [
+            parse_clause(c)
+            for c in _as_list(conditions.get("all", []), field="conditions.all", source=source)
+        ],
+        "any": [
+            parse_clause(c)
+            for c in _as_list(conditions.get("any", []), field="conditions.any", source=source)
+        ],
     }
-    payload["checks"] = [parse_clause(c) for c in payload.get("checks", [])]
+    payload["checks"] = [
+        parse_clause(c)
+        for c in _as_list(payload.get("checks", []), field="checks", source=source)
+    ]
 
     try:
         rule = RiskRule.model_validate(payload)

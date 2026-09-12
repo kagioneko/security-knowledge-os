@@ -71,6 +71,37 @@ def test_bad_operator_is_rejected(tmp_path: Path) -> None:
         load_rules(root)
 
 
+def test_conditions_false_is_rejected_not_silently_emptied(tmp_path: Path) -> None:
+    """Regression for Codex cross-review finding #1 (round 4, 2026-09-12),
+    reproduced exactly as reported: `payload.get("conditions", {}) or {}`
+    treated an explicit `conditions: false` the same as "conditions absent"
+    (both falsy to `or`), silently normalizing it into an empty - vacuously
+    TRUE, since an empty 'all' list always matches - condition set instead
+    of rejecting the malformed value. Omitting `conditions` entirely stays
+    legal (see other tests in this file); an explicit wrong-typed value must
+    not be."""
+    root = _write_rule(
+        tmp_path,
+        "id: X-010\ntitle: t\ncategory: agent-security\nseverity: low\nconditions: false\n",
+    )
+    with pytest.raises(RuleLoadError, match="conditions"):
+        load_rules(root)
+
+
+def test_checks_wrong_type_is_rejected_not_silently_emptied(tmp_path: Path) -> None:
+    """Regression for Codex cross-review finding #1, part 2 (round 4,
+    2026-09-12), reproduced exactly as reported: `checks: {}` iterates an
+    empty dict (zero key/value pairs) instead of being rejected as "not a
+    list" - silently normalizing a malformed `checks` into no checks at
+    all."""
+    root = _write_rule(
+        tmp_path,
+        "id: X-011\ntitle: t\ncategory: agent-security\nseverity: low\nchecks: {}\n",
+    )
+    with pytest.raises(RuleLoadError, match="checks"):
+        load_rules(root)
+
+
 def test_duplicate_rule_id_is_rejected(tmp_path: Path) -> None:
     root = tmp_path / "rules"
     root.mkdir()
