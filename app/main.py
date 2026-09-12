@@ -18,12 +18,13 @@ only re-derives the FTS index from the already-verified read-only knowledge root
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import Settings
 from app.ingestion.validator import Level, validate_markdown
@@ -198,8 +199,16 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
     # and create yet another store entry every time, even though the result
     # is byte-for-byte identical to one already computed. new_input's own
     # canonical JSON is deterministic (pydantic v2 preserves field-declaration
-    # order), so it doubles as the dedup key - no need to hash the raw patch.
-    cache_key = (assessment_id, new_input.model_dump_json())
+    # order), so it doubles as the dedup key.
+    # Codex cross-review finding #3, part 2 (round 3, 2026-09-12): using that
+    # JSON string itself as the dict key meant _ANSWER_CACHE retained a full
+    # copy of every distinct merged input it had ever seen (bounded in COUNT
+    # by _MAX_ANSWER_CACHE_ENTRIES, not in per-entry size). Hashing it first
+    # gives a fixed-size key with the same dedup property.
+    cache_key = (
+        assessment_id,
+        hashlib.sha256(new_input.model_dump_json().encode("utf-8")).hexdigest(),
+    )
     cached_id = _ANSWER_CACHE.get(cache_key)
     if cached_id is not None:
         cached_entry = _STORE.get(cached_id)
@@ -256,7 +265,12 @@ class KnowledgeDoc(BaseModel):
     # this one silently discarded unknown fields instead of rejecting them.
     model_config = ConfigDict(extra="forbid")
 
-    content: str
+    # Codex cross-review finding #2 (round 3, 2026-09-12): unbounded - the
+    # real DoS vector was the YAML parser (fixed with a merge-key ban and its
+    # own size cap in app/ingestion/parser.py), but bounding the whole
+    # request body too is a cheap, independent second layer. Real Knowledge
+    # Unit files are a few KB; this leaves generous headroom.
+    content: str = Field(max_length=200_000)
     source: str = "<api>"
 
 

@@ -189,6 +189,27 @@ def test_knowledge_validate_handles_an_invalid_date_cleanly(client: TestClient) 
     assert resp.json()["valid"] is False
 
 
+def test_knowledge_validate_rejects_deeply_nested_flow_collections(client: TestClient) -> None:
+    """Regression for Codex cross-review finding #2, part 2 (round 3,
+    2026-09-12), reproduced exactly as reported: hundreds of nested
+    flow-style brackets (``[[[...]]]``) drove PyYAML's composer past
+    Python's recursion limit - RecursionError is not a yaml.YAMLError
+    subclass, so this returned an HTTP 500 instead of a clean
+    {valid: false} response."""
+    nested = "x: " + "[" * 700 + "]" * 700
+    resp = client.post("/v1/knowledge/validate", json={"content": f"---\n{nested}\n---\nbody"})
+    assert resp.status_code == 200
+    assert resp.json()["valid"] is False
+
+
+def test_knowledge_validate_rejects_oversized_content(client: TestClient) -> None:
+    """Codex cross-review finding #2, part 3 (round 3, 2026-09-12): the whole
+    request body is now bounded independently of the YAML-specific guards
+    above (which cap the front-matter block, not the full document)."""
+    resp = client.post("/v1/knowledge/validate", json={"content": "x" * 200_001})
+    assert resp.status_code == 422
+
+
 def test_knowledge_validate_is_read_only(client: TestClient) -> None:
     good = "\n".join(
         [
