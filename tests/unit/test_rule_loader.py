@@ -292,6 +292,31 @@ def test_heterogeneous_unknown_condition_keys_do_not_raise_a_raw_typeerror(
         load_rules(root)
 
 
+def test_heterogeneous_shorthand_clause_keys_do_not_raise_a_raw_typeerror() -> None:
+    """Regression for Codex#7 (round 10, 2026-09-13), reproduced exactly as
+    reported: `parse_clause({None: 1, "x": 2})` raised a bare
+    `TypeError: '<' not supported between instances of 'str' and
+    'NoneType'` from the shorthand-clause branch's `sorted(raw)` call - the
+    sibling condition-level problem was fixed in round 9 (Codex#12) but
+    this clause-level path was missed. `raw` is still raw, pre-pydantic
+    YAML here, which can have heterogeneous key types."""
+    with pytest.raises(RuleLoadError, match="shorthand clause"):
+        parse_clause({None: 1, "x": 2})
+
+
+def test_heterogeneous_shorthand_clause_keys_via_load_rules(tmp_path: Path) -> None:
+    """Same as above, reached through load_rules() as Codex also reported
+    ("the same occurs through load_rules() with a null: and string key in
+    one clause")."""
+    root = _write_rule(
+        tmp_path,
+        "id: X-009\ntitle: t\ncategory: agent-security\nseverity: low\n"
+        "conditions:\n  all:\n    - null: true\n      x: true\n",
+    )
+    with pytest.raises(RuleLoadError, match="shorthand clause"):
+        load_rules(root)
+
+
 def test_symlinked_rule_file_is_rejected(tmp_path: Path) -> None:
     """Codex cross-review finding #2 (2026-09-11): confinement must be
     consistent across knowledge/rule/safe-test loaders."""

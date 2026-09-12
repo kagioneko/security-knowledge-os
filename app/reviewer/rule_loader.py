@@ -58,8 +58,17 @@ def parse_clause(raw: Any) -> Clause:
             raise RuleLoadError(f"invalid clause {raw!r}: {exc}") from exc
 
     if len(raw) != 1:
+        # Codex#7 (round 10, 2026-09-13), reproduced exactly as reported: the
+        # equivalent condition-level problem was fixed in round 9 (Codex#12,
+        # see _parse_rule's own comment above) but this clause-level `sorted()`
+        # was missed - `raw` is still raw, pre-pydantic YAML here, which can
+        # have heterogeneous key types (e.g. both `null` and a string), and
+        # plain `sorted()` on a mix of types raises a bare TypeError instead
+        # of this function's typed RuleLoadError. Sorting by each key's
+        # str() representation is always well-defined, regardless of the mix
+        # of types.
         raise RuleLoadError(
-            f"shorthand clause must have exactly one key, got {sorted(raw)}"
+            f"shorthand clause must have exactly one key, got {sorted(raw, key=str)}"
         )
     ((fact_key, literal),) = raw.items()
     return Clause(field=str(fact_key), op=Operator.EQ, value=literal)
