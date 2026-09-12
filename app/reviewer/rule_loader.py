@@ -127,19 +127,27 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
     except ValidationError as exc:
         raise RuleLoadError(f"{source}: invalid rule: {exc}") from exc
 
-    # Codex#3 (round 7, 2026-09-12), reproduced exactly as reported: a rule
-    # with no conditions, no checks, and manual_review=False satisfies the
-    # non-empty-catalogue check but can NEVER produce a finding - assessing
-    # against a catalogue containing only such a rule returned 0 findings,
-    # 0 missing-information, indistinguishable from "nothing worth
-    # reporting" rather than "this rule is a no-op". A rule must have at
-    # least one clause (a trigger condition or a check) to be loadable;
-    # `manual_review=True` with no checks is a legitimate always-flag rule
-    # and is exempted.
-    if not rule.clauses() and not rule.manual_review:
+    # Codex#3 (round 7, 2026-09-12) required `rule.clauses()` (conditions OR
+    # checks) to be non-empty, unless manual_review=True - catching a rule
+    # with NEITHER conditions nor checks. Codex#1 (round 8, 2026-09-12),
+    # reproduced exactly as reported: that check is not tight enough. A rule
+    # with a trigger `conditions` block but empty `checks` and
+    # manual_review=False still has a non-empty `clauses()` (conditions
+    # count) and loaded successfully - but conditions only gate
+    # applicability; `evaluate_rule()` only ever emits a finding from
+    # `checks` or `manual_review`. When such a rule's conditions matched
+    # with evidence fully available, it silently produced zero findings and
+    # a PASS, indistinguishable from "nothing worth reporting" rather than
+    # "this rule is a no-op". A rule must have at least one CHECK (not just
+    # a trigger condition) or manual_review=True to be loadable; see
+    # rules/agent/OUT-001.yaml and rules/agent/TOOL-000.yaml (fixed by this
+    # same round to add manual_review=True) for the two real rules this
+    # caught.
+    if not rule.checks and not rule.manual_review:
         raise RuleLoadError(
-            f"{source} [{rule.id}]: rule has no conditions, checks, or "
-            "manual_review=True - it can never produce a finding"
+            f"{source} [{rule.id}]: rule has no checks or manual_review=True - "
+            "a trigger condition alone never produces a finding, so it can never "
+            "produce a finding"
         )
 
     # Codex#3 (round 7, 2026-09-12): RiskRule.id's pattern happens to also

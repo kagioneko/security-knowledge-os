@@ -11,6 +11,10 @@ UNKNOWN or any required evidence was missing:
     a safety check is UNKNOWN    -> UNKNOWN
     all checks TRUE + manual_review -> WARN
     all checks TRUE             -> PASS  (suppressed if the rule has no checks)
+    no checks, no manual_review -> FAIL (high/critical) or WARN
+        (defense-in-depth only: rule_loader.py rejects this shape at load
+        time - Codex#1, round 8, 2026-09-12 - so this only fires for a
+        RiskRule built directly rather than via load_rules())
 """
 
 from __future__ import annotations
@@ -156,6 +160,28 @@ def evaluate_rule(
         )
     elif rule.checks:
         ev.finding = _finding(rule, FindingStatus.PASS, "all deterministic safety checks passed")
+    else:
+        # Codex#1 (round 8, 2026-09-12), reproduced exactly as reported:
+        # `rule_loader.py` rejects a rule with no checks and
+        # manual_review=False at load time, so this branch should be
+        # unreachable for anything loaded via `load_rules()` - but
+        # `RiskRule` can also be constructed directly (as this module's own
+        # tests do), bypassing that loader guard entirely. Reaching this
+        # point means conditions TRIGGERED with evidence fully available and
+        # the rule defines no check and no manual_review - there is nothing
+        # left to determine PASS from, so silently emitting nothing (the
+        # prior behaviour) let a matched risk condition disappear as an
+        # unlogged PASS. Fail closed the same way a failed check would,
+        # rather than staying silent.
+        status = FindingStatus.FAIL if rule.severity in _SEVERE else FindingStatus.WARN
+        ev.finding = _finding(
+            rule,
+            status,
+            "trigger conditions matched and the rule defines no check or manual_review "
+            "to further verify a mitigation",
+            limitations=["rule has no deterministic check; the condition itself is the risk"],
+            residual_risk="no automated check verifies any mitigation for this rule",
+        )
 
     return ev
 

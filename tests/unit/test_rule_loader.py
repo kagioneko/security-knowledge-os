@@ -45,7 +45,8 @@ def test_unknown_fact_is_rejected(tmp_path: Path) -> None:
     root = _write_rule(
         tmp_path,
         "id: X-001\ntitle: t\ncategory: agent-security\nseverity: low\n"
-        "conditions:\n  all:\n    - made_up_fact: true\n",
+        "conditions:\n  all:\n    - made_up_fact: true\n"
+        "checks: [{outbound_enabled: true}]\n",
     )
     with pytest.raises(RuleLoadError, match="unknown fact"):
         load_rules(root)
@@ -86,6 +87,33 @@ def test_a_rule_with_no_conditions_or_checks_is_rejected(tmp_path: Path) -> None
     root = _write_rule(
         tmp_path,
         "id: NOOP-001\ntitle: No-op rule\ncategory: governance\nseverity: high\n",
+    )
+    with pytest.raises(RuleLoadError, match="can never produce a finding"):
+        load_rules(root)
+
+
+def test_a_condition_only_rule_with_no_checks_is_rejected(tmp_path: Path) -> None:
+    """Regression for Codex#1 (round 8, 2026-09-12), reproduced exactly as
+    reported: round-7's inert-rule check (test above) used `rule.clauses()`,
+    which counts `conditions.all`/`conditions.any` together with `checks` -
+    a rule with a trigger `conditions` block but empty `checks` and
+    `manual_review=False` has a non-empty `clauses()` and loaded
+    successfully, but `evaluate_rule()` only ever emits a finding from
+    `checks`/`manual_review` (see rule_engine.py's `elif rule.checks:` /
+    `elif rule.manual_review:` branches) - when such a rule's conditions
+    matched with evidence fully available, it produced zero findings and a
+    silent PASS. A rule must have at least one CHECK (not just a trigger
+    condition) or manual_review=True to be loadable. This exact shape was
+    shipping in rules/agent/OUT-001.yaml and rules/agent/TOOL-000.yaml
+    (both fixed by adding manual_review: true in this same round - they
+    happened to never actually reach the silent branch at runtime because
+    their required_evidence is evidence.py-coupled to always be "missing"
+    whenever their condition is true, but nothing enforced that coupling,
+    making it a latent trap for the next rule author)."""
+    root = _write_rule(
+        tmp_path,
+        "id: X-999\ntitle: condition-only risk\ncategory: governance\nseverity: high\n"
+        "conditions:\n  all:\n    - memory_enabled: true\n",
     )
     with pytest.raises(RuleLoadError, match="can never produce a finding"):
         load_rules(root)

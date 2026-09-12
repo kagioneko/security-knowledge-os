@@ -73,7 +73,24 @@ def test_check_unknown_never_becomes_pass() -> None:
     assert finding is not None and finding.status is FindingStatus.UNKNOWN
 
 
-def test_vacuous_pass_is_suppressed() -> None:
+def test_condition_only_rule_with_no_checks_fails_closed_not_silent() -> None:
+    """Regression for Codex#1 (round 8, 2026-09-12), reproduced exactly as
+    reported: a rule with a matched trigger condition, no checks, and
+    manual_review=False used to produce `finding is None` here (a silent,
+    unlogged PASS - this test used to be named
+    `test_vacuous_pass_is_suppressed` and asserted exactly that). No
+    required_evidence is missing (there is none declared), so this is
+    genuinely the "conditions matched, nothing left to check" state, not a
+    missing-evidence case. `rule_loader.py` now rejects this shape at load
+    time, but `RiskRule` can still be constructed directly (as this test
+    does), so the engine itself must also fail closed rather than stay
+    silent."""
     facts = {"tools_present": True}
-    rule = _rule(Severity.LOW, [C_TRUE], checks=[])
-    assert evaluate_rule(rule, facts, available_evidence=set()).finding is None
+
+    high_rule = _rule(Severity.HIGH, [C_TRUE], checks=[])
+    finding = evaluate_rule(high_rule, facts, available_evidence=set()).finding
+    assert finding is not None and finding.status is FindingStatus.FAIL
+
+    low_rule = _rule(Severity.LOW, [C_TRUE], checks=[])
+    warn_finding = evaluate_rule(low_rule, facts, available_evidence=set()).finding
+    assert warn_finding is not None and warn_finding.status is FindingStatus.WARN

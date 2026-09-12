@@ -2,6 +2,7 @@ id: OUT-001
 title: Outbound enabled without a stated destination allow-list
 category: agent-security
 severity: medium
+manual_review: true
 conditions:
   all:
     - outbound_enabled: true
