@@ -41,12 +41,33 @@ def _open_dir_no_follow(name: str, dir_fd: int | None = None) -> int:
     return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
 
 
-def _copy_file_no_follow(name: str, dir_fd: int, dest: Path) -> None:
-    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+def _check_identity_unchanged(scanned: os.stat_result, opened: os.stat_result, what: str) -> None:
+    """Codex#1 (round 9, 2026-09-12), reproduced exactly as reported:
+    `os.scandir()` observes one entry (a `DirEntry`, whose `.is_symlink()`/
+    `.is_file()`/`.is_dir()` calls populate and cache an lstat taken AT
+    SCAN TIME); `_copy_file_no_follow()`/`_open_dir_no_follow()` then
+    re-resolve the same NAME by a fresh `os.open()` - a writer able to
+    replace a regular file (or directory) with a different one of the
+    same type, under the same name, between those two points is
+    completely undetected: O_NOFOLLOW only refuses a symlink, and the
+    round-8 before/after fstat check only covers the window from THIS
+    open onward, not the scan-to-open window before it. Comparing
+    (st_dev, st_ino) from the cached scan-time stat against fstat() on
+    the freshly opened descriptor catches exactly that substitution -
+    two different inodes can never share both a device and inode number.
+    """
+    if (scanned.st_dev, scanned.st_ino) != (opened.st_dev, opened.st_ino):
+        raise SnapshotError(f"{what}: replaced with a different inode between scan and open")
+
+
+def _copy_file_no_follow(entry: os.DirEntry[str], dir_fd: int, dest: Path) -> None:
+    scanned = entry.stat(follow_symlinks=False)
+    fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
     try:
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode):
             raise SnapshotError(f"{dest.name}: not a regular file")
+        _check_identity_unchanged(scanned, before, dest.name)
         with os.fdopen(fd, "rb", closefd=False) as src, open(dest, "wb") as out:
             shutil.copyfileobj(src, out)
         # Codex#2 (round 8, 2026-09-12), reproduced exactly as reported:
@@ -83,13 +104,15 @@ def _walk_no_follow(src_dir_fd: int, display: str, dest: Path) -> None:
         if entry.is_symlink():
             raise SnapshotError(f"{child_display}: symlinks are not allowed")
         if entry.is_dir(follow_symlinks=False):
+            scanned = entry.stat(follow_symlinks=False)
             child_fd = _open_dir_no_follow(entry.name, dir_fd=src_dir_fd)
             try:
+                _check_identity_unchanged(scanned, os.fstat(child_fd), child_display)
                 _walk_no_follow(child_fd, child_display, dest / entry.name)
             finally:
                 os.close(child_fd)
         elif entry.is_file(follow_symlinks=False):
-            _copy_file_no_follow(entry.name, src_dir_fd, dest / entry.name)
+            _copy_file_no_follow(entry, src_dir_fd, dest / entry.name)
         # any other type (fifo, socket, device, ...) is silently skipped -
         # iter_knowledge_files() only ever looks for plain `*.md` files.
     # Codex#2 (round 8, 2026-09-12), reproduced exactly as reported:

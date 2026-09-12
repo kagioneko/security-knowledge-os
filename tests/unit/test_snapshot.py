@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -87,6 +88,47 @@ def test_rejects_a_file_mutated_during_the_copy_itself(
         snapshot_tree(root)
 
 
+def test_rejects_a_file_swapped_for_a_different_regular_file_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#1 (round 9, 2026-09-12), reproduced exactly as
+    reported: os.scandir() observes one entry (an lstat cached at SCAN
+    time); _copy_file_no_follow() then re-resolves the same NAME with a
+    fresh os.open() - a writer able to replace a regular file with a
+    DIFFERENT regular file of the same name, between the scan and that
+    open, was completely undetected (O_NOFOLLOW only refuses a symlink,
+    and the round-8 before/after fstat check only covers the window from
+    the open onward, not the scan-to-open window before it). Monkeypatching
+    os.open (called by _copy_file_no_follow after the DirEntry's stat is
+    already cached) to swap the file's CONTENT via a separate path-based
+    open first simulates exactly that - same name, different inode."""
+    import app.ingestion.snapshot as snapshot_module
+
+    root = tmp_path / "src"
+    root.mkdir()
+    target = root / "safe.yaml"
+    target.write_text("original", encoding="utf-8")
+    # a pre-existing, already-allocated file with its OWN distinct inode -
+    # os.replace() just re-points the name at it, unlike unlink()+recreate
+    # on the same filesystem, which the allocator can (and on tmpfs/ext4
+    # reliably does, for a single quick free/alloc cycle) satisfy by
+    # reusing the SAME inode number, defeating this test's premise.
+    poisoned = tmp_path / "poisoned.yaml"
+    poisoned.write_text("swapped-to-a-different-inode", encoding="utf-8")
+
+    real_open = os.open
+
+    def swap_then_open(path: object, flags: int, *a: object, **kw: object) -> int:
+        if path == "safe.yaml":
+            os.replace(poisoned, target)
+        return real_open(path, flags, *a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(snapshot_module.os, "open", swap_then_open)
+
+    with pytest.raises(SnapshotError, match="different inode"):
+        snapshot_module.snapshot_tree(root)
+
+
 def test_rejects_a_directory_whose_entries_changed_during_the_walk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -104,8 +146,8 @@ def test_rejects_a_directory_whose_entries_changed_during_the_walk(
 
     real_copy = snapshot_module._copy_file_no_follow
 
-    def racy_copy(name: str, dir_fd: int, dest: Path) -> None:
-        real_copy(name, dir_fd, dest)
+    def racy_copy(entry: os.DirEntry[str], dir_fd: int, dest: Path) -> None:
+        real_copy(entry, dir_fd, dest)
         (root / "added-during-walk.md").write_text("surprise", encoding="utf-8")
 
     monkeypatch.setattr(snapshot_module, "_copy_file_no_follow", racy_copy)
