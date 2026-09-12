@@ -3,7 +3,7 @@
   "specVersion": "1.5",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-09-12T10:39:43.823608+00:00",
+    "timestamp": "2026-09-12T11:35:34.560960+00:00",
     "component": {
       "type": "application",
       "name": "security-knowledge-os",
@@ -375,21 +375,7 @@
       "licenses": [
         {
           "license": {
-            "name": "MPL-2.0"
-          }
-        }
-      ],
-      "scope": "optional"
-    },
-    {
-      "type": "library",
-      "name": "pip",
-      "version": "26.2.1",
-      "purl": "pkg:pypi/pip@26.2.1",
-      "licenses": [
-        {
-          "license": {
-            "name": "MIT"
+            "name": "Mozilla Public License 2.0 (MPL 2.0)"
           }
         }
       ],
@@ -519,20 +505,6 @@
     },
     {
       "type": "library",
-      "name": "security-knowledge-os",
-      "version": "0.1.0",
-      "purl": "pkg:pypi/security-knowledge-os@0.1.0",
-      "licenses": [
-        {
-          "license": {
-            "name": "Apache-2.0"
-          }
-        }
-      ],
-      "scope": "optional"
-    },
-    {
-      "type": "library",
       "name": "sniffio",
       "version": "1.3.1",
       "purl": "pkg:pypi/sniffio@1.3.1",
@@ -581,7 +553,7 @@
       "licenses": [
         {
           "license": {
-            "name": "UNKNOWN"
+            "name": "Apache Software License"
           }
         }
       ],

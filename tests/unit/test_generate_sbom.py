@@ -17,12 +17,19 @@ from generate_sbom import build_sbom, declared_dependencies, main  # noqa: E402
 
 
 def test_sbom_includes_transitive_dependencies() -> None:
+    """Codex#9 (round 7, 2026-09-12) narrowed this from "every installed
+    distribution" to "the project's actual dependency closure" -
+    `security-knowledge-os` (the project's own component, not a dependency
+    of itself) and `pip` (installed in this venv only because mypy
+    OPTIONALLY depends on it via its own unused `install-types` extra -
+    Codex#9's own repro for "unrelated environment packages") are the
+    legitimate, intentional exclusions; everything else genuinely reachable
+    from a declared dependency must still appear, nothing silently dropped
+    by a hardcoded allowlist (the original, round-2 finding #12 concern)."""
     sbom = build_sbom()
     names = {c["name"].lower() for c in sbom["components"]}
     installed = {d.metadata["Name"].lower() for d in metadata.distributions()}
-    # every distribution actually installed in this environment must appear -
-    # nothing silently dropped by a hardcoded allowlist
-    assert installed <= names
+    assert installed - names <= {"security-knowledge-os", "pip"}
 
 
 def test_sbom_has_no_duplicate_components() -> None:
@@ -36,6 +43,32 @@ def test_sbom_components_have_a_version_and_license() -> None:
     for c in sbom["components"]:
         assert c["version"]
         assert c["licenses"][0]["license"].get("name") or c["licenses"][0]["license"].get("id")
+
+
+def test_no_unknown_licences_for_a_real_specific_osi_classifier() -> None:
+    """Regression for Codex#9 (round 7, 2026-09-12), reproduced exactly as
+    reported: `"OSI Approved" not in text` excluded every classifier that
+    names a *specific* OSI-approved license too, since almost all of them
+    read "License :: OSI Approved :: <name>" and legitimately contain that
+    substring - trove-classifiers (Apache-licensed, no License-Expression/
+    License header, only this classifier) resolved to UNKNOWN instead of
+    "Apache Software License"."""
+    sbom = build_sbom()
+    by_name = {c["name"].lower(): c for c in sbom["components"]}
+    assert "trove-classifiers" in by_name, "test assumption: still an installed dependency"
+    licence = by_name["trove-classifiers"]["licenses"][0]["license"]
+    assert licence.get("name") == "Apache Software License"
+
+
+def test_sbom_excludes_the_projects_own_component_and_unrelated_environment_packages() -> None:
+    """Regression for Codex#9 (round 7, 2026-09-12), reproduced exactly as
+    reported: the generator inventoried every installed distribution -
+    including pip, unrelated environment packages, and the project itself -
+    rather than computing the project's actual dependency closure."""
+    sbom = build_sbom()
+    names = {c["name"].lower() for c in sbom["components"]}
+    assert "security-knowledge-os" not in names
+    assert "pip" not in names  # only installed here via mypy's unused install-types extra
 
 
 def test_declared_dependencies_covers_every_pyproject_group() -> None:

@@ -78,9 +78,60 @@ def _license(dist: metadata.Distribution) -> str:
         return lic.splitlines()[0]
     for classifier in meta.get_all("Classifier") or []:
         text = str(classifier)
-        if text.startswith("License :: ") and "OSI Approved" not in text:
-            return text.split(" :: ")[-1]
+        # Codex#9 (round 7, 2026-09-12), reproduced exactly as reported:
+        # `"OSI Approved" not in text` excluded every classifier that names
+        # a *specific* OSI-approved license too, since almost all of them
+        # read "License :: OSI Approved :: <name>" and legitimately contain
+        # that substring - "License :: OSI Approved :: Apache Software
+        # License" was skipped entirely instead of yielding "Apache
+        # Software License". The intent was only to skip the bare, two-part
+        # "License :: OSI Approved" classifier (no specific name attached);
+        # requiring at least 3 " :: "-separated parts does that correctly.
+        parts = text.split(" :: ")
+        if text.startswith("License :: ") and len(parts) >= 3:
+            return parts[-1]
     return _KNOWN_LICENSES.get(str(meta["Name"]).lower(), "UNKNOWN")
+
+
+def _dependency_closure(roots: set[str]) -> set[str]:
+    """BFS over each installed distribution's own ``requires()``, starting
+    from `roots` (normalized package names), returning every name
+    transitively reachable from them.
+
+    Codex#9 (round 7, 2026-09-12), reproduced exactly as reported: the SBOM
+    used to inventory EVERY installed distribution - `pip`, unrelated
+    environment packages, and the project's own component included -
+    rather than the project's actual dependency closure. "Complete" (the
+    coverage property above) only ever meant "every directly-declared
+    package is installed", never "this list is exactly what the project
+    depends on". Walking outward from the declared roots (round 5, Codex#10)
+    keeps the round-2 fix's goal (never hand-maintain a drifting allowlist -
+    Codex cross-review finding #12) while excluding whatever else happens
+    to be installed in this venv for unrelated reasons.
+    """
+    seen: set[str] = set()
+    frontier = set(roots)
+    while frontier:
+        name = frontier.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            dist = metadata.distribution(name)
+        except metadata.PackageNotFoundError:
+            continue  # declared but not installed here - already in "missing" below
+        for req in dist.requires or []:
+            if "extra ==" in req or "extra==" in req:
+                # gated behind one of THAT package's own optional extras
+                # (e.g. mypy's `pip; extra == "install-types"`) - we never
+                # select extras when installing a transitive dependency, so
+                # walking into these pulls in packages nothing in this
+                # project's closure actually needs (Codex#9's own repro).
+                continue
+            req_name = _requirement_name(req)
+            if req_name not in seen:
+                frontier.add(req_name)
+    return seen
 
 
 def build_sbom() -> dict[str, object]:
@@ -92,6 +143,7 @@ def build_sbom() -> dict[str, object]:
     # installed in this (dedicated project) environment instead, deduped by
     # name in case of duplicate metadata entries.
     declared = declared_dependencies()
+    closure = _dependency_closure(set(declared))
     seen: set[str] = set()
     installed_normalized: set[str] = set()
     components = []
@@ -101,6 +153,10 @@ def build_sbom() -> dict[str, object]:
         if key in seen:
             continue
         seen.add(key)
+        if _normalize(name) not in closure:
+            # not reachable from anything this project declares - pip, a
+            # stray dev tool, or similar environment noise (Codex#9).
+            continue
         norm = _normalize(name)
         installed_normalized.add(norm)
         group = declared.get(norm)
