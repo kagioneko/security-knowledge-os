@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.models.assessment import AssessmentResult
 from app.models.policy_outcome import PolicyDecision
@@ -26,6 +26,15 @@ class ReportStatus(StrEnum):
 
 
 class AssessmentReport(BaseModel):
+    # Codex#14 (round 8, 2026-09-12), reproduced exactly as reported:
+    # without extra="forbid", parsing a saved report (or one loaded from a
+    # CLI-written file) containing an extra or misspelled property
+    # validated and silently discarded it, weakening schema-drift and
+    # tamper detection for externally loaded report data - every other
+    # externally-fed model in this project (AssessmentInput, AnswerPatch,
+    # RiskRule, ...) already forbids unknown fields.
+    model_config = ConfigDict(extra="forbid")
+
     status: ReportStatus
     result: AssessmentResult | None = None
     policy_decision: PolicyDecision | None = None

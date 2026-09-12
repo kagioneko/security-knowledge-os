@@ -166,18 +166,26 @@ class SafeTest(BaseModel):
 
 
 class Mitigation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     risk_id: str
     recommendation: str
     priority: Severity | None = None
 
 
 class ModelInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     llm_provider: str
     llm_model: str | None = None
     deterministic_only: bool
 
 
 class AssessmentResult(BaseModel):
+    # Codex#14 (round 8, 2026-09-12), reproduced exactly as reported: an
+    # extra or misspelled property in a saved/reloaded result validated
+    # and was silently discarded, weakening schema-drift and tamper
+    # detection for externally loaded report data.
+    model_config = ConfigDict(extra="forbid")
+
     assessment_id: str
     created_at: datetime
     mode: str

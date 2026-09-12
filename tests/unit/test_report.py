@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import pydantic
 import pytest
 
 from app.config import Mode, Settings
@@ -108,3 +109,32 @@ def test_human_review_required_is_not_a_report_status(
     report = build_report(load_assessment("V-001-indirect-injection-auto-email"), catalogue)
     assert report.status is ReportStatus.COMPLETED
     assert report.result is not None and report.result.human_review_required is True
+
+
+def test_a_saved_report_with_an_extra_field_is_rejected(
+    load_assessment: Loader, catalogue: RuleCatalogue
+) -> None:
+    """Regression for Codex#14 (round 8, 2026-09-12), reproduced exactly as
+    reported: parsing a saved report containing an extra or misspelled
+    property validated and silently discarded it, weakening schema-drift
+    and tamper detection for externally loaded report data."""
+    report = build_report(load_assessment("V-001-indirect-injection-auto-email"), catalogue)
+    dumped = report.model_dump(mode="json")
+    dumped["unexpected_field"] = "surprise"
+    with pytest.raises(pydantic.ValidationError):
+        AssessmentReport.model_validate(dumped)
+
+
+def test_a_saved_report_with_an_extra_field_on_a_nested_finding_is_rejected(
+    load_assessment: Loader, catalogue: RuleCatalogue
+) -> None:
+    """Regression for Codex#14 (round 8, 2026-09-12): the same gap applied
+    one level deeper - AssessmentReport.model_config alone does not
+    validate nested models' OWN configs; Finding needed extra="forbid"
+    too, not just its container."""
+    report = build_report(load_assessment("V-001-indirect-injection-auto-email"), catalogue)
+    dumped = report.model_dump(mode="json")
+    assert dumped["result"]["findings"], "test assumption: this fixture has at least one finding"
+    dumped["result"]["findings"][0]["unexpected_field"] = "surprise"
+    with pytest.raises(pydantic.ValidationError):
+        AssessmentReport.model_validate(dumped)

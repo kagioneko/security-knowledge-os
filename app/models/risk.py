@@ -67,6 +67,10 @@ class RiskRule(BaseModel):
 
 
 class Evidence(BaseModel):
+    # Codex#14 (round 8, 2026-09-12): see Finding.model_config below - the
+    # same "silently discards an extra/misspelled field" gap applied here.
+    model_config = ConfigDict(extra="forbid")
+
     knowledge_id: str | None = None
     source_ref: str | None = None
     excerpt: str | None = None
@@ -87,7 +91,14 @@ class Finding(BaseModel):
     # table) even on a frozen model, so merge_findings() below independently
     # re-verifies the A8 invariant on every LLM-origin finding it accepts,
     # regardless of how that Finding was constructed.
-    model_config = ConfigDict(frozen=True)
+    #
+    # Codex#14 (round 8, 2026-09-12), reproduced exactly as reported:
+    # without extra="forbid", parsing a saved report containing an extra
+    # or misspelled Finding property validated and silently discarded it -
+    # weakening schema-drift and tamper detection for externally loaded
+    # report data, the same gap every other externally-fed model in this
+    # project (AssessmentInput, AnswerPatch, RiskRule, ...) already closes.
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     risk_id: str
     title: str
