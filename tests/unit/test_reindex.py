@@ -134,6 +134,85 @@ def test_reindex_restores_previous_index_on_post_swap_failure(
     assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
 
 
+def test_reindex_restores_backup_on_post_swap_exception_not_a_stop_decision(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex cross-review finding #1 (round 3, 2026-09-12):
+    the exception handler around the publish step used to be `except OSError`
+    and unconditionally `_cleanup(staging, backup)` regardless of whether
+    os.replace() had already published the new (as yet unverified) content to
+    db_path - once published, `staging` no longer exists and `backup` is the
+    only copy of the last known-good index, so deleting it left the
+    unverified new content live with no way back. It also missed
+    sqlite3.Error subclasses verify_chunk_hashes can raise that are not
+    OSError."""
+    import sqlite3
+
+    import app.retrieval.index as index_module
+
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    good_revision = good.new_revision
+    assert _revision(db) == good_revision
+
+    corpus2 = tmp_path / "corpus2"
+    import shutil
+
+    shutil.copytree(corpus_alt_root, corpus2)
+    ku = next(corpus2.glob("public/**/*.md"))
+    ku.write_text(ku.read_text(encoding="utf-8").replace("0.1", "0.2"), encoding="utf-8")
+
+    calls = {"n": 0}
+    original = index_module.verify_chunk_hashes
+
+    def _flaky(conn):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 2:  # 1st call = staging check (let it pass); 2nd = post-swap
+            raise sqlite3.OperationalError("simulated post-swap read failure")
+        return original(conn)
+
+    index_module.verify_chunk_hashes = _flaky  # type: ignore[assignment]
+    try:
+        bad = reindex_atomic(corpus2, db)
+    finally:
+        index_module.verify_chunk_hashes = original  # type: ignore[assignment]
+
+    assert not bad.ok
+    assert bad.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert _revision(db) == good_revision  # restored, not left on the unverified swap
+    assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
+    assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
+
+
+def test_reindex_rejects_a_build_that_skipped_units(
+    tmp_path: Path, fixture_knowledge_root: Path
+) -> None:
+    """Regression for Codex cross-review finding #4 (round 3, 2026-09-12):
+    step 1 validates the tree, but build_index() -> load_corpus() re-walks
+    and independently re-validates the same knowledge_root (its own
+    validate_tree() call). If that second read disagrees with the first -
+    simulated here by forcing step 1 to see a clean tree while the tree
+    genuinely has files load_corpus skips - the resulting build silently
+    dropped content (down to zero units, in the fault-injected repro) and
+    reindex_atomic used to still publish it as ALLOWED."""
+    import app.retrieval.index as index_module
+
+    db = tmp_path / "idx.sqlite"
+    original_validate_tree = index_module.validate_tree
+    index_module.validate_tree = lambda root: []  # pretend step 1 saw a clean tree
+    try:
+        report = index_module.reindex_atomic(fixture_knowledge_root, db)
+    finally:
+        index_module.validate_tree = original_validate_tree
+
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert "skipped" in " ".join(report.decision.reasons)
+    assert not db.exists()  # nothing published - there was no previous index either
+    assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
+    assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
+
+
 def test_reindex_publish_never_leaves_db_path_missing(
     tmp_path: Path, corpus_alt_root: Path
 ) -> None:

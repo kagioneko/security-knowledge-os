@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 import os
 import shutil
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
@@ -189,6 +190,15 @@ def _cleanup(*paths: Path) -> None:
             p.unlink(missing_ok=True)
 
 
+def _restore_or_remove(db_path: Path, backup: Path, had_existing: bool) -> None:
+    """Never leave an unverified/failed publish live at ``db_path``."""
+    if had_existing:
+        with contextlib.suppress(OSError):
+            os.replace(backup, db_path)  # restore the last known-good index
+    else:
+        _cleanup(db_path)  # there was nothing before this reindex; go back to that
+
+
 def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport:
     old_revision = _current_revision(db_path)
 
@@ -217,6 +227,24 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
     try:
         build = build_index(knowledge_root, staging)
 
+        # Codex cross-review finding #4 (round 3, 2026-09-12): step 1 above
+        # validates the tree, but build_index() -> load_corpus() re-walks and
+        # re-validates the same knowledge_root independently (its own
+        # validate_tree() call). If a unit is changed/removed between those
+        # two reads (TOCTOU) or otherwise fails to load, load_corpus() skips
+        # it and carries on - correct for load_corpus() itself, which must
+        # tolerate per-file problems - but reindex_atomic() used to ignore
+        # build.skipped entirely and still publish. A build that silently
+        # dropped content (down to zero units, in the fault-injected repro)
+        # was indistinguishable from a clean one and passed as ALLOWED.
+        # Reindex is stricter than a routine load: refuse to publish an index
+        # built from a corpus read that did not match step 1's validation.
+        if build.skipped:
+            raise _ReindexAbort(
+                f"{len(build.skipped)} knowledge unit(s) skipped while building the "
+                "staging index (validated tree changed since step 1); refusing to publish"
+            )
+
         # 3. classification + integrity verification on the staging index
         if "secret" in build.classifications:
             raise _ReindexAbort("secret classification reached the staging index")
@@ -227,7 +255,7 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
             conn.close()
         if not integrity.is_allowed:
             raise _ReindexAbort(f"staging integrity check failed: {integrity.reasons}")
-    except (_ReindexAbort, IndexBuildError, OSError) as abort:
+    except (_ReindexAbort, IndexBuildError, OSError, sqlite3.Error) as abort:
         # any failure before the swap - including an unexpected OSError while
         # building, not just our own _ReindexAbort - leaves db_path untouched.
         _cleanup(staging)
@@ -251,18 +279,35 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
     # publish step is wrapped so any failure restores/cleans up rather than
     # leaving a stranded backup or a missing index.
     had_existing = db_path.exists()
+    published = False
     try:
         if had_existing:
             shutil.copy2(db_path, backup)
         os.replace(staging, db_path)  # atomic; db_path is never absent
+        published = True
 
         conn = connect(db_path, read_only=True)
         try:
             post = verify_chunk_hashes(conn)
         finally:
             conn.close()
-    except OSError as exc:
-        _cleanup(staging, backup)
+    except (OSError, sqlite3.Error) as exc:
+        # Codex cross-review finding #1 (round 3, 2026-09-12): this used to be
+        # `except OSError` and unconditionally `_cleanup(staging, backup)`
+        # regardless of whether os.replace() had already published the new
+        # index. Once `published` is True, `staging` no longer exists (it was
+        # moved to db_path) and db_path itself now holds the UNVERIFIED new
+        # content - deleting `backup` here threw away the only copy of the
+        # last known-good index while leaving the unverified one live. It also
+        # only caught OSError: verify_chunk_hashes() can raise sqlite3.Error
+        # subclasses that are not OSError (e.g. a locked/corrupt file opening
+        # cleanly but failing on the first query), which escaped uncaught and
+        # skipped this restore path entirely.
+        if published:
+            _restore_or_remove(db_path, backup, had_existing)
+            _cleanup(staging)
+        else:
+            _cleanup(staging, backup)
         return ReindexReport(
             decision=stop(
                 PolicyOutcome.POLICY_BLOCKED, "reindex", f"publication failed: {exc}"
@@ -272,10 +317,7 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
         )
 
     if not post.is_allowed:
-        if had_existing:
-            os.replace(backup, db_path)  # restore - never leave a broken index live
-        else:
-            _cleanup(db_path)
+        _restore_or_remove(db_path, backup, had_existing)
         return ReindexReport(
             decision=stop(
                 PolicyOutcome.POLICY_BLOCKED,
