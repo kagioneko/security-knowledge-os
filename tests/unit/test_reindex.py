@@ -634,6 +634,40 @@ def test_reindex_rejects_a_lock_path_symlinked_to_an_unrelated_file(
     assert stat.S_IMODE(unrelated.stat().st_mode) == 0o644, "the symlink TARGET must be untouched"
 
 
+def test_reindex_rejects_a_backup_path_precreated_as_a_symlink(
+    tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#1 (round 10, 2026-09-13), reproduced exactly as
+    reported: `shutil.copy2(db_path, backup)` opens `backup` the normal
+    way - a writer able to precreate the backup path (derived from a
+    `unique` suffix shared with the `staging` path, which sits on disk
+    under that name for the whole build and is therefore observable) as a
+    symlink caused `copy2()` to silently overwrite the symlink's TARGET
+    with the live database's content. The `unique` value is deterministic
+    here (a fixed uuid4 + this process's own real pid) so the exact
+    backup path can be precreated before the SECOND reindex_atomic() call
+    that actually writes a backup (the first call has no existing index
+    to back up yet)."""
+    import uuid
+
+    db = tmp_path / "idx.sqlite"
+    first = reindex_atomic(corpus_alt_root, db)
+    assert first.ok
+
+    fixed_uuid = uuid.UUID("deadbeef-0000-0000-0000-000000000000")
+    monkeypatch.setattr("app.retrieval.index.uuid4", lambda: fixed_uuid)
+    unique = f"{os.getpid()}-{fixed_uuid.hex[:8]}"
+    backup = db.with_suffix(db.suffix + f".bak.{unique}")
+    victim = tmp_path / "victim.txt"
+    victim.write_text("victim content untouched", encoding="utf-8")
+    backup.symlink_to(victim)
+
+    second = reindex_atomic(corpus_alt_root, db)
+
+    assert not second.ok
+    assert victim.read_text(encoding="utf-8") == "victim content untouched"
+
+
 def test_reindex_snapshot_is_immune_to_source_mutation_after_it_is_taken(
     tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

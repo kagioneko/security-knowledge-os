@@ -250,6 +250,40 @@ def _cleanup(*paths: Path) -> None:
             p.unlink(missing_ok=True)
 
 
+def _copy_no_follow_exclusive(src: Path, dst: Path) -> None:
+    """Copy `src`'s content into a brand-new `dst`, refusing to write
+    through anything already present at `dst` - a pre-existing file OR a
+    symlink.
+
+    Codex#1 (round 10, 2026-09-13), reproduced exactly as reported:
+    `shutil.copy2(db_path, backup)` opens `backup` the normal way - a
+    writer able to precreate `backup` (its filename is derived from the
+    same `unique` suffix as the `staging` path, which sits on disk under
+    that name for the whole build and is therefore observable) as a
+    symlink caused `copy2()` to silently overwrite the symlink's TARGET
+    with the live database's content instead of writing to `backup`
+    itself. `O_EXCL` refuses to create a new file at a path that already
+    has anything at it (symlink or regular file); `O_NOFOLLOW` is
+    additional defense-in-depth for the same refusal. This only copies
+    the DATA (a disaster-recovery backup, not a byte-identical clone -
+    unlike `shutil.copy2()`, file metadata such as mtime/permissions is
+    not preserved, which does not matter for this purpose).
+    """
+    src_fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        dst_fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with (
+                os.fdopen(src_fd, "rb", closefd=False) as src_file,
+                os.fdopen(dst_fd, "wb", closefd=False) as dst_file,
+            ):
+                shutil.copyfileobj(src_file, dst_file)
+        finally:
+            os.close(dst_fd)
+    finally:
+        os.close(src_fd)
+
+
 def _restore_or_remove(db_path: Path, backup: Path, had_existing: bool) -> bool:
     """Try to put the last known-good index back at ``db_path``.
 
@@ -495,7 +529,7 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
     published = False
     try:
         if had_existing:
-            shutil.copy2(db_path, backup)
+            _copy_no_follow_exclusive(db_path, backup)
         os.replace(staging, db_path)  # atomic; db_path is never absent
         published = True
 
