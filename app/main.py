@@ -19,6 +19,7 @@ only re-derives the FTS index from the already-verified read-only knowledge root
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import threading
 from pathlib import Path
 from typing import Any
@@ -118,17 +119,32 @@ _STORE: dict[str, tuple[AssessmentInput, AssessmentReport]] = {}
 _MAX_ANSWER_CACHE_ENTRIES = 5000
 _ANSWER_CACHE: dict[tuple[str, str], str] = {}
 
+# Codex#5 (round 5, 2026-09-12), reproduced exactly as reported: with
+# `_MAX_STORE_ENTRIES = 1`, 32 threads calling `_store_put` concurrently (each
+# FastAPI sync endpoint runs in its own worker thread) produced
+# `RuntimeError("dictionary changed size during iteration")` and `KeyError`
+# from the unguarded assign-then-evict sequence below. `_answer_lock_for`
+# (round 4) already serializes the compute-and-store critical section for a
+# given cache key, but the plain assignment/eviction here races across
+# *different* keys/callers regardless of that. A single lock per dict is
+# sufficient (these are cheap dict operations, not the assessment compute
+# itself) and keeps the FIFO-eviction contract intact under concurrency.
+_STORE_GUARD = threading.Lock()
+_ANSWER_CACHE_GUARD = threading.Lock()
+
 
 def _store_put(assessment_id: str, entry: tuple[AssessmentInput, AssessmentReport]) -> None:
-    _STORE[assessment_id] = entry
-    while len(_STORE) > _MAX_STORE_ENTRIES:
-        _STORE.pop(next(iter(_STORE)))  # evict oldest (dict preserves insertion order)
+    with _STORE_GUARD:
+        _STORE[assessment_id] = entry
+        while len(_STORE) > _MAX_STORE_ENTRIES:
+            _STORE.pop(next(iter(_STORE)))  # evict oldest (dict preserves insertion order)
 
 
 def _answer_cache_put(key: tuple[str, str], assessment_id: str) -> None:
-    _ANSWER_CACHE[key] = assessment_id
-    while len(_ANSWER_CACHE) > _MAX_ANSWER_CACHE_ENTRIES:
-        _ANSWER_CACHE.pop(next(iter(_ANSWER_CACHE)))
+    with _ANSWER_CACHE_GUARD:
+        _ANSWER_CACHE[key] = assessment_id
+        while len(_ANSWER_CACHE) > _MAX_ANSWER_CACHE_ENTRIES:
+            _ANSWER_CACHE.pop(next(iter(_ANSWER_CACHE)))
 
 
 # Codex cross-review finding #6 (round 4, 2026-09-12), reproduced exactly as
@@ -197,6 +213,26 @@ def _is_local_origin(request: Request) -> bool:
     return host in _ALLOWED_HOSTS
 
 
+def _peer_is_loopback(request: Request) -> bool:
+    """Codex#1 (round 5, 2026-09-12): `Host`/`Origin`/`Referer` are values
+    the CLIENT supplies in the request - they say nothing about who actually
+    opened the TCP connection. If Uvicorn is ever bound to a non-loopback
+    address (`--host 0.0.0.0`), a remote client can send `Host: localhost`
+    (with no Origin/Referer) and pass `_is_local_origin` outright. The ASGI
+    transport's peer address is the one thing a client cannot forge, so it is
+    checked in addition to (not instead of) `_is_local_origin`: the peer
+    check stops a remote client regardless of headers, and `_is_local_origin`
+    still stops a same-machine browser page from CSRFing this service via a
+    cross-origin request that arrives from the real loopback peer."""
+    client = request.client
+    if client is None:
+        return False
+    try:
+        return ipaddress.ip_address(client.host).is_loopback
+    except ValueError:
+        return False
+
+
 # Codex#5 / Antigravity SKOS-ADV-13 (round 4, 2026-09-12): only
 # /v1/knowledge/reindex called _require_local_origin() (as it then was) - the
 # assessment endpoints (create/get/answers/history/report), which can trigger
@@ -209,7 +245,9 @@ def _is_local_origin(request: Request) -> bool:
 # add to the next new route.
 @app.middleware("http")
 async def _local_origin_gate(request: Request, call_next):  # type: ignore[no-untyped-def]
-    if request.url.path != "/health" and not _is_local_origin(request):
+    if request.url.path != "/health" and not (
+        _peer_is_loopback(request) and _is_local_origin(request)
+    ):
         return JSONResponse(
             {"detail": "this endpoint only serves local clients"}, status_code=403
         )

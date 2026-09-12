@@ -17,7 +17,12 @@ _BY_NAME = {p.stem: p for p in FIXTURES.rglob("*.yaml")}
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app)
+    # Codex#1 (round 5, 2026-09-12): TestClient's default ASGI peer is
+    # ("testclient", 50000) - not a real IP, so `_peer_is_loopback` would
+    # reject every request. A real deployment's loopback peer is 127.0.0.1;
+    # set that explicitly so these tests exercise the actual gate rather than
+    # bypassing it via an ASGI-transport quirk.
+    return TestClient(app, client=("127.0.0.1", 12345))
 
 
 def _input(name: str) -> dict:
@@ -411,6 +416,25 @@ def test_reindex_allows_a_legitimate_same_origin_request(
     assert resp.status_code == 200
 
 
+def test_reindex_rejects_a_forged_localhost_host_from_a_remote_peer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#1 (round 5, 2026-09-12), reproduced exactly as
+    reported: `_is_local_origin` trusted the client-supplied Host/Origin/
+    Referer headers alone. If Uvicorn were ever bound to a non-loopback
+    address, a remote client that sends `Host: localhost` (no Origin/Referer)
+    passed that check outright - the transport peer address was never
+    consulted. A client whose ASGI peer is a real, non-loopback IP must be
+    rejected even when every header claims to be local."""
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(REPO / "tests" / "fixtures" / "corpus_alt"))
+    monkeypatch.setenv("SKOS_DB_PATH", str(tmp_path / "idx.sqlite"))
+    remote_client = TestClient(app, client=("203.0.113.7", 54321))
+    resp = remote_client.post(
+        "/v1/knowledge/reindex", headers={"Host": "localhost"}
+    )
+    assert resp.status_code == 403
+
+
 def test_store_is_bounded_and_evicts_oldest() -> None:
     """Regression for Codex cross-review finding #10 (2026-09-11): _STORE had
     no size bound at all."""
@@ -429,6 +453,91 @@ def test_store_is_bounded_and_evicts_oldest() -> None:
         main_module._MAX_STORE_ENTRIES = original_max
         main_module._STORE.clear()
         main_module._STORE.update(original)
+
+
+def test_store_put_is_thread_safe_under_concurrent_eviction() -> None:
+    """Regression for Codex#5 (round 5, 2026-09-12): with `_MAX_STORE_ENTRIES
+    = 1`, concurrent `_store_put` calls raced the unguarded
+    assign/len-check/evict sequence, raising `RuntimeError("dictionary
+    changed size during iteration")` and `KeyError`. Plain concurrent threads
+    do not reliably land inside that window (the sequence is a handful of
+    fast C calls), so `.pop()` is slowed on this dict instance only, to
+    deterministically widen the gap between the `len()` check and the actual
+    eviction - `_STORE_GUARD` must still serialize the whole sequence despite
+    that, and no thread should observe an exception either way."""
+    import threading
+    import time
+
+    import app.main as main_module
+
+    class _SlowPopDict(dict):  # type: ignore[type-arg]
+        def pop(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            time.sleep(0.01)
+            return super().pop(*args, **kwargs)
+
+    original = main_module._STORE
+    original_max = main_module._MAX_STORE_ENTRIES
+    main_module._STORE = _SlowPopDict()  # type: ignore[assignment]
+    main_module._MAX_STORE_ENTRIES = 1
+    errors: list[BaseException] = []
+
+    def _worker(i: int) -> None:
+        try:
+            main_module._store_put(f"id-{i}", (object(), object()))  # type: ignore[arg-type]
+        except BaseException as exc:  # noqa: BLE001 - capturing for the assertion below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker, args=(i,)) for i in range(32)]
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == []
+        assert len(main_module._STORE) <= main_module._MAX_STORE_ENTRIES
+    finally:
+        main_module._MAX_STORE_ENTRIES = original_max
+        main_module._STORE = original
+
+
+def test_answer_cache_put_is_thread_safe_under_concurrent_eviction() -> None:
+    """Same race as `test_store_put_is_thread_safe_under_concurrent_eviction`,
+    for `_ANSWER_CACHE` / `_ANSWER_CACHE_GUARD` (Codex#5, round 5,
+    2026-09-12): the review's suggested fix called for a concurrency test on
+    both caches, not just `_STORE`."""
+    import threading
+    import time
+
+    import app.main as main_module
+
+    class _SlowPopDict(dict):  # type: ignore[type-arg]
+        def pop(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            time.sleep(0.01)
+            return super().pop(*args, **kwargs)
+
+    original = main_module._ANSWER_CACHE
+    original_max = main_module._MAX_ANSWER_CACHE_ENTRIES
+    main_module._ANSWER_CACHE = _SlowPopDict()  # type: ignore[assignment]
+    main_module._MAX_ANSWER_CACHE_ENTRIES = 1
+    errors: list[BaseException] = []
+
+    def _worker(i: int) -> None:
+        try:
+            main_module._answer_cache_put((f"parent-{i}", f"hash-{i}"), f"id-{i}")
+        except BaseException as exc:  # noqa: BLE001 - capturing for the assertion below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker, args=(i,)) for i in range(32)]
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == []
+        assert len(main_module._ANSWER_CACHE) <= main_module._MAX_ANSWER_CACHE_ENTRIES
+    finally:
+        main_module._MAX_ANSWER_CACHE_ENTRIES = original_max
+        main_module._ANSWER_CACHE = original
 
 
 def test_no_knowledge_write_endpoint(client: TestClient) -> None:
