@@ -111,6 +111,29 @@ def test_human_review_required_is_not_a_report_status(
     assert report.result is not None and report.result.human_review_required is True
 
 
+def test_a_result_claiming_pass_despite_a_fail_finding_is_rejected(
+    load_assessment: Loader, catalogue: RuleCatalogue
+) -> None:
+    """Regression for Codex#4 (round 9, 2026-09-12), reproduced exactly as
+    reported: AssessmentResult did not validate overall_status or
+    human_review_required against its own findings - a tampered saved
+    report could claim overall_status="PASS" and
+    human_review_required=false while carrying a FAIL finding."""
+    from app.models.assessment import AssessmentResult, OverallStatus
+
+    report = build_report(load_assessment("V-001-indirect-injection-auto-email"), catalogue)
+    assert report.result is not None
+    result = report.result.model_copy(
+        update={"overall_status": OverallStatus.PASS, "human_review_required": False}
+    )
+    dumped = result.model_dump(mode="json")
+    assert any(
+        f["status"] == "FAIL" for f in dumped["findings"]
+    ), "test assumption: this fixture produces a FAIL finding"
+    with pytest.raises(pydantic.ValidationError):
+        AssessmentResult.model_validate(dumped)
+
+
 def test_a_saved_report_with_an_extra_field_is_rejected(
     load_assessment: Loader, catalogue: RuleCatalogue
 ) -> None:

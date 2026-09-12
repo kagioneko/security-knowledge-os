@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from app.models._credential_shapes import reject_credential_shapes
-from app.models.risk import Finding, Severity
+from app.models.risk import Finding, FindingStatus, Severity
 
 # Codex cross-review finding #6 (round 2, 2026-09-11): AssessmentInput had no
 # field-level size bounds at all - a single request with e.g. a 1 MiB
@@ -217,3 +217,51 @@ class AssessmentResult(BaseModel):
     knowledge_revision: str | None = None
     retrieved_knowledge_ids: list[str] = Field(default_factory=list)
     model_info: ModelInfo
+
+    # Codex#4 (round 9, 2026-09-12), reproduced exactly as reported: nothing
+    # validated overall_status/human_review_required against findings/
+    # attack_surface/missing_information - a tampered saved report could
+    # claim overall_status="PASS" and human_review_required=False while
+    # carrying a FAIL finding. This reimplements (rather than imports)
+    # app.reviewer.rollup.compute_overall_status()'s decision-A6 ordering
+    # and a subset of requires_human_review()'s signals, to avoid a
+    # models -> reviewer import cycle (rollup.py imports OverallStatus
+    # FROM this module) - the real assess() pipeline (app/reviewer/
+    # assess.py) already computes both fields via those exact functions,
+    # so this only ever rejects a result that DISAGREES with its own data,
+    # never a legitimately-produced one. `confidential_knowledge_used` is
+    # one of requires_human_review()'s inputs that has no corresponding
+    # persisted field on this model, so it cannot be re-derived and
+    # verified here - this is a partial, not exhaustive, consistency
+    # check, but it directly closes the reported FAIL-vs-PASS repro.
+    @model_validator(mode="after")
+    def _rollup_is_consistent_with_findings(self) -> AssessmentResult:
+        rank = {FindingStatus.FAIL: 0, FindingStatus.WARN: 1, FindingStatus.UNKNOWN: 2}
+        worst = min((rank.get(f.status, 3) for f in self.findings), default=3)
+        expected_overall = [
+            OverallStatus.FAIL,
+            OverallStatus.CONDITIONAL,
+            OverallStatus.UNKNOWN,
+            OverallStatus.PASS,
+        ][worst]
+        if self.overall_status != expected_overall:
+            raise ValueError(
+                f"overall_status={self.overall_status!r} does not match findings "
+                f"(expected {expected_overall!r})"
+            )
+
+        needs_review = (
+            bool(self.missing_information)
+            or bool(self.attack_surface.high_impact_actions)
+            or any(
+                f.status in (FindingStatus.FAIL, FindingStatus.WARN, FindingStatus.UNKNOWN)
+                or f.origin == "llm"
+                for f in self.findings
+            )
+        )
+        if needs_review and not self.human_review_required:
+            raise ValueError(
+                "human_review_required=False contradicts findings, "
+                "missing_information, or high-impact actions that require review"
+            )
+        return self
