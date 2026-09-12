@@ -124,6 +124,76 @@ def test_load_corpus_skips_a_file_that_fails_to_parse_instead_of_raising(
     assert any("bad.md" in path for path, _ in report.skipped)
 
 
+def test_load_corpus_rejects_an_ancestor_directory_swapped_after_containment_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#3 (round 10, 2026-09-13), reproduced exactly as
+    reported via fault injection: (1) check_containment() passes for
+    `public/prompt-security/unit.md` while that directory is still a real,
+    in-root directory; (2) `public/prompt-security` is then replaced with a
+    symlink to an outside directory; (3) the later read re-resolves the
+    same nominal pathname from scratch and follows the now-symlinked
+    ANCESTOR straight through to the outside file - O_NOFOLLOW (round 6)
+    only refuses a symlink as the FINAL component, it does nothing about a
+    symlinked ancestor. load_corpus() now snapshots knowledge_root up front
+    (the same no-follow-at-every-level way app/ingestion/snapshot.py
+    already does for the reindex path and app/reviewer/rule_loader.py
+    already does for the rule root), so every read in the loop below comes
+    from that private copy - a live-tree swap performed AFTER the snapshot
+    was taken, however it is timed relative to the per-file loop, can no
+    longer change what gets read.
+
+    NOTE: deliberately not named with "symlink" in it - see the
+    identically-motivated note on
+    test_ancestor_directory_confinement_is_enforced in test_rule_loader.py
+    for why: pytest's `tmp_path` fixture names the temp directory after the
+    test function itself, so a generic `match="symlink"` could be
+    trivially (and wrongly) satisfied by that path fragment alone."""
+    import shutil
+
+    import app.ingestion.loader as loader_module
+
+    root = tmp_path / "knowledge"
+    ku_dir = root / "public" / "prompt-security"
+    ku_dir.mkdir(parents=True)
+    ku_path = ku_dir / "unit.md"
+    front_matter = (
+        "---\nid: KU-9001\ntitle: t\ncategory: prompt-security\n"
+        "source_type: manual\nsource_ref: x\nclassification: public\n"
+        "status: reviewed\nversion: '0.1'\nlast_reviewed: '2026-09-13'\n"
+        "requires_ip_review: false\nprovenance:\n  source_title: t\n"
+        "  source_url: null\n  source_version: null\n"
+        "  source_license: t\n  derivation: original\n"
+        "  last_verified: '2026-09-13'\n---\n"
+    )
+    ku_path.write_text(front_matter + "body\n", encoding="utf-8")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "unit.md").write_text(front_matter + "EVIL_MARKER\n", encoding="utf-8")
+
+    original_read_markdown = loader_module.read_markdown
+    swapped = {"done": False}
+
+    def _swap_ancestor_then_read(path: Path) -> tuple[dict[str, object], str]:
+        if not swapped["done"]:
+            swapped["done"] = True
+            shutil.rmtree(ku_dir)
+            ku_dir.symlink_to(outside, target_is_directory=True)
+        return original_read_markdown(path)
+
+    monkeypatch.setattr(loader_module, "read_markdown", _swap_ancestor_then_read)
+
+    report = load_corpus(root)
+
+    assert swapped["done"], "test assumption: the ancestor swap actually happened"
+    # The legitimate unit is still loaded (from the pre-swap snapshot) - the
+    # live-tree swap must simply have no effect, not have to make the unit
+    # disappear entirely.
+    assert "EVIL_MARKER" not in "".join(u.body for u in report.units)
+    assert all(u.body == "body\n" for u in report.units)
+
+
 def test_split_sections_handles_preamble_and_headings() -> None:
     body = "intro text\n\n## First\nalpha\n\n## Second\nbeta\n"
     sections = split_sections(body)

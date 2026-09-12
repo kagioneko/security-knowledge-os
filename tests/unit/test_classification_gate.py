@@ -89,9 +89,15 @@ def test_symlinked_ku_is_never_loaded_into_the_corpus(
     link = root / "public" / "prompt-security" / "evil.md"
     link.symlink_to(real_target)
 
+    # Codex#3 (round 10, 2026-09-13): load_corpus() now snapshots
+    # knowledge_root up front (see load_corpus()'s own docstring) - a
+    # symlink ANYWHERE in the tree now fails the whole snapshot rather than
+    # being skipped as a single bad file, so this is now a whole-corpus
+    # refusal (report.issues), not a per-file entry in report.skipped.
     report = load_corpus(root)
     assert report.units == []
-    assert any("evil.md" in path for path, _ in report.skipped)
+    assert report.skipped == []
+    assert any("evil.md" in issue.message for issue in report.issues)
 
 
 def test_validate_tree_never_reopens_a_rejected_symlink(
