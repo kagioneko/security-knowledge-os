@@ -15,7 +15,7 @@ import yaml
 from pydantic import ValidationError
 
 from app.ingestion.parser import FrontMatterError, _read_text_no_follow
-from app.models.risk import RiskRule
+from app.models.risk import LLM_OBS_PREFIX, RiskRule
 from app.models.rule_clause import Clause, Operator
 from app.reviewer.clause_eval import ClauseError, validate_clause
 from app.reviewer.evidence import EVIDENCE_KEYS
@@ -122,6 +122,34 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
         rule = RiskRule.model_validate(payload)
     except ValidationError as exc:
         raise RuleLoadError(f"{source}: invalid rule: {exc}") from exc
+
+    # Codex#3 (round 7, 2026-09-12), reproduced exactly as reported: a rule
+    # with no conditions, no checks, and manual_review=False satisfies the
+    # non-empty-catalogue check but can NEVER produce a finding - assessing
+    # against a catalogue containing only such a rule returned 0 findings,
+    # 0 missing-information, indistinguishable from "nothing worth
+    # reporting" rather than "this rule is a no-op". A rule must have at
+    # least one clause (a trigger condition or a check) to be loadable;
+    # `manual_review=True` with no checks is a legitimate always-flag rule
+    # and is exempted.
+    if not rule.clauses() and not rule.manual_review:
+        raise RuleLoadError(
+            f"{source} [{rule.id}]: rule has no conditions, checks, or "
+            "manual_review=True - it can never produce a finding"
+        )
+
+    # Codex#3 (round 7, 2026-09-12): RiskRule.id's pattern happens to also
+    # match the 'LLM-OBS-' prefix reserved for LLM-origin findings
+    # (app/models/risk.py::Finding._enforce_llm_boundary) - a rule file
+    # declaring `id: LLM-OBS-00001` loaded successfully here and only
+    # crashed with an unhandled ValidationError later, the moment this rule
+    # actually fired and a Finding(origin="rule", risk_id="LLM-OBS-00001")
+    # was constructed. Reject it at load time instead.
+    if rule.id.startswith(LLM_OBS_PREFIX):
+        raise RuleLoadError(
+            f"{source}: rule id {rule.id!r} uses the reserved {LLM_OBS_PREFIX!r} "
+            "prefix (reserved for origin='llm' findings)"
+        )
 
     for clause in rule.clauses():
         try:

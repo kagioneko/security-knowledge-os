@@ -55,9 +55,53 @@ def test_unknown_evidence_key_is_rejected(tmp_path: Path) -> None:
     root = _write_rule(
         tmp_path,
         "id: X-002\ntitle: t\ncategory: agent-security\nseverity: low\n"
+        "checks: [{outbound_enabled: true}]\n"
         "required_evidence: [not_a_real_key]\n",
     )
     with pytest.raises(RuleLoadError, match="required_evidence"):
+        load_rules(root)
+
+
+def test_a_rule_with_no_conditions_or_checks_is_rejected(tmp_path: Path) -> None:
+    """Regression for Codex#3 (round 7, 2026-09-12), reproduced exactly as
+    reported: a rule with empty conditions, checks, and manual_review=False
+    satisfies the non-empty-catalogue check but can never produce a
+    finding - assessing against a catalogue containing only such a rule
+    returned 0 findings, 0 missing-information, indistinguishable from
+    "nothing worth reporting" rather than "this rule is a no-op"."""
+    root = _write_rule(
+        tmp_path,
+        "id: NOOP-001\ntitle: No-op rule\ncategory: governance\nseverity: high\n",
+    )
+    with pytest.raises(RuleLoadError, match="can never produce a finding"):
+        load_rules(root)
+
+
+def test_a_manual_review_rule_with_no_checks_is_allowed(tmp_path: Path) -> None:
+    """An always-flag-for-human-review rule with no automated checks is a
+    legitimate, intentional pattern - not the same inert no-op as above."""
+    root = _write_rule(
+        tmp_path,
+        "id: MANUAL-001\ntitle: Always flag for review\ncategory: governance\n"
+        "severity: high\nmanual_review: true\n",
+    )
+    catalogue = load_rules(root)
+    assert catalogue.by_id("MANUAL-001").manual_review is True
+
+
+def test_a_rule_id_using_the_reserved_llm_obs_prefix_is_rejected(tmp_path: Path) -> None:
+    """Regression for Codex#3 (round 7, 2026-09-12), reproduced exactly as
+    reported: `id: LLM-OBS-00001` matches RiskRule's id pattern and loaded
+    successfully, but later crashed with an unhandled ValidationError the
+    moment this rule actually fired and a Finding(origin="rule",
+    risk_id="LLM-OBS-00001") was constructed - Finding._enforce_llm_boundary
+    reserves that prefix for origin='llm' findings. Reject it at load time."""
+    root = _write_rule(
+        tmp_path,
+        "id: LLM-OBS-00001\ntitle: t\ncategory: governance\nseverity: high\n"
+        "checks: [{outbound_enabled: true}]\n",
+    )
+    with pytest.raises(RuleLoadError, match="reserved"):
         load_rules(root)
 
 

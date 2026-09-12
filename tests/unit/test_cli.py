@@ -37,6 +37,7 @@ def test_validate_safe_tests_catches_a_broken_rule_reference(
     rules_root.mkdir()
     (rules_root / "bad.yaml").write_text(
         "id: PI-901\ntitle: t\ncategory: prompt-security\nseverity: high\n"
+        "checks: [{outbound_enabled: true}]\n"
         "safe_test_template: ST-DOES-NOT-EXIST\n",
         encoding="utf-8",
     )
