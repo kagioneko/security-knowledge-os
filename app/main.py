@@ -481,13 +481,31 @@ def _load_resources(settings: Settings) -> _EvaluationResources:
     return _EvaluationResources(catalogue, safe_tests, conn)
 
 
+def _build_report(
+    inp: AssessmentInput, settings: Settings, resources: _EvaluationResources
+) -> AssessmentReport:
+    client = get_client(settings)
+    return build_report(
+        inp,
+        resources.catalogue,
+        settings=settings,
+        client=client,
+        index_conn=resources.conn,
+        safe_tests=resources.safe_tests,
+    )
+
+
 def _evaluate(
     inp: AssessmentInput, settings: Settings, resources: _EvaluationResources
 ) -> AssessmentReport:
     # Codex#6 (round 9, 2026-09-12): bound how many assessments (each a real
     # rule-load, and a real provider call when an LLM is configured) can run
     # concurrently - see _ASSESSMENT_SEMAPHORE above for what this does and
-    # does not cover.
+    # does not cover. Used by submit_answers() on a cache MISS only - a cache
+    # HIT is deliberately never gated by this at all (self-review, round 10,
+    # 2026-09-13: it does no rule-load and no provider call, `resources` was
+    # already loaded to compute the cache key regardless of hit or miss, so
+    # there is no cost left here for the semaphore to protect on a hit).
     if not _ASSESSMENT_SEMAPHORE.acquire(blocking=False):
         raise HTTPException(
             status_code=429,
@@ -495,26 +513,36 @@ def _evaluate(
             "retry shortly",
         )
     try:
-        client = get_client(settings)
-        return build_report(
-            inp,
-            resources.catalogue,
-            settings=settings,
-            client=client,
-            index_conn=resources.conn,
-            safe_tests=resources.safe_tests,
-        )
+        return _build_report(inp, settings, resources)
     finally:
         _ASSESSMENT_SEMAPHORE.release()
 
 
 def _run(inp: AssessmentInput, settings: Settings) -> AssessmentReport:
-    resources = _load_resources(settings)
+    # Self-review (round 10, 2026-09-13): _load_resources() below (a real
+    # rule-load, a real safe-test-load, a real sqlite connect()) must not
+    # run before the semaphore admits this request - unlike submit_answers()
+    # (which has no choice: it needs `resources` loaded just to know whether
+    # a request is even a cache miss), every call here goes on to actually
+    # evaluate, so there is nothing to lose by gating the load itself too,
+    # restoring the round-9 fix's original intent for this call path (its
+    # own comment on _ASSESSMENT_SEMAPHORE names "a real rule-load" as one
+    # of the two costs being bounded, not just the provider call).
+    if not _ASSESSMENT_SEMAPHORE.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many assessments in flight (max {_MAX_CONCURRENT_ASSESSMENTS}); "
+            "retry shortly",
+        )
     try:
-        return _evaluate(inp, settings, resources)
+        resources = _load_resources(settings)
+        try:
+            return _build_report(inp, settings, resources)
+        finally:
+            if resources.conn is not None:
+                resources.conn.close()
     finally:
-        if resources.conn is not None:
-            resources.conn.close()
+        _ASSESSMENT_SEMAPHORE.release()
 
 
 def _rules_and_safe_tests_fingerprint(settings: Settings) -> str:

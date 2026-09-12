@@ -195,6 +195,52 @@ def test_concurrent_assessment_admission_is_bounded() -> None:
         main_module._ASSESSMENT_SEMAPHORE = main_module.threading.Semaphore(original_max)
 
 
+def test_run_rejects_before_loading_resources_when_the_semaphore_is_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Self-review regression (round 10, 2026-09-13): the round-10 Codex#5
+    fix (_load_resources()/_evaluate() split, so the /answers cache
+    fingerprint reflects the exact resources evaluated) initially made
+    _run() call _load_resources() - a real rule-load, safe-test-load, and
+    sqlite connect() - BEFORE ever checking _ASSESSMENT_SEMAPHORE, since
+    the semaphore check had moved inside _evaluate(). That undid part of
+    the round-9 fix's own stated intent (its comment on
+    _ASSESSMENT_SEMAPHORE names "a real rule-load" as one of the two costs
+    being bounded, not just the provider call): a burst of requests beyond
+    the concurrency cap would each still pay the rule-load cost before
+    being told 429. _run() now acquires the semaphore itself BEFORE calling
+    _load_resources(), same as before the round-10 refactor."""
+    import app.main as main_module
+
+    original_max = main_module._MAX_CONCURRENT_ASSESSMENTS
+    main_module._MAX_CONCURRENT_ASSESSMENTS = 1
+    main_module._ASSESSMENT_SEMAPHORE = main_module.threading.Semaphore(1)
+    called = {"n": 0}
+    original_load_resources = main_module._load_resources
+
+    def _tracking_load_resources(settings):  # type: ignore[no-untyped-def]
+        called["n"] += 1
+        return original_load_resources(settings)
+
+    monkeypatch.setattr(main_module, "_load_resources", _tracking_load_resources)
+    try:
+        acquired_first = main_module._ASSESSMENT_SEMAPHORE.acquire(blocking=False)
+        assert acquired_first
+        try:
+            with pytest.raises(HTTPException) as excinfo:
+                main_module._run(
+                    main_module.AssessmentInput(name="t"), main_module._settings()
+                )
+            assert excinfo.value.status_code == 429
+        finally:
+            main_module._ASSESSMENT_SEMAPHORE.release()
+    finally:
+        main_module._MAX_CONCURRENT_ASSESSMENTS = original_max
+        main_module._ASSESSMENT_SEMAPHORE = main_module.threading.Semaphore(original_max)
+
+    assert called["n"] == 0, "_load_resources() must not run when the semaphore is full"
+
+
 def test_answers_cache_invalidated_when_rules_change(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
