@@ -250,7 +250,16 @@ def test_answers_cache_invalidated_when_rules_change(
     index revision, mode, and provider/model settings. After legitimate
     rule maintenance (edit a rule file), resubmitting the SAME patch
     against the SAME parent returned the OLD cached assessment instead of
-    running the full reassessment the API advertises."""
+    running the full reassessment the API advertises.
+
+    Codex#4 (round 11, 2026-09-13): the fingerprint is now a digest of the
+    exact PARSED rule/safe-test objects `_load_resources()` loaded, not a
+    raw byte hash of the live YAML files (see
+    `_rules_and_safe_tests_fingerprint()`'s own comment) - so the edit here
+    must be a semantic one (a real field changes), not a comment-only
+    edit, which would no longer be detected (correctly: a comment-only
+    edit does not change what gets evaluated, so reusing the cached result
+    for it is not a bug)."""
     import shutil
 
     rules_copy = tmp_path / "rules"
@@ -271,8 +280,10 @@ def test_answers_cache_invalidated_when_rules_change(
 
     # simulate a rule-catalogue maintenance edit between the two calls
     mem_rule = rules_copy / "memory" / "MEM-001.yaml"
+    assert "severity: high" in mem_rule.read_text(encoding="utf-8")
     mem_rule.write_text(
-        mem_rule.read_text(encoding="utf-8") + "\n# maintenance edit\n", encoding="utf-8"
+        mem_rule.read_text(encoding="utf-8").replace("severity: high", "severity: medium"),
+        encoding="utf-8",
     )
 
     second = client.post(f"/v1/assessments/{aid}/answers", json={"memory_persistent": True})
@@ -346,6 +357,46 @@ def test_answers_evaluates_against_the_rules_state_the_fingerprint_describes(
         "that landed after fingerprinting but before the actual evaluation "
         "read the rules"
     )
+
+
+def test_rules_fingerprint_is_immune_to_a_live_file_edit_after_loading(
+    tmp_path: Path,
+) -> None:
+    """Regression for Codex#4 (round 11, 2026-09-13), reproduced exactly as
+    reported: even the round-10 fix's "immediately adjacent" read of the
+    live rules directory inside _rules_and_safe_tests_fingerprint() was
+    still a SEPARATE, non-atomic re-read of settings.rules_root/
+    safe_tests_root - a rules edit landing between _load_resources()'s
+    parse and that re-read meant the assessment evaluated parsed state A
+    while the cache recorded fingerprint B (or vice versa). Hashing the
+    canonical model_dump_json() of the already-loaded `resources` (not a
+    second read of anything) means a live file edit AFTER loading cannot
+    change the fingerprint at all - there is no read left to race
+    against."""
+    import shutil
+
+    import app.main as main_module
+
+    rules_copy = tmp_path / "rules"
+    shutil.copytree(REPO / "rules", rules_copy)
+    settings = main_module.Settings(
+        rules_root=str(rules_copy),
+        safe_tests_root=str(REPO / "safe_tests"),
+        db_path=str(tmp_path / "idx.sqlite"),  # does not exist - resources.conn stays None
+    )
+
+    resources = main_module._load_resources(settings)
+    before = main_module._rules_and_safe_tests_fingerprint(resources)
+
+    mem_rule = rules_copy / "memory" / "MEM-001.yaml"
+    assert "severity: high" in mem_rule.read_text(encoding="utf-8")
+    mem_rule.write_text(
+        mem_rule.read_text(encoding="utf-8").replace("severity: high", "severity: low"),
+        encoding="utf-8",
+    )
+
+    after = main_module._rules_and_safe_tests_fingerprint(resources)
+    assert after == before, "the fingerprint must depend only on `resources`, not live disk state"
 
 
 def test_answers_does_not_500_on_a_foreign_sqlite_database(

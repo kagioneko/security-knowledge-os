@@ -545,21 +545,31 @@ def _run(inp: AssessmentInput, settings: Settings) -> AssessmentReport:
         _ASSESSMENT_SEMAPHORE.release()
 
 
-def _rules_and_safe_tests_fingerprint(settings: Settings) -> str:
-    """Codex#5 (round 9, 2026-09-12): a content hash over every rule/
-    safe-test YAML file, so an edit to either catalogue (without touching
-    settings.rules_root/safe_tests_root themselves) is detectable too, not
-    just a path change."""
+def _rules_and_safe_tests_fingerprint(resources: _EvaluationResources) -> str:
+    """Codex#5 (round 9, 2026-09-12): a content digest over every rule/
+    safe-test, so an edit to either catalogue is detectable, not just a
+    path change.
+
+    Codex#4 (round 11, 2026-09-13), reproduced exactly as reported: round
+    10's fix made this "immediately adjacent" to _load_resources()'s own
+    parse of the same files, closing the huge (semaphore-wait/LLM-call
+    duration) window - but "immediately adjacent" is still a SEPARATE,
+    non-atomic re-read of the live directories, and a rules edit landing
+    in that much narrower window still meant the assessment evaluated
+    parsed state A while the cache recorded fingerprint B (or vice versa).
+    Hashing the canonical `model_dump_json()` of the exact `resources`
+    already loaded - not a second read of anything - makes this provably
+    atomic with what _evaluate() below will use: there is no read left to
+    race against."""
     digest = hashlib.sha256()
-    for root in (Path(settings.rules_root), Path(settings.safe_tests_root)):
-        if not root.is_dir():
-            continue
-        for path in sorted(root.rglob("*.yaml")):
-            digest.update(str(path).encode("utf-8"))
-            digest.update(b"\x00")
-            with contextlib.suppress(OSError):
-                digest.update(path.read_bytes())
-            digest.update(b"\x1e")
+    for rule in sorted(resources.catalogue.rules, key=lambda r: r.id):
+        digest.update(rule.model_dump_json().encode("utf-8"))
+        digest.update(b"\x1e")
+    for key in sorted(resources.safe_tests):
+        digest.update(key.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(resources.safe_tests[key].model_dump_json().encode("utf-8"))
+        digest.update(b"\x1e")
     return digest.hexdigest()
 
 
@@ -587,13 +597,11 @@ def _evaluation_fingerprint(
     os.replace() (an already-open read-only connection keeps its file
     descriptor on the original inode across an atomic rename elsewhere, so
     this is not just "read it a little sooner" - it is reading the state
-    that will actually be queried, guaranteed). The rule/safe-test content
-    hash still does its own read of rules_root/safe_tests_root (needed to
-    stay byte-sensitive - see _rules_and_safe_tests_fingerprint's own
-    comment on why a raw content hash, not the parsed catalogue, is used),
-    but that read is now immediately adjacent to _load_resources()'s own
-    parse of the same files, not separated from it by anything
-    attacker-influenceable.
+    that will actually be queried, guaranteed). See
+    _rules_and_safe_tests_fingerprint()'s own comment (round 11, Codex#4)
+    for why the rule/safe-test content digest is now computed from
+    `resources` too, rather than a second (even if immediately adjacent)
+    read of the live directories.
 
     Codex#8 (round 10, 2026-09-13), reproduced exactly as reported: a
     corrupt or foreign SQLite file (one that opens fine but lacks this
@@ -621,7 +629,7 @@ def _evaluation_fingerprint(
         settings.llm_model,
         settings.top_k,
         revision,
-        _rules_and_safe_tests_fingerprint(settings),
+        _rules_and_safe_tests_fingerprint(resources),
     )
 
 
