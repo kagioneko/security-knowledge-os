@@ -18,6 +18,7 @@ from uuid import uuid4
 from pydantic import BaseModel, computed_field
 
 from app.ingestion.loader import LoadedUnit, compute_knowledge_revision, load_corpus
+from app.ingestion.snapshot import snapshot_tree
 from app.ingestion.validator import Level, iter_knowledge_files, validate_tree
 from app.models.knowledge import KnowledgeUnitFrontMatter
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
@@ -288,6 +289,37 @@ def _restore_note(restored: bool, had_existing: bool, backup: Path, db_path: Pat
 
 
 def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport:
+    # Codex#1 / #2 (round 7, 2026-09-12), reproduced exactly as reported:
+    # a file changed transiently during the build and restored right after
+    # still passed integrity (its hash describes whatever got read, not
+    # what was there just before/after); separately, O_NOFOLLOW (round 6,
+    # Codex#5) protects only the FINAL pathname component of a read - an
+    # ANCESTOR directory swapped to an outside-the-root symlink between
+    # check_containment() and the actual read was never checked. Both close
+    # the same way: read the entire tree exactly once, through a
+    # directory-fd walk that never re-resolves a pathname from scratch,
+    # into a private temp directory only this process knows about - see
+    # app/ingestion/snapshot.py. Every step below (validation, chunking,
+    # hashing) then operates on that private, immutable snapshot; there is
+    # no live, externally-mutable tree left to race against by the time
+    # any of it runs.
+    try:
+        snapshot_root = snapshot_tree(knowledge_root)
+    except OSError as exc:
+        return ReindexReport(
+            decision=stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "reindex",
+                f"could not safely snapshot the knowledge root: {exc}",
+            )
+        )
+    try:
+        return _reindex_atomic_locked_on_snapshot(snapshot_root, db_path)
+    finally:
+        shutil.rmtree(snapshot_root, ignore_errors=True)
+
+
+def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> ReindexReport:
     # Codex#4 sub-point 1 (round 5, 2026-09-12): reading the OLD index's
     # revision and the initial validation walk used to run outside any
     # try/except in this function - a corrupt EXISTING index (e.g. missing

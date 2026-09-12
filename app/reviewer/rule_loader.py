@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from app.ingestion.parser import FrontMatterError, _read_text_no_follow
 from app.models.risk import RiskRule
 from app.models.rule_clause import Clause, Operator
 from app.reviewer.clause_eval import ClauseError, validate_clause
@@ -156,7 +157,17 @@ def load_rules(rules_root: Path | str) -> RuleCatalogue:
             # could point outside rules_root at an arbitrary file.
             raise RuleLoadError(f"{path}: symlinked rule files are not allowed")
         try:
-            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+            # Codex#2 (round 7, 2026-09-12): is_symlink() above and the read
+            # used to be two separate pathname-based operations - the same
+            # TOCTOU class fixed for the knowledge loader in round 6
+            # (Codex#5). _read_text_no_follow() makes the read itself fail
+            # (ELOOP) if the path names a symlink at the moment of the open,
+            # regardless of what the check above saw a moment earlier.
+            text = _read_text_no_follow(path)
+        except (OSError, FrontMatterError) as exc:
+            raise RuleLoadError(f"{path}: {exc}") from exc
+        try:
+            raw = yaml.safe_load(text)
         except yaml.YAMLError as exc:
             raise RuleLoadError(f"{path}: invalid YAML: {exc}") from exc
         if not isinstance(raw, dict):

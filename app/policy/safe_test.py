@@ -23,6 +23,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+from app.ingestion.parser import FrontMatterError, _read_text_no_follow
 from app.models.assessment import SafeTest, SafeTestEnvironment, UntrustedSafeTestProposal
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
 from app.models.risk import RiskRule
@@ -112,7 +113,24 @@ def load_safe_test_templates(root: Path | str) -> dict[str, SafeTest]:
             # Codex cross-review finding #2 (2026-09-11): consistent confinement
             # across all three loaders (knowledge/rules/safe-tests).
             raise SafeTestLoadError(f"{path}: symlinked safe-test files are not allowed")
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        try:
+            # Codex#2 (round 7, 2026-09-12): is_symlink() above and the read
+            # used to be two separate pathname-based operations - the same
+            # TOCTOU class fixed for the knowledge loader in round 6
+            # (Codex#5). _read_text_no_follow() makes the read itself fail
+            # (ELOOP) if the path names a symlink at the moment of the open.
+            text = _read_text_no_follow(path)
+        except (OSError, FrontMatterError) as exc:
+            raise SafeTestLoadError(f"{path}: {exc}") from exc
+        try:
+            # Codex#5 (round 7, 2026-09-12): this yaml.safe_load() call used
+            # to run OUTSIDE any try/except at all - invalid YAML raised a
+            # bare yaml.YAMLError straight out of load_safe_test_templates(),
+            # not the SafeTestLoadError every other per-file problem here
+            # produces.
+            raw = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise SafeTestLoadError(f"{path}: invalid YAML: {exc}") from exc
         try:
             test = SafeTest.model_validate(raw)
         except ValidationError as exc:

@@ -547,6 +547,53 @@ def test_build_index_rejects_a_file_as_root(tmp_path: Path) -> None:
         build_index(a_file, tmp_path / "idx.sqlite")
 
 
+def test_reindex_snapshot_is_immune_to_source_mutation_after_it_is_taken(
+    tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#1 (round 7, 2026-09-12), reproduced exactly as
+    reported: a file changed transiently during the build (between the
+    file-count/validation walk and build_index()'s own read) and restored
+    right after still passed integrity, because the published index simply
+    reflects whatever was read at that moment. reindex_atomic() now takes
+    one immutable snapshot of the entire tree BEFORE any validation or
+    build step runs; mutating the SOURCE tree after that point must have
+    zero effect on what gets published."""
+    import shutil
+
+    import app.retrieval.index as index_module
+
+    corpus2 = tmp_path / "corpus2"
+    shutil.copytree(corpus_alt_root, corpus2)
+    ku_path = next(corpus2.glob("public/**/*.md"))
+    original_text = ku_path.read_text(encoding="utf-8")
+
+    original_snapshot_tree = index_module.snapshot_tree
+
+    def _mutate_source_right_after_snapshotting(root):  # type: ignore[no-untyped-def]
+        snapshot = original_snapshot_tree(root)
+        # the source tree changes the instant after this process took its
+        # private copy, then is restored before anything else could
+        # observe the swap - exactly the window the review's repro used.
+        ku_path.write_text(original_text + "\nPOISONED_CONTENT_MARKER", encoding="utf-8")
+        try:
+            return snapshot
+        finally:
+            ku_path.write_text(original_text, encoding="utf-8")
+
+    monkeypatch.setattr(index_module, "snapshot_tree", _mutate_source_right_after_snapshotting)
+
+    db = tmp_path / "idx.sqlite"
+    report = reindex_atomic(corpus2, db)
+    assert report.ok
+
+    conn = connect(db, read_only=True)
+    try:
+        texts = " ".join(r["text"] for r in conn.execute("SELECT text FROM chunks"))
+    finally:
+        conn.close()
+    assert "POISONED_CONTENT_MARKER" not in texts
+
+
 def test_reindex_fails_closed_when_the_lock_setup_itself_fails(corpus_alt_root: Path) -> None:
     """Regression for Codex#9 (round 6, 2026-09-12), reproduced exactly as
     reported: parent-directory creation, lock-file opening, and the
