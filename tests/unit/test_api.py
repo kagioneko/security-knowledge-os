@@ -9,6 +9,8 @@ import yaml
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.storage.db import connect
+from app.storage.repository import ChunkRepository
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURES = REPO / "tests" / "fixtures" / "assessments"
@@ -346,6 +348,34 @@ def test_reindex_fails_closed_returns_422(
     resp = client.post("/v1/knowledge/reindex")
     assert resp.status_code == 422
     assert resp.json()["detail"]["decision"]["outcome"] == "POLICY_BLOCKED"
+
+
+def test_reindex_endpoint_refuses_an_empty_knowledge_root(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#3 (round 6, 2026-09-12): /v1/knowledge/reindex
+    calls reindex_atomic() directly with no guard of its own - an empty
+    (but existing) SKOS_KNOWLEDGE_ROOT used to replace a real index with an
+    empty one through the API, not just via the CLI script."""
+    db = tmp_path / "idx.sqlite"
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(REPO / "tests" / "fixtures" / "corpus_alt"))
+    monkeypatch.setenv("SKOS_DB_PATH", str(db))
+    good = client.post("/v1/knowledge/reindex")
+    assert good.status_code == 200
+    assert good.json()["ok"] is True
+
+    empty_root = tmp_path / "empty-knowledge-root"
+    empty_root.mkdir()
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(empty_root))
+    bad = client.post("/v1/knowledge/reindex")
+    assert bad.status_code == 422
+    assert bad.json()["detail"]["decision"]["outcome"] == "POLICY_BLOCKED"
+
+    conn = connect(db, read_only=True)
+    try:
+        assert ChunkRepository(conn).chunk_count() > 0  # untouched
+    finally:
+        conn.close()
 
 
 def test_assessment_endpoint_rejects_a_foreign_origin(client: TestClient) -> None:

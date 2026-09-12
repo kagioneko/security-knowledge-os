@@ -22,7 +22,7 @@ from app.ingestion.validator import Level, iter_knowledge_files, validate_tree
 from app.models.knowledge import KnowledgeUnitFrontMatter
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
 from app.models.retrieval import Chunk, chunk_content_hash
-from app.storage.db import connect
+from app.storage.db import ForeignDatabaseError, connect, verify_application_id
 from app.storage.integrity import verify_chunk_hashes
 from app.storage.repository import ChunkRepository
 
@@ -157,6 +157,14 @@ def _current_revision(db_path: Path) -> str | None:
         return None
     conn = connect(db_path, read_only=True)
     try:
+        # Codex#4 (round 6, 2026-09-12), reproduced exactly as reported: an
+        # unrelated SQLite file that merely happens to have a
+        # compatible-looking meta(key,value) table (created by something
+        # else entirely) has no 'knowledge_revision' row, so this used to
+        # return None - "no existing index" - and reindex_atomic() would go
+        # on to atomically replace that unrelated file's content entirely.
+        # verify_application_id() catches this before that decision is made.
+        verify_application_id(conn, db_path)
         return ChunkRepository(conn).knowledge_revision()
     finally:
         conn.close()
@@ -262,7 +270,7 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
         old_revision = _current_revision(db_path)
         expected_file_count = len(iter_knowledge_files(knowledge_root))
         issues = validate_tree(knowledge_root)
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, sqlite3.Error, ForeignDatabaseError) as exc:
         return ReindexReport(
             decision=stop(
                 PolicyOutcome.POLICY_BLOCKED,
@@ -283,6 +291,24 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
                 PolicyOutcome.POLICY_BLOCKED,
                 "reindex",
                 f"{len(errors)} knowledge validation error(s); index unchanged",
+            ),
+            old_revision=old_revision,
+        )
+
+    # Codex#3 (round 6, 2026-09-12), reproduced exactly as reported: a
+    # valid but EMPTY knowledge root has zero validation errors, so this
+    # function happily replaced a populated index with an empty one - and
+    # the API's /v1/knowledge/reindex calls this function directly, with no
+    # guard of its own. This was previously fixed only at the
+    # scripts/build_index.py CLI layer (Codex#7, round 5); fixing it here
+    # closes it for every caller, library and API alike, in one place.
+    if expected_file_count == 0:
+        return ReindexReport(
+            decision=stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "reindex",
+                f"refusing to publish a zero-unit index: no knowledge files found "
+                f"under {knowledge_root}",
             ),
             old_revision=old_revision,
         )

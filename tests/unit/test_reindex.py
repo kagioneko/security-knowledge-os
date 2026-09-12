@@ -81,6 +81,64 @@ def test_reindex_from_a_missing_root_fails_closed_and_keeps_the_old_index(
     assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
 
 
+def test_reindex_atomic_refuses_an_empty_but_existing_root(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#3 (round 6, 2026-09-12), reproduced exactly as
+    reported: a knowledge root that EXISTS but contains zero files has zero
+    validation errors (unlike the missing-root case above), so
+    reindex_atomic() itself - not just the scripts/build_index.py CLI
+    (Codex#7, round 5) - happily replaced a real, populated index with an
+    empty one. The API's /v1/knowledge/reindex calls this function
+    directly with no guard of its own, so this must be fixed here."""
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    good_revision = good.new_revision
+    assert good.chunks_indexed > 0
+
+    empty_root = tmp_path / "empty-knowledge-root"
+    empty_root.mkdir()
+
+    bad = reindex_atomic(empty_root, db)
+    assert not bad.ok
+    assert bad.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert _revision(db) == good_revision  # existing, populated index untouched
+    assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
+    assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
+
+
+def test_reindex_refuses_to_clobber_an_unrelated_sqlite_database(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#4 (round 6, 2026-09-12), reproduced exactly as
+    reported: an unrelated SQLite database's identity was checked only by
+    querying meta(key,value) - CREATE TABLE IF NOT EXISTS is idempotent, so
+    any file that happens to already have a compatible `meta` table
+    (created by something else entirely) was silently adopted as "an
+    existing SKOS index" and then atomically replaced, destroying whatever
+    it actually held."""
+    import sqlite3
+
+    other = tmp_path / "other.sqlite"
+    conn = sqlite3.connect(other)
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("CREATE TABLE precious (v TEXT NOT NULL)")
+    conn.execute("INSERT INTO precious(v) VALUES ('do not delete me')")
+    conn.commit()
+    conn.close()
+
+    report = reindex_atomic(corpus_alt_root, other)
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+
+    conn = sqlite3.connect(other)
+    try:
+        rows = conn.execute("SELECT v FROM precious").fetchall()
+    finally:
+        conn.close()
+    assert rows == [("do not delete me",)]  # untouched
+
+
 def test_reindex_restores_previous_index_on_post_swap_failure(
     tmp_path: Path, corpus_alt_root: Path
 ) -> None:
