@@ -142,6 +142,43 @@ def test_constraints_check_ignores_a_pin_for_something_not_installed(
     assert preflight._constraints_file_present() is True
 
 
+def test_constraints_pins_are_complete_for_the_real_project() -> None:
+    """Sanity: the committed constraints.txt is currently complete (see
+    _constraints_pins_are_complete()'s own comment) - this checks preflight
+    actually looks for completeness, not just consistency."""
+    assert preflight._constraints_pins_are_complete() is True
+
+
+def test_constraints_completeness_catches_an_incomplete_file(tmp_path, monkeypatch) -> None:
+    """Regression for Codex#9 (round 10, 2026-09-13), reproduced exactly as
+    reported: a temporary constraints file containing only ONE correctly-
+    versioned installed package caused the old, single
+    _constraints_file_present() check to report success despite omitting
+    the remainder of the project's dependency closure -
+    _constraints_file_present() only ever compares PINNED-and-installed
+    pairs for a version MISMATCH, it never required every installed
+    closure member to have a pin at all.
+    _constraints_pins_are_complete() is the new, separate check that
+    closes that gap; splitting it out (rather than folding completeness
+    into _constraints_file_present() itself) keeps that function's
+    existing, narrower mismatch-only tests
+    (test_constraints_check_ignores_a_pin_for_something_not_installed
+    above) intact, since a partial-but-internally-consistent
+    constraints.txt is still valid input for THAT check."""
+    import importlib.metadata as importlib_metadata
+
+    real_pydantic_version = importlib_metadata.version("pydantic")
+    (tmp_path / "constraints.txt").write_text(
+        f"pydantic=={real_pydantic_version}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(preflight, "ROOT", tmp_path)
+
+    # the existing, narrower check still passes - this one pin is correct
+    assert preflight._constraints_file_present() is True
+    # but the fuller dependency closure is not pinned at all
+    assert preflight._constraints_pins_are_complete() is False
+
+
 def test_head_itself_is_a_known_ancestor_of_head() -> None:
     import subprocess
 

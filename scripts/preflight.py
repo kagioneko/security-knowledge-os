@@ -134,6 +134,54 @@ def _constraints_file_present() -> bool:
     return ok
 
 
+def _constraints_pins_are_complete() -> bool:
+    """Codex#9 (round 10, 2026-09-13), reproduced exactly as reported:
+    `_constraints_file_present()` above confirms every PIN PRESENT matches
+    what is installed, but never required every package in the project's
+    actual dependency closure to have a pin at all - a constraints file
+    with a single correctly-versioned pin (or none of the closure at all)
+    passed that check while describing itself as a reproducible
+    exact-version baseline for the whole environment.
+
+    Reuses generate_sbom.py's own closure walk - the same one whose
+    "declared and installed" completeness the `sbom` check earlier in
+    `main()` already enforces with `--require-complete` - so "complete"
+    here means exactly the project's real dependency set, not a second,
+    independently (and possibly inconsistently) defined notion of it. Only
+    closure members that are actually INSTALLED are required to have a
+    pin; a closure member that is declared but not installed is the SBOM
+    completeness check's concern, not this one's (constraints.txt cannot
+    meaningfully pin a version nothing installed provides)."""
+    from importlib import metadata
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from generate_sbom import _dependency_closure, _normalize, declared_dependencies
+
+    roots = {_normalize(name) for name in declared_dependencies()}
+    closure = _dependency_closure(roots)
+
+    installed_closure: set[str] = set()
+    for name in closure:
+        try:
+            metadata.version(name)
+        except metadata.PackageNotFoundError:
+            continue  # declared but not installed - the SBOM check's concern
+        installed_closure.add(name)
+
+    path = ROOT / "constraints.txt"
+    pins = _parse_constraints(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    missing = sorted(installed_closure - set(pins))
+    ok = not missing
+    print(
+        f"[{'ok ' if ok else 'FAIL'}] constraints.txt pins every installed "
+        "dependency-closure package"
+    )
+    for name in missing:
+        print(f"    missing pin: {name}")
+    return ok
+
+
 def _parse_manifest_claims(text: str) -> tuple[int, int] | None:
     """Extract the `(tracked files, tests)` counts PUBLICATION_MANIFEST.md
     claims for itself, from its "Tracked files: **N**" / "Tests: **N**
@@ -316,6 +364,7 @@ def main() -> int:
         _no_private_or_secret_tracked(),
         _license_files_present(),
         _constraints_file_present(),
+        _constraints_pins_are_complete(),
         _publication_manifest_matches_reality(),
     ]
 
