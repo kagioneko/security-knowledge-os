@@ -147,6 +147,29 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
     except ValidationError as exc:
         raise RuleLoadError(f"{source}: invalid rule: {exc}") from exc
 
+    problems = rule_problems(rule)
+    if problems:
+        raise RuleLoadError(f"{source}: " + "; ".join(problems))
+    return rule
+
+
+def rule_problems(rule: RiskRule) -> list[str]:
+    """Every structural problem with an already-constructed ``RiskRule``,
+    independent of how it was built.
+
+    Codex#2 (round 11, 2026-09-13), reproduced exactly as reported:
+    ``load_rules()`` enforces all of these for a YAML-sourced rule, but
+    ``assess()`` (the public library entry point) accepted a
+    ``RuleCatalogue`` built directly in Python with none of them checked -
+    a rule referencing a nonexistent fact (``is_unknown`` on it is always
+    true) fired deterministically and produced a false ``PASS``.
+    Centralizing these checks here, called from both ``_parse_rule()``
+    below and ``validate_rule_catalogue()`` (used by ``assess()``), means
+    a rule gets the exact same validation regardless of which path built
+    it.
+    """
+    problems: list[str] = []
+
     # Codex#3 (round 7, 2026-09-12) required `rule.clauses()` (conditions OR
     # checks) to be non-empty, unless manual_review=True - catching a rule
     # with NEITHER conditions nor checks. Codex#1 (round 8, 2026-09-12),
@@ -164,8 +187,8 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
     # same round to add manual_review=True) for the two real rules this
     # caught.
     if not rule.checks and not rule.manual_review:
-        raise RuleLoadError(
-            f"{source} [{rule.id}]: rule has no checks or manual_review=True - "
+        problems.append(
+            f"[{rule.id}]: rule has no checks or manual_review=True - "
             "a trigger condition alone never produces a finding, so it can never "
             "produce a finding"
         )
@@ -178,8 +201,8 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
     # actually fired and a Finding(origin="rule", risk_id="LLM-OBS-00001")
     # was constructed. Reject it at load time instead.
     if rule.id.startswith(LLM_OBS_PREFIX):
-        raise RuleLoadError(
-            f"{source}: rule id {rule.id!r} uses the reserved {LLM_OBS_PREFIX!r} "
+        problems.append(
+            f"rule id {rule.id!r} uses the reserved {LLM_OBS_PREFIX!r} "
             "prefix (reserved for origin='llm' findings)"
         )
 
@@ -187,14 +210,29 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
         try:
             validate_clause(clause)
         except ClauseError as exc:
-            raise RuleLoadError(f"{source} [{rule.id}]: {exc}") from exc
+            problems.append(f"[{rule.id}]: {exc}")
 
     unknown_evidence = set(rule.required_evidence) - EVIDENCE_KEYS
     if unknown_evidence:
-        raise RuleLoadError(
-            f"{source} [{rule.id}]: unknown required_evidence {sorted(unknown_evidence)}"
-        )
-    return rule
+        problems.append(f"[{rule.id}]: unknown required_evidence {sorted(unknown_evidence)}")
+
+    return problems
+
+
+def validate_rule_catalogue(catalogue: RuleCatalogue) -> list[str]:
+    """Every structural problem in an already-built ``RuleCatalogue``,
+    including cross-rule duplicate ids - the same checks ``load_rules()``
+    already applies to every YAML-sourced rule (Codex#2, round 11,
+    2026-09-13), enforced here against a catalogue regardless of how it
+    was constructed. Returns an empty list for a fully valid catalogue."""
+    problems: list[str] = []
+    seen: set[str] = set()
+    for rule in catalogue.rules:
+        if rule.id in seen:
+            problems.append(f"duplicate rule id {rule.id}")
+        seen.add(rule.id)
+        problems.extend(rule_problems(rule))
+    return problems
 
 
 def load_rules(rules_root: Path | str) -> RuleCatalogue:

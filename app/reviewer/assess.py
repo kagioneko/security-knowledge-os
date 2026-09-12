@@ -53,7 +53,7 @@ from app.reviewer.normalize import to_context
 from app.reviewer.questions import build_missing_information, build_questions
 from app.reviewer.rollup import compute_overall_status, merge_findings, requires_human_review
 from app.reviewer.rule_engine import evaluate_rules_detailed
-from app.reviewer.rule_loader import RuleCatalogue
+from app.reviewer.rule_loader import RuleCatalogue, validate_rule_catalogue
 from app.storage.integrity import verify_chunk_hashes
 
 _FLAGGED = {FindingStatus.FAIL, FindingStatus.WARN, FindingStatus.UNKNOWN}
@@ -94,6 +94,27 @@ def assess(
                 PolicyOutcome.POLICY_BLOCKED,
                 "rule-catalogue",
                 "rule catalogue is empty - refusing to assess against zero rules",
+            )
+        )
+
+    # Codex#2 (round 11, 2026-09-13), reproduced exactly as reported:
+    # load_rules() enforces the fact whitelist, operator/type compatibility,
+    # evidence keys, reserved LLM-OBS- ids, duplicate ids, and rule shape
+    # (checks or manual_review) - but this public library entry point only
+    # ever checked the catalogue was non-empty. A RuleCatalogue built
+    # directly in Python (bypassing load_rules() entirely) with a clause
+    # referencing a nonexistent fact loaded fine (an unknown fact makes
+    # is_unknown always evaluate true) and produced a deterministic, silent
+    # false PASS. validate_rule_catalogue() is the same validation
+    # load_rules() already applies to every YAML-sourced rule; calling it
+    # here means a directly-constructed catalogue gets it too.
+    problems = validate_rule_catalogue(catalogue)
+    if problems:
+        raise PolicyStop(
+            stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "rule-catalogue",
+                f"rule catalogue failed validation: {'; '.join(problems)}",
             )
         )
 

@@ -45,6 +45,35 @@ def test_empty_catalogue_fails_closed_not_false_pass(
     assert exc.value.decision.outcome is PolicyOutcome.POLICY_BLOCKED
 
 
+def test_directly_constructed_catalogue_with_an_unknown_fact_fails_closed(
+    load_assessment: Callable[[str], AssessmentInput],
+) -> None:
+    """Regression for Codex#2 (round 11, 2026-09-13), reproduced exactly as
+    reported: load_rules() enforces the fact whitelist (via
+    clause_eval.validate_clause) for every YAML-sourced rule, but assess()
+    itself did not - a RuleCatalogue built directly in Python with a clause
+    referencing a nonexistent fact loaded fine (an unknown fact makes
+    `is_unknown` always evaluate true) and produced a deterministic, silent
+    PASS instead of a refusal."""
+    from app.models.risk import RiskRule
+    from app.models.rule_clause import Clause, Operator
+
+    bad_rule = RiskRule(
+        id="BAD-001",
+        title="invalid rule",
+        category="agent-security",
+        severity="high",
+        checks=[Clause(field="not_a_fact", op=Operator.IS_UNKNOWN)],
+    )
+    with pytest.raises(PolicyStop) as exc:
+        assess(
+            load_assessment("S-001-prompt-only"),
+            RuleCatalogue(rules=[bad_rule]),
+            settings=Settings(mode=Mode.PRIVATE),
+        )
+    assert exc.value.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+
+
 def test_human_gate_fails_closed_on_unknown_action() -> None:
     assert evaluate_action("unrecognised").outcome is PolicyOutcome.HUMAN_APPROVAL_REQUIRED
 
