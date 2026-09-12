@@ -54,6 +54,66 @@ def test_rejects_a_symlinked_ancestor_directory(tmp_path: Path) -> None:
         snapshot_tree(root)
 
 
+def test_rejects_a_file_mutated_during_the_copy_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#2 (round 8, 2026-09-12), reproduced exactly as
+    reported: the existing "immune to later mutation" test below only
+    mutates the source AFTER snapshot_tree() has fully returned - it never
+    exercises a write landing DURING the read inside
+    `_copy_file_no_follow()`. Monkeypatching shutil.copyfileobj to mutate
+    the source file (via a separate open(), not the already-open fd)
+    right after the read simulates exactly that: the bytes already read
+    into the snapshot may or may not reflect a state that ever existed as
+    a stable, observable version of the file. The before/after fstat
+    comparison on the same fd must detect this and refuse to publish
+    rather than silently keeping whatever bytes were read."""
+    import shutil as shutil_module
+
+    root = tmp_path / "src"
+    root.mkdir()
+    ku = root / "ku.md"
+    ku.write_text("original", encoding="utf-8")
+
+    real_copyfileobj = shutil_module.copyfileobj
+
+    def racy_copyfileobj(src: object, dst: object, *a: object, **kw: object) -> None:
+        real_copyfileobj(src, dst, *a, **kw)  # type: ignore[arg-type]
+        ku.write_text("mutated-during-the-copy-window", encoding="utf-8")
+
+    monkeypatch.setattr(shutil_module, "copyfileobj", racy_copyfileobj)
+
+    with pytest.raises(SnapshotError, match="changed while being copied"):
+        snapshot_tree(root)
+
+
+def test_rejects_a_directory_whose_entries_changed_during_the_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#2 (round 8, 2026-09-12), reproduced exactly as
+    reported: a file added to (or removed from) a directory while
+    `_walk_no_follow()` was still copying the entries it saw at the start
+    produces a mixed-time snapshot. Monkeypatching `_copy_file_no_follow`
+    to add a new file to the source directory as a side effect of copying
+    the first one simulates exactly that."""
+    import app.ingestion.snapshot as snapshot_module
+
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "first.md").write_text("first", encoding="utf-8")
+
+    real_copy = snapshot_module._copy_file_no_follow
+
+    def racy_copy(name: str, dir_fd: int, dest: Path) -> None:
+        real_copy(name, dir_fd, dest)
+        (root / "added-during-walk.md").write_text("surprise", encoding="utf-8")
+
+    monkeypatch.setattr(snapshot_module, "_copy_file_no_follow", racy_copy)
+
+    with pytest.raises(SnapshotError, match="directory entries changed"):
+        snapshot_tree(root)
+
+
 def test_snapshot_is_a_private_copy_immune_to_later_source_mutation(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
