@@ -74,6 +74,21 @@ class Evidence(BaseModel):
 
 
 class Finding(BaseModel):
+    # Codex#11 (round 7, 2026-09-12), reproduced exactly as reported:
+    # without this, both direct assignment (`f.status = FindingStatus.FAIL`)
+    # and `model_copy(update=...)` could convert an LLM WARN into a FAIL
+    # after `_enforce_llm_boundary` had already run - decision A8 says the
+    # LLM layer may never create or clear a FAIL, but that boundary only
+    # existed at CONSTRUCTION time. `frozen=True` closes the direct-
+    # assignment vector entirely (any attribute write now raises).
+    # `model_copy(update=...)` still bypasses pydantic validators by
+    # design (a documented, accepted library-level limitation - no code
+    # path in this app does this; see PUBLICATION_MANIFEST.md's known-risks
+    # table) even on a frozen model, so merge_findings() below independently
+    # re-verifies the A8 invariant on every LLM-origin finding it accepts,
+    # regardless of how that Finding was constructed.
+    model_config = ConfigDict(frozen=True)
+
     risk_id: str
     title: str
     severity: Severity

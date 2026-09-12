@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.models.assessment import OverallStatus
-from app.models.risk import Finding, FindingStatus
+from app.models.risk import LLM_OBS_PREFIX, Finding, FindingStatus
 
 # Decision A6: FAIL > CONDITIONAL(WARN) > UNKNOWN > PASS
 _STATUS_TO_OVERALL = {
@@ -67,6 +67,22 @@ def merge_findings(
     for finding in llm_findings:
         if finding.origin != "llm":
             raise ValueError("merge_findings only accepts origin='llm' findings as additions")
+        # Codex#11 (round 7, 2026-09-12): Finding._enforce_llm_boundary
+        # already caps this at construction time, but `model_copy(update=
+        # ...)` bypasses pydantic validators regardless of `frozen=True`
+        # (a documented, accepted library-level limitation) - independently
+        # re-verifying the A8 invariant HERE, at the merge boundary, means
+        # it holds regardless of how an LLM-origin Finding was constructed,
+        # not only for the one construction path this app's own code uses.
+        if finding.status not in (FindingStatus.WARN, FindingStatus.UNKNOWN):
+            raise ValueError(
+                f"LLM finding {finding.risk_id} has status {finding.status} - "
+                "LLM-origin findings must be capped at WARN or UNKNOWN (decision A8)"
+            )
+        if not finding.risk_id.startswith(LLM_OBS_PREFIX):
+            raise ValueError(
+                f"LLM finding {finding.risk_id!r} must use the {LLM_OBS_PREFIX!r} prefix"
+            )
         if finding.risk_id in rule_ids:
             raise ValueError(
                 f"LLM finding {finding.risk_id} collides with a deterministic finding"

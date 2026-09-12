@@ -89,3 +89,28 @@ def test_merge_findings_adds_llm_obs() -> None:
 def test_merge_findings_rejects_non_llm_addition() -> None:
     with pytest.raises(ValueError):
         merge_findings([], [_f(FindingStatus.WARN, risk_id="X-001", origin="rule")])
+
+
+def test_finding_is_frozen_direct_assignment_raises() -> None:
+    """Regression for Codex#11 (round 7, 2026-09-12), reproduced exactly as
+    reported: `f.status = FindingStatus.FAIL` used to silently convert an
+    LLM WARN into a FAIL after _enforce_llm_boundary had already run -
+    decision A8 says the LLM layer may never create or clear a FAIL, but
+    that boundary only existed at construction time."""
+    finding = _f(FindingStatus.WARN, risk_id="LLM-OBS-00001", origin="llm")
+    with pytest.raises(ValueError):
+        finding.status = FindingStatus.FAIL  # type: ignore[misc]
+
+
+def test_merge_findings_rejects_a_model_copy_bypassed_llm_finding() -> None:
+    """Regression for Codex#11 (round 7, 2026-09-12): `model_copy(update=
+    ...)` bypasses pydantic validators regardless of `frozen=True` (a
+    documented, accepted library-level limitation - see
+    PUBLICATION_MANIFEST.md's known-risks table). merge_findings()
+    independently re-verifies the A8 invariant at the merge boundary, so it
+    holds even for a Finding constructed this way."""
+    warn = _f(FindingStatus.WARN, risk_id="LLM-OBS-00001", origin="llm")
+    escalated = warn.model_copy(update={"status": FindingStatus.FAIL})
+    assert escalated.status is FindingStatus.FAIL  # the bypass itself is real and accepted
+    with pytest.raises(ValueError, match="WARN or UNKNOWN"):
+        merge_findings([], [escalated])
