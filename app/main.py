@@ -22,8 +22,10 @@ import contextlib
 import hashlib
 import ipaddress
 import logging
+import sqlite3
 import threading
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -36,13 +38,13 @@ from app.config import Settings
 from app.ingestion.validator import Level, validate_markdown
 from app.llm.factory import get_client
 from app.models.answer import AnswerPatch
-from app.models.assessment import AssessmentInput
+from app.models.assessment import AssessmentInput, SafeTest
 from app.models.report import AssessmentReport, ReportStatus
 from app.policy.safe_test import load_safe_test_templates
 from app.retrieval.index import ReindexReport, reindex_atomic
 from app.reviewer.answers import AnswerValidationError, apply_patch
 from app.reviewer.report import build_report, render_text
-from app.reviewer.rule_loader import load_rules
+from app.reviewer.rule_loader import RuleCatalogue, load_rules
 from app.storage.db import connect
 from app.storage.repository import ChunkRepository
 
@@ -446,7 +448,30 @@ def _settings() -> Settings:
     return Settings.from_env()
 
 
-def _run(inp: AssessmentInput, settings: Settings) -> AssessmentReport:
+@dataclass
+class _EvaluationResources:
+    """Everything build_report() reads to produce an AssessmentReport,
+    loaded exactly once - see _load_resources(). Codex#5 (round 10,
+    2026-09-13): sharing one loaded instance between fingerprinting and
+    evaluation (rather than each doing its own independent load) is what
+    closes the race described on _evaluation_fingerprint() below."""
+
+    catalogue: RuleCatalogue
+    safe_tests: dict[str, SafeTest]
+    conn: sqlite3.Connection | None
+
+
+def _load_resources(settings: Settings) -> _EvaluationResources:
+    catalogue = load_rules(settings.rules_root)
+    safe_tests = load_safe_test_templates(settings.safe_tests_root)
+    db_path = Path(settings.db_path)
+    conn = connect(db_path, read_only=True) if db_path.exists() else None
+    return _EvaluationResources(catalogue, safe_tests, conn)
+
+
+def _evaluate(
+    inp: AssessmentInput, settings: Settings, resources: _EvaluationResources
+) -> AssessmentReport:
     # Codex#6 (round 9, 2026-09-12): bound how many assessments (each a real
     # rule-load, and a real provider call when an LLM is configured) can run
     # concurrently - see _ASSESSMENT_SEMAPHORE above for what this does and
@@ -458,39 +483,26 @@ def _run(inp: AssessmentInput, settings: Settings) -> AssessmentReport:
             "retry shortly",
         )
     try:
-        catalogue = load_rules(settings.rules_root)
-        safe_tests = load_safe_test_templates(settings.safe_tests_root)
         client = get_client(settings)
-        db_path = Path(settings.db_path)
-        conn = connect(db_path, read_only=True) if db_path.exists() else None
-        try:
-            return build_report(
-                inp,
-                catalogue,
-                settings=settings,
-                client=client,
-                index_conn=conn,
-                safe_tests=safe_tests,
-            )
-        finally:
-            if conn is not None:
-                conn.close()
+        return build_report(
+            inp,
+            resources.catalogue,
+            settings=settings,
+            client=client,
+            index_conn=resources.conn,
+            safe_tests=resources.safe_tests,
+        )
     finally:
         _ASSESSMENT_SEMAPHORE.release()
 
 
-def _knowledge_revision(settings: Settings) -> str | None:
-    db_path = Path(settings.db_path)
-    if not db_path.exists():
-        return None
+def _run(inp: AssessmentInput, settings: Settings) -> AssessmentReport:
+    resources = _load_resources(settings)
     try:
-        conn = connect(db_path, read_only=True)
-    except OSError:
-        return None
-    try:
-        return ChunkRepository(conn).knowledge_revision()
+        return _evaluate(inp, settings, resources)
     finally:
-        conn.close()
+        if resources.conn is not None:
+            resources.conn.close()
 
 
 def _rules_and_safe_tests_fingerprint(settings: Settings) -> str:
@@ -511,26 +523,50 @@ def _rules_and_safe_tests_fingerprint(settings: Settings) -> str:
     return digest.hexdigest()
 
 
-def _evaluation_fingerprint(settings: Settings) -> tuple[object, ...]:
-    """Codex#5 (round 9, 2026-09-12), reproduced exactly as reported: the
-    /answers cache key was only (parent assessment ID, merged input hash)
-    - it omitted rule/safe-test content, the knowledge index revision,
-    mode, and provider/model settings. After legitimate rule or knowledge
-    maintenance (edit a rule, reindex), resubmitting the same patch
-    against the same parent returned the OLD cached assessment instead of
-    running the full reassessment the API advertises. Every input this
-    function's own result actually depends on (app/reviewer/assess.py's
-    build_report signature: catalogue, settings, client, index, safe_tests)
-    is now part of the cache key, so a change to any of them is a cache
-    miss instead of a stale hit.
+def _evaluation_fingerprint(
+    settings: Settings, resources: _EvaluationResources
+) -> tuple[object, ...]:
+    """Codex#5 (round 10, 2026-09-13), reproduced exactly as reported: this
+    used to be computed from a SEPARATE, fresh read of rules_root/
+    safe_tests_root and a SEPARATE connect() to the index, taken in
+    submit_answers() BEFORE _run() loaded its own (also fresh) copies of
+    the exact same resources to actually evaluate against - an arbitrary
+    amount of time (a semaphore wait, a per-cache-key lock wait, the LLM
+    call itself) could pass between those two independent reads. A rules
+    edit or a reindex landing in that window meant the assessment actually
+    ran against state B while the cache recorded fingerprint A; if the
+    state later reverted to A, a later request could be served B's result
+    under A's key.
+
+    Taking the `resources` _load_resources() already loaded - the SAME
+    object _evaluate() below is given, with no second, later read of
+    rules_root/safe_tests_root/the index happening after this point -
+    closes that window: the knowledge revision is read from the exact
+    connection _evaluate() will query, not a second, independently-opened
+    one that could see a different on-disk state after a concurrent
+    os.replace() (an already-open read-only connection keeps its file
+    descriptor on the original inode across an atomic rename elsewhere, so
+    this is not just "read it a little sooner" - it is reading the state
+    that will actually be queried, guaranteed). The rule/safe-test content
+    hash still does its own read of rules_root/safe_tests_root (needed to
+    stay byte-sensitive - see _rules_and_safe_tests_fingerprint's own
+    comment on why a raw content hash, not the parsed catalogue, is used),
+    but that read is now immediately adjacent to _load_resources()'s own
+    parse of the same files, not separated from it by anything
+    attacker-influenceable.
     """
+    revision = (
+        ChunkRepository(resources.conn).knowledge_revision()
+        if resources.conn is not None
+        else None
+    )
     return (
         settings.mode.value,
         settings.allow_confidential,
         settings.llm_provider.value,
         settings.llm_model,
         settings.top_k,
-        _knowledge_revision(settings),
+        revision,
         _rules_and_safe_tests_fingerprint(settings),
     )
 
@@ -607,35 +643,46 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
     # content, the knowledge index revision, mode, provider/model), so a
     # cache hit could return a result computed against rules/knowledge that
     # have since changed. _evaluation_fingerprint() covers those inputs too.
-    cache_key = (
-        assessment_id,
-        hashlib.sha256(new_input.model_dump_json().encode("utf-8")).hexdigest(),
-        *_evaluation_fingerprint(settings),
-    )
+    #
+    # Codex#5 (round 10, 2026-09-13): resources are now loaded exactly ONCE
+    # here, up front, and the SAME loaded catalogue/safe_tests/connection
+    # are reused for both the fingerprint below and the actual evaluation on
+    # a cache miss - see _evaluation_fingerprint()'s own comment for why the
+    # old two-independent-reads approach was racy.
+    resources = _load_resources(settings)
+    try:
+        cache_key = (
+            assessment_id,
+            hashlib.sha256(new_input.model_dump_json().encode("utf-8")).hexdigest(),
+            *_evaluation_fingerprint(settings, resources),
+        )
 
-    # Codex cross-review finding #6 (round 4, 2026-09-12): the cache lookup
-    # and the run-and-store below used to have no synchronization between
-    # them, so two concurrent requests for the same (assessment_id,
-    # new_input) could both miss the cache and both re-run the assessment.
-    # A lock per cache key serializes this section; the second thread to
-    # acquire it re-checks the cache (now populated by the first) before
-    # deciding to run anything itself.
-    with _answer_lock_for(cache_key):
-        cached_id = _ANSWER_CACHE.get(cache_key)
-        if cached_id is not None:
-            cached_entry = _STORE.get(cached_id)
-            if cached_entry is not None:
-                return _respond(cached_entry[1])
+        # Codex cross-review finding #6 (round 4, 2026-09-12): the cache lookup
+        # and the run-and-store below used to have no synchronization between
+        # them, so two concurrent requests for the same (assessment_id,
+        # new_input) could both miss the cache and both re-run the assessment.
+        # A lock per cache key serializes this section; the second thread to
+        # acquire it re-checks the cache (now populated by the first) before
+        # deciding to run anything itself.
+        with _answer_lock_for(cache_key):
+            cached_id = _ANSWER_CACHE.get(cache_key)
+            if cached_id is not None:
+                cached_entry = _STORE.get(cached_id)
+                if cached_entry is not None:
+                    return _respond(cached_entry[1])
 
-        report = _run(new_input, settings)
-        if report.result is not None:
-            prev_revision = (
-                original_report.result.revision if original_report.result is not None else 1
-            )
-            report.result.supersedes = assessment_id
-            report.result.revision = prev_revision + 1
-            _store_put(report.result.assessment_id, (new_input, report))
-            _answer_cache_put(cache_key, report.result.assessment_id)
+            report = _evaluate(new_input, settings, resources)
+            if report.result is not None:
+                prev_revision = (
+                    original_report.result.revision if original_report.result is not None else 1
+                )
+                report.result.supersedes = assessment_id
+                report.result.revision = prev_revision + 1
+                _store_put(report.result.assessment_id, (new_input, report))
+                _answer_cache_put(cache_key, report.result.assessment_id)
+    finally:
+        if resources.conn is not None:
+            resources.conn.close()
     return _respond(report)
 
 

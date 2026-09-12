@@ -94,9 +94,11 @@ def test_concurrent_identical_answers_do_not_duplicate_the_assessment(
     sequential-repeat cache (above) before either could populate it, used to
     each run a full re-assessment and create two distinct child assessments.
     A lock per cache key now serializes the check-cache/run/store section -
-    `_run` is slowed down (not raced with a rendezvous barrier, which would
-    deadlock against the fix's own serialization) to widen the window a real
-    assessment might not reliably hit."""
+    `_evaluate` (the actual per-request evaluation call since round 10's
+    _load_resources()/_evaluate() split, Codex#5) is slowed down (not raced
+    with a rendezvous barrier, which would deadlock against the fix's own
+    serialization) to widen the window a real assessment might not reliably
+    hit."""
     import threading
     import time
 
@@ -107,15 +109,15 @@ def test_concurrent_identical_answers_do_not_duplicate_the_assessment(
     ).json()
     aid = created["result"]["assessment_id"]
 
-    original_run = main_module._run
+    original_evaluate = main_module._evaluate
     call_count = {"n": 0}
 
-    def _slow_run(inp, settings):  # type: ignore[no-untyped-def]
+    def _slow_evaluate(inp, settings, resources):  # type: ignore[no-untyped-def]
         call_count["n"] += 1
         time.sleep(0.1)
-        return original_run(inp, settings)
+        return original_evaluate(inp, settings, resources)
 
-    main_module._run = _slow_run  # type: ignore[assignment]
+    main_module._evaluate = _slow_evaluate  # type: ignore[assignment]
     try:
         start = threading.Event()
         results: list[str] = []
@@ -134,9 +136,9 @@ def test_concurrent_identical_answers_do_not_duplicate_the_assessment(
         for t in threads:
             t.join()
     finally:
-        main_module._run = original_run
+        main_module._evaluate = original_evaluate
 
-    assert call_count["n"] == 1  # the lock collapsed every concurrent call to one _run()
+    assert call_count["n"] == 1  # the lock collapsed every concurrent call to one _evaluate()
     assert len(set(results)) == 1  # and every thread got that same assessment_id
 
 
@@ -233,6 +235,70 @@ def test_answers_cache_invalidated_when_rules_change(
 
     assert second_id != first_id, (
         "a rule-catalogue change must invalidate the answer cache, not reuse a stale hit"
+    )
+
+
+def test_answers_evaluates_against_the_rules_state_the_fingerprint_describes(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#5 (round 10, 2026-09-13), reproduced exactly as
+    reported via fault injection: the /answers cache key used to be
+    computed from a SEPARATE, fresh read of the rules directory
+    (_rules_and_safe_tests_fingerprint(), called from the old
+    _evaluation_fingerprint()) taken BEFORE _run() loaded its OWN, also
+    fresh, copy of the same rules to actually evaluate against. A rules
+    edit landing in the window between those two independent reads meant
+    the assessment ran against the EDITED rules while the recorded cache
+    key still described the PRE-edit content - exactly reproduced here by
+    editing MEM-001.yaml's severity as a side effect of computing the
+    fingerprint, immediately before the (old) separate load_rules() call
+    that actually evaluates the request would see it."""
+    import shutil
+
+    import app.main as main_module
+
+    rules_copy = tmp_path / "rules"
+    shutil.copytree(REPO / "rules", rules_copy)
+    monkeypatch.setenv("SKOS_RULES_ROOT", str(rules_copy))
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(REPO / "tests" / "fixtures" / "corpus_alt"))
+    monkeypatch.setenv("SKOS_DB_PATH", str(tmp_path / "idx.sqlite"))
+    assert client.post("/v1/knowledge/reindex").status_code == 200
+
+    mem_rule = rules_copy / "memory" / "MEM-001.yaml"
+    assert "severity: high" in mem_rule.read_text(encoding="utf-8")
+
+    created = client.post(
+        "/v1/assessments", json=_input("U-002-memory-persistence-unspecified")
+    ).json()
+    aid = created["result"]["assessment_id"]
+
+    original_fingerprint = main_module._rules_and_safe_tests_fingerprint
+    fired = {"done": False}
+
+    def _racing_fingerprint(settings):  # type: ignore[no-untyped-def]
+        result = original_fingerprint(settings)
+        if not fired["done"]:
+            fired["done"] = True
+            mem_rule.write_text(
+                mem_rule.read_text(encoding="utf-8").replace(
+                    "severity: high", "severity: low"
+                ),
+                encoding="utf-8",
+            )
+        return result
+
+    monkeypatch.setattr(main_module, "_rules_and_safe_tests_fingerprint", _racing_fingerprint)
+
+    answered = client.post(f"/v1/assessments/{aid}/answers", json={"memory_persistent": True})
+    assert answered.status_code == 200
+    assert fired["done"], "test assumption: the rules edit actually happened mid-call"
+
+    finding = next(f for f in answered.json()["result"]["findings"] if f["risk_id"] == "MEM-001")
+    assert finding["severity"] == "high", (
+        "the assessment must reflect the rules state as of the recorded cache "
+        "fingerprint (severity: high, read before the edit), not a rules edit "
+        "that landed after fingerprinting but before the actual evaluation "
+        "read the rules"
     )
 
 
