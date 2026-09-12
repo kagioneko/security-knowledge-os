@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import sys
 import tomllib
@@ -189,16 +190,28 @@ def main(argv: list[str] | None = None) -> int:
     coverage = next(
         p["value"] for p in sbom["metadata"]["properties"] if p["name"] == "skos:sbom-coverage"  # type: ignore[index]
     )
-    if not args.check:
-        args.out.write_text(json.dumps(sbom, indent=2) + "\n", encoding="utf-8")
-        print(f"wrote {args.out}")
     print(coverage)
+
+    # Codex#8 (round 7, 2026-09-12), reproduced exactly as reported:
+    # completeness used to be decided AFTER the output was already written,
+    # so a failing `--require-complete` run could overwrite a previously
+    # valid, complete sbom.json with a new, partial one before ever
+    # reporting failure. Decide first; only write if not rejected.
     if args.require_complete and coverage.startswith("PARTIAL"):
         print(
             "refusing: --require-complete was set and coverage is not complete",
             file=sys.stderr,
         )
         return 1
+
+    if not args.check:
+        # Codex#8 (round 7, 2026-09-12): write atomically (temp file + one
+        # os.replace) so a crash or a concurrent reader never observes a
+        # half-written sbom.json.
+        tmp = args.out.with_suffix(args.out.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(sbom, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, args.out)
+        print(f"wrote {args.out}")
     return 0
 
 

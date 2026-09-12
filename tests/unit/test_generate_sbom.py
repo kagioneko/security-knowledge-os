@@ -103,6 +103,33 @@ def test_require_complete_fails_when_coverage_is_partial(
     assert "PARTIAL" in capsys.readouterr().out
 
 
+def test_require_complete_never_overwrites_a_previously_valid_sbom(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression for Codex#8 (round 7, 2026-09-12), reproduced exactly as
+    reported: the output was written BEFORE incomplete coverage was
+    rejected, so a failing --require-complete run could overwrite a
+    previously valid, complete sbom.json with a new, partial one."""
+    import generate_sbom as sbom_module
+
+    out = tmp_path / "sbom.json"
+    out.write_text('{"victim": true}', encoding="utf-8")
+
+    original = sbom_module.declared_dependencies
+
+    def _with_a_missing_package():
+        declared = dict(original())
+        declared["definitely-not-installed-anywhere"] = "runtime"
+        return declared
+
+    monkeypatch.setattr(sbom_module, "declared_dependencies", _with_a_missing_package)
+
+    exit_code = main(["--out", str(out), "--require-complete"])
+    assert exit_code == 1
+    assert out.read_text(encoding="utf-8") == '{"victim": true}'  # untouched
+    assert list(tmp_path.glob("sbom.json.tmp.*")) == []  # no stray temp file left behind
+
+
 def test_check_mode_does_not_write_the_output_file(tmp_path) -> None:
     out = tmp_path / "sbom.json"
     exit_code = main(["--out", str(out), "--check"])
