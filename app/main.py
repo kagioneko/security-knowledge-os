@@ -18,9 +18,11 @@ only re-derives the FTS index from the already-verified read-only knowledge root
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import ipaddress
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -224,20 +226,70 @@ def _answer_cache_put(key: tuple[str, str], assessment_id: str) -> None:
 # second thread through re-checks the cache once it has the lock, so it gets
 # the first thread's result instead of also recomputing). Bounded the same
 # FIFO way as the caches it guards.
+#
+# Codex#12 (round 8, 2026-09-12), reproduced exactly as reported: with
+# capacity 1, obtaining lock A, requesting lock B (evicting A's dict
+# entry - not the lock object itself, which the first caller still
+# holds), then requesting "A" again returned a DIFFERENT, freshly
+# created Lock object - uncontended, even while the original A is still
+# held. Two concurrent callers for the SAME key could then both enter
+# the "check cache, else recompute" critical section this is meant to
+# serialize, silently defeating round 4's fix. A plain FIFO eviction can
+# never be correct here: the whole point is to keep serving the SAME
+# lock object to every caller for a key for as long as ANYONE might
+# still be holding or waiting on it. Reference-counting each entry (an
+# in-flight caller, not just a cache slot) and only ever removing an
+# entry once its refcount reaches zero - never one still in use - is
+# what actually preserves the singleflight guarantee under eviction.
 _MAX_ANSWER_LOCKS = 5000
 _ANSWER_LOCKS_GUARD = threading.Lock()
-_ANSWER_LOCKS: dict[tuple[str, str], threading.Lock] = {}
 
 
-def _answer_lock_for(key: tuple[str, str]) -> threading.Lock:
+class _RefCountedLock:
+    __slots__ = ("lock", "refcount")
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.refcount = 0
+
+
+_ANSWER_LOCKS: dict[tuple[str, str], _RefCountedLock] = {}
+
+
+def _evict_unused_answer_locks_locked() -> None:
+    """Caller must already hold `_ANSWER_LOCKS_GUARD`. Evicts oldest
+    entries (FIFO, like the other caches here) but only ones nobody is
+    currently holding or waiting on - an in-use entry is never evicted,
+    even if that means staying above `_MAX_ANSWER_LOCKS` until it frees
+    up (this is a cheap secondary bound, not a hard memory limit; the
+    per-key correctness guarantee above takes priority)."""
+    if len(_ANSWER_LOCKS) <= _MAX_ANSWER_LOCKS:
+        return
+    for key, entry in list(_ANSWER_LOCKS.items()):
+        if len(_ANSWER_LOCKS) <= _MAX_ANSWER_LOCKS:
+            return
+        if entry.refcount == 0:
+            del _ANSWER_LOCKS[key]
+
+
+@contextlib.contextmanager
+def _answer_lock_for(key: tuple[str, str]) -> Iterator[None]:
     with _ANSWER_LOCKS_GUARD:
-        lock = _ANSWER_LOCKS.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _ANSWER_LOCKS[key] = lock
-            while len(_ANSWER_LOCKS) > _MAX_ANSWER_LOCKS:
-                _ANSWER_LOCKS.pop(next(iter(_ANSWER_LOCKS)))
-        return lock
+        entry = _ANSWER_LOCKS.get(key)
+        if entry is None:
+            entry = _RefCountedLock()
+            _ANSWER_LOCKS[key] = entry
+            _evict_unused_answer_locks_locked()
+        entry.refcount += 1
+    entry.lock.acquire()
+    try:
+        yield
+    finally:
+        entry.lock.release()
+        with _ANSWER_LOCKS_GUARD:
+            entry.refcount -= 1
+            if entry.refcount == 0 and _ANSWER_LOCKS.get(key) is entry:
+                del _ANSWER_LOCKS[key]
 
 
 # Codex cross-review finding #11 (2026-09-11): /v1/knowledge/reindex accepted

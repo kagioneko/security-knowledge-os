@@ -632,6 +632,65 @@ def test_store_put_is_thread_safe_under_concurrent_eviction() -> None:
         main_module._STORE_TOTAL_BYTES = original_total
 
 
+def test_answer_lock_eviction_does_not_break_the_singleflight_guarantee() -> None:
+    """Regression for Codex#12 (round 8, 2026-09-12), reproduced exactly as
+    reported: with `_MAX_ANSWER_LOCKS = 1`, obtaining lock A, then
+    requesting a different key B (evicting A's dict entry under plain FIFO
+    eviction - not the lock object itself, which the first caller still
+    holds), then requesting "A" again used to return a DIFFERENT, freshly
+    created Lock object - uncontended, even while the original is still
+    held. Two concurrent callers for the SAME key could then both enter
+    the critical section this is meant to serialize."""
+    import threading
+
+    import app.main as main_module
+
+    original = dict(main_module._ANSWER_LOCKS)
+    original_max = main_module._MAX_ANSWER_LOCKS
+    main_module._ANSWER_LOCKS.clear()
+    main_module._MAX_ANSWER_LOCKS = 1
+    key_a = ("parent-a", "hash-a")
+    key_b = ("parent-b", "hash-b")
+    entered_critical_section = threading.Event()
+    second_caller_got_in = threading.Event()
+    release_first_caller = threading.Event()
+
+    def _hold_a() -> None:
+        with main_module._answer_lock_for(key_a):
+            entered_critical_section.set()
+            release_first_caller.wait(timeout=5)
+
+    def _request_b_then_a_again() -> None:
+        # requesting a different key while capacity is 1 must not evict A's
+        # entry while it is still held.
+        with main_module._answer_lock_for(key_b):
+            pass
+        with main_module._answer_lock_for(key_a):
+            second_caller_got_in.set()
+
+    try:
+        t1 = threading.Thread(target=_hold_a)
+        t1.start()
+        assert entered_critical_section.wait(timeout=5), "first caller never entered"
+
+        t2 = threading.Thread(target=_request_b_then_a_again)
+        t2.start()
+        # the second caller must be BLOCKED on the same lock object, not
+        # sail through on a fresh one - give it a moment, then confirm.
+        assert not second_caller_got_in.wait(timeout=0.2), (
+            "second caller for the SAME key entered while the first still held it"
+        )
+
+        release_first_caller.set()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+        assert second_caller_got_in.is_set(), "second caller never got in after release"
+    finally:
+        main_module._MAX_ANSWER_LOCKS = original_max
+        main_module._ANSWER_LOCKS.clear()
+        main_module._ANSWER_LOCKS.update(original)
+
+
 def test_answer_cache_put_is_thread_safe_under_concurrent_eviction() -> None:
     """Same race as `test_store_put_is_thread_safe_under_concurrent_eviction`,
     for `_ANSWER_CACHE` / `_ANSWER_CACHE_GUARD` (Codex#5, round 5,
