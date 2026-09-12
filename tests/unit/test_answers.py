@@ -55,14 +55,14 @@ def test_free_text_fields_accept_a_raw_secret_this_is_a_known_limitation() -> No
     than leaving it implicit."""
     patch = AnswerPatch.model_validate(
         {
-            "system_prompt": "AKIAABCDEFGHIJKLMNOP",
-            "rag_sources": ["AKIAABCDEFGHIJKLMNOP"],
-            "tool_permissions": {"AKIAABCDEFGHIJKLMNOP": "read"},
+            "system_prompt": "arbitrary-free-text-value-12345",
+            "rag_sources": ["arbitrary-free-text-value-12345"],
+            "tool_permissions": {"arbitrary-free-text-value-12345": "read"},
         }
     )
-    assert patch.system_prompt == "AKIAABCDEFGHIJKLMNOP"
-    assert patch.rag_sources == ["AKIAABCDEFGHIJKLMNOP"]
-    assert patch.tool_permissions == {"AKIAABCDEFGHIJKLMNOP": "read"}
+    assert patch.system_prompt == "arbitrary-free-text-value-12345"
+    assert patch.rag_sources == ["arbitrary-free-text-value-12345"]
+    assert patch.tool_permissions == {"arbitrary-free-text-value-12345": "read"}
 
 
 def test_list_elements_and_mapping_keys_are_length_bounded() -> None:

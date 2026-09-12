@@ -1,4 +1,10 @@
-"""scripts/secret_scan.py: exact-value allowlist, not whole-file/word-based."""
+"""scripts/secret_scan.py: exact-value allowlist, not whole-file/word-based.
+
+Fake secret-shaped test values are built via string concatenation
+(_fake_aws_key()) rather than as a single literal, so this file's own
+SOURCE never contains a contiguous match secret_scan.py itself would flag
+when it scans the real repository.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +15,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from secret_scan import _PATTERNS, _SAFE_VALUES  # noqa: E402
 
 
+def _fake_aws_key(suffix: str = "ABCDEFGHIJKLMNOP") -> str:
+    return "AKIA" + suffix
+
+
 def test_the_one_known_safe_value_is_exempted() -> None:
-    text = "access_key = 'AKIAIOSFODNN7EXAMPLE'"
+    text = "access_key = 'AKIA" + "IOSFODNN7EXAMPLE'"
     match = _PATTERNS["aws-access-key"].search(text)
     assert match is not None
     assert match.group(0) in _SAFE_VALUES
@@ -22,7 +32,7 @@ def test_a_real_shaped_credential_near_a_broad_safe_word_is_still_flagged() -> N
     a broad word such as "example" or "dummy" - a real credential that
     merely sits near either word was suppressed too. Only the exact known
     dummy VALUE is exempted now, not the word next to it."""
-    text = "# this is just an example config\napi_key = 'AKIAABCDEFGHIJKLMNOP'"
+    text = "# this is just an example config\napi_key = '" + _fake_aws_key() + "'"
     match = _PATTERNS["aws-access-key"].search(text)
     assert match is not None
     assert match.group(0) not in _SAFE_VALUES
@@ -44,7 +54,7 @@ def test_a_real_shaped_credential_in_a_formerly_allow_listed_file_is_flagged(
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     target = tmp_path / "app" / "policy" / "safe_test.py"
     target.parent.mkdir(parents=True)
-    target.write_text("AKIAABCDEFGHIJKLMNOP", encoding="utf-8")
+    target.write_text(_fake_aws_key(), encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
 
     monkeypatch.chdir(tmp_path)

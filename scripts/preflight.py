@@ -198,6 +198,11 @@ def main() -> int:
         # regeneration just wrote.
         _run("sbom", [py, "scripts/generate_sbom.py", "--require-complete"]),
         _run("secret-scan", [py, "scripts/secret_scan.py"]),
+        # Codex#13 (round 7, 2026-09-12): "automated OSV/pip-audit
+        # scanning" - queries the OSV database for every installed
+        # distribution in this environment. Requires network access and
+        # the `pip-audit` dev dependency; needs `pip install -e ".[dev]"`.
+        _run("pip-audit", [py, "-m", "pip_audit", "--progress-spinner", "off"]),
         _tracked_knowledge_all_public(),
         _no_private_or_secret_tracked(),
         _license_files_present(),
