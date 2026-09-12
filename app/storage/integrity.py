@@ -5,7 +5,11 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 
+from app.models.knowledge import Classification, KnowledgeCategory
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
+
+_VALID_CLASSIFICATIONS = {c.value for c in Classification}
+_VALID_CATEGORIES = {c.value for c in KnowledgeCategory}
 
 
 def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
@@ -24,7 +28,9 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
         mismatches: list[str] = []
         malformed: list[str] = []
         actual_count = 0
-        for row in conn.execute("SELECT chunk_id, text, hash FROM chunks"):
+        for row in conn.execute(
+            "SELECT chunk_id, text, hash, classification, category FROM chunks"
+        ):
             actual_count += 1
             # Codex cross-review finding #7, part 2 (round 2, 2026-09-11):
             # SQLite's default (non-STRICT) tables do not enforce column
@@ -35,6 +41,21 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
             if not isinstance(row["text"], str) or not isinstance(row["hash"], str):
                 malformed.append(row["chunk_id"])
                 continue
+            # Codex cross-review finding #7 (round 4, 2026-09-12): the same
+            # non-STRICT-table gap applies to `classification`/`category` -
+            # they are stored as free TEXT, not a SQLite-enforced enum.
+            # `UPDATE chunks SET category = 'bogus'` passed every check above
+            # (text/hash still matched) and this function returned ALLOWED,
+            # but repository.py's `_row_to_chunk()` calls
+            # `KnowledgeCategory(row["category"])` during retrieval and
+            # raises a bare ValueError instead of the POLICY_BLOCKED this
+            # function exists to return before that point is ever reached.
+            if (
+                row["classification"] not in _VALID_CLASSIFICATIONS
+                or row["category"] not in _VALID_CATEGORIES
+            ):
+                malformed.append(row["chunk_id"])
+                continue
             expected = hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
             if expected != row["hash"]:
                 mismatches.append(row["chunk_id"])
@@ -42,7 +63,8 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
             return stop(
                 PolicyOutcome.POLICY_BLOCKED,
                 "knowledge-index",
-                f"malformed row type (text/hash not TEXT) for {malformed[:5]}"
+                f"malformed row (bad text/hash type or unrecognised classification/category) "
+                f"for {malformed[:5]}"
                 + ("" if len(malformed) <= 5 else f" (+{len(malformed) - 5} more)"),
             )
         if mismatches:

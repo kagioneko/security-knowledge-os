@@ -174,6 +174,29 @@ def test_blob_row_type_fails_closed_not_a_raw_attributeerror(
         conn.close()
 
 
+def test_bogus_category_fails_closed_instead_of_crashing_retrieval(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex cross-review finding #7 (round 4, 2026-09-12),
+    reproduced exactly as reported: `chunks.classification`/`category` are
+    plain TEXT - SQLite's default (non-STRICT) tables do not enforce enums.
+    `UPDATE chunks SET category = 'bogus'` used to pass verify_chunk_hashes()
+    as ALLOWED and only crash later, with a bare ValueError (not the
+    POLICY_BLOCKED this function exists to return), when
+    repository.py's `_row_to_chunk()` tried to construct
+    `KnowledgeCategory('bogus')` during retrieval."""
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        conn.execute("UPDATE chunks SET category = 'bogus' WHERE rowid = 1")
+        conn.commit()
+        decision = verify_chunk_hashes(conn)  # must not raise
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    finally:
+        conn.close()
+
+
 def test_missing_meta_table_fails_closed_not_a_raw_exception(
     tmp_path: Path, corpus_root: Path
 ) -> None:
