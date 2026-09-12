@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
+from pydantic import ValidationError
+
 from app.llm.base import LLMError, Message
 from app.llm.mock import DEFAULT_MOCK_RESPONSE, MockClient
 from app.models.assessment import AttackSurface
 from app.models.context import AssessmentContext
+from app.models.reviewer_output import ReviewerObservations
 from app.models.risk import Finding, FindingStatus, Severity
 from app.reviewer.llm_review import (
     ParseStatus,
@@ -126,6 +132,76 @@ def test_llm_error_category_prefers_the_chained_causes_type_name() -> None:
 
     result = _review(_ChainedRaisingClient())
     assert result.error == "_AuthenticationError"
+
+
+def test_oversized_first_response_is_rejected_without_ever_being_parsed() -> None:
+    """Regression for Codex#11 (round 5, 2026-09-12), reproduced exactly as
+    reported: valid JSON containing tens of thousands of observations used
+    to be fully parsed, converted to findings, and retained in the API's
+    in-memory _STORE. An oversized raw response must be treated as a parse
+    failure BEFORE that parse ever runs - triggering the same one-repair
+    flow as any other malformed response (see
+    test_malformed_then_valid_is_repaired_once), not a crash and not the
+    20,000 fabricated observations."""
+    huge = json.dumps(
+        {
+            "observations": [
+                {
+                    "title": "x",
+                    "detail": "y",
+                    "level": "WARN",
+                    "relates_to_risk_id": None,
+                    "evidence_refs": [],
+                }
+                for _ in range(20_000)
+            ],
+            "questions": [],
+            "evidence_notes": [],
+            "limitations": [],
+            "safe_test_suggestions": [],
+        }
+    )
+    assert len(huge.encode("utf-8")) > 200_000  # sanity: this really is oversized
+
+    client = MockClient([huge, DEFAULT_MOCK_RESPONSE])
+    result = _review(client)
+    assert result.parse_status is ParseStatus.REPAIRED
+    assert result.repairs == 1
+    # came from the small repair response, never the huge first one
+    assert len(result.observations.observations) == 1
+
+
+def test_oversized_repair_response_also_fails_closed() -> None:
+    """The repair round-trip is bounded the same way as the first call."""
+    huge = json.dumps({"observations": [{"title": "x"} for _ in range(20_000)]})
+    client = MockClient(["not json at all", huge])
+    result = _review(client)
+    assert result.parse_status is ParseStatus.LLM_PARSE_ERROR
+    assert result.repairs == 1
+    assert result.observations.observations == []
+
+
+def test_reviewer_observations_rejects_too_many_items() -> None:
+    """Regression for Codex#11 (round 5, 2026-09-12): ReviewerObservations'
+    lists (observations/questions/evidence_notes/limitations/
+    safe_test_suggestions) were unbounded."""
+    with pytest.raises(ValidationError):
+        ReviewerObservations.model_validate({"limitations": ["x"] * 201})
+
+
+def test_reviewer_observations_rejects_an_oversized_free_text_field() -> None:
+    with pytest.raises(ValidationError):
+        ReviewerObservations.model_validate(
+            {
+                "observations": [
+                    {
+                        "title": "x",
+                        "detail": "y" * 20_001,
+                        "level": "WARN",
+                    }
+                ]
+            }
+        )
 
 
 def test_observations_to_findings_are_capped_llm_obs() -> None:

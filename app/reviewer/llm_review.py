@@ -95,6 +95,17 @@ def build_payload(
     )
 
 
+# Codex#11 (round 5, 2026-09-12): the per-field/per-list bounds on
+# ReviewerObservations (app/models/reviewer_output.py) only apply AFTER the
+# raw text has already been fully parsed into Python objects - a
+# pathologically large raw response (a custom or misbehaving LLMClient, not
+# just the vetted AnthropicClient with its max_tokens=2048) would still pay
+# the full JSON-parse cost before that rejection ever triggers. Capping the
+# raw byte count first bounds that cost regardless of what the response
+# contains.
+_MAX_RAW_RESPONSE_BYTES = 200_000
+
+
 def _extract_json(text: str) -> str:
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -106,6 +117,9 @@ def _extract_json(text: str) -> str:
 
 
 def _try_parse(raw: str) -> tuple[ReviewerObservations | None, str | None]:
+    size = len(raw.encode("utf-8"))
+    if size > _MAX_RAW_RESPONSE_BYTES:
+        return None, f"response is {size} bytes, over the {_MAX_RAW_RESPONSE_BYTES}-byte limit"
     try:
         return ReviewerObservations.model_validate_json(_extract_json(raw)), None
     except (ValidationError, json.JSONDecodeError, ValueError) as exc:
