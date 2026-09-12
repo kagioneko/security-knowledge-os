@@ -3,7 +3,7 @@
   "specVersion": "1.5",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-09-12T09:27:05.554885+00:00",
+    "timestamp": "2026-09-12T09:34:23.417899+00:00",
     "component": {
       "type": "application",
       "name": "security-knowledge-os",
@@ -20,6 +20,12 @@
       {
         "name": "generate_sbom.py"
       }
+    ],
+    "properties": [
+      {
+        "name": "skos:sbom-coverage",
+        "value": "PARTIAL: generated from an environment missing these declared dependencies: anthropic, hatchling, uvicorn - regenerate after `pip install -e \".[llm,api,dev]\"` for full release coverage"
+      }
     ]
   },
   "components": [
@@ -34,7 +40,8 @@
             "name": "MIT"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -47,7 +54,8 @@
             "name": "MIT"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -60,7 +68,8 @@
             "name": "MIT"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -73,7 +82,8 @@
             "name": "MIT"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -86,7 +96,8 @@
             "name": "MPL-2.0"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -98,6 +109,13 @@
           "license": {
             "name": "MIT"
           }
+        }
+      ],
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "api"
         }
       ]
     },
@@ -112,7 +130,8 @@
             "name": "MIT"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -125,7 +144,8 @@
             "name": "BSD-3-Clause"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -137,6 +157,13 @@
           "license": {
             "name": "BSD-3-Clause"
           }
+        }
+      ],
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
         }
       ]
     },
@@ -151,7 +178,8 @@
             "name": "BSD-3-Clause"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -164,7 +192,8 @@
             "name": "MIT"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -177,7 +206,8 @@
             "name": "MIT"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -189,6 +219,13 @@
           "license": {
             "name": "MIT"
           }
+        }
+      ],
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
         }
       ]
     },
@@ -203,7 +240,8 @@
             "name": "MIT"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -216,7 +254,8 @@
             "name": "Apache-2.0 OR BSD-2-Clause"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -229,7 +268,8 @@
             "name": "MPL-2.0"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -242,7 +282,8 @@
             "name": "MIT"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -255,7 +296,8 @@
             "name": "MIT"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -267,6 +309,13 @@
           "license": {
             "name": "MIT"
           }
+        }
+      ],
+      "scope": "required",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "runtime"
         }
       ]
     },
@@ -281,7 +330,8 @@
             "name": "MIT"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -294,7 +344,8 @@
             "name": "BSD-2-Clause"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -306,6 +357,13 @@
           "license": {
             "name": "MIT"
           }
+        }
+      ],
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
         }
       ]
     },
@@ -320,6 +378,13 @@
             "name": "MIT"
           }
         }
+      ],
+      "scope": "required",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "runtime"
+        }
       ]
     },
     {
@@ -332,6 +397,13 @@
           "license": {
             "name": "MIT"
           }
+        }
+      ],
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
         }
       ]
     },
@@ -346,7 +418,8 @@
             "name": "Apache-2.0"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -359,7 +432,8 @@
             "name": "BSD-3-Clause"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -371,6 +445,13 @@
           "license": {
             "name": "Apache-2.0"
           }
+        }
+      ],
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
         }
       ]
     },
@@ -385,7 +466,8 @@
             "name": "MIT"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     },
     {
       "type": "library",
@@ -398,7 +480,8 @@
             "name": "PSF-2.0"
           }
         }
-      ]
+      ],
+      "scope": "optional"
     }
   ]
 }

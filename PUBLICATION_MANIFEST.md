@@ -3,25 +3,42 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `bcd9519` (M8.3 — cross-review round 2 findings addressed, **not yet pushed**)
+- Commit: `3e886af` (round-5 cross-review findings addressed, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **199**
-- Tests: **371** items (370 pass, 1 skip = JA-R02)
-- `scripts/preflight.py`: **PASS**
-- Cross-AI review: Codex (code audit) + Antigravity (adversarial design audit),
-  **two rounds**, 2026-09-11. Round 1 (commits `865085a`/`776305a`):
-  CHANGES-REQUIRED, 19 findings, 16 fixed + 3 accepted/documented. Round 2
-  — re-review of the round-1 fixes (commit `28e3c06`): CHANGES-REQUIRED
-  again, 13 new findings (independent of round 1's, mostly in code paths
-  round 1 did not touch), **all 13 fixed**. See `HANDOFF.md` and
-  `REVIEW_CHECKLIST.md` sign-off tables (both rounds).
+- Tracked files: **203**
+- Tests: **427** items (426 pass, 1 skip = JA-R02)
+- `scripts/preflight.py`: **PASS** (includes the new
+  `PUBLICATION_MANIFEST.md`-vs-reality consistency check added in round 5 —
+  Codex#9 — so these two numbers cannot silently go stale again)
+- Cross-AI review: Codex (code audit) + Antigravity (adversarial design
+  audit), **five rounds**, 2026-09-11 -- 2026-09-12. Rounds 1-2 (2026-09-11):
+  CHANGES-REQUIRED both times, 19 then 13 findings, all fixed — see
+  `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-4 (2026-09-12, commits
+  `a548b6d`/`ecb410e` before round-5 fixes): CHANGES-REQUIRED each time,
+  independent findings in code paths earlier rounds did not touch —
+  itemized in `git log` commit messages ("fix round-3 Codex#…" / "fix
+  round-4 Codex#…") rather than this file. Round 5 (2026-09-12, audited
+  commit `ecb410e`): Codex **CHANGES-REQUIRED** (11 findings: forgeable
+  localhost boundary, FTS content-integrity gap, corpus TOCTOU, reindex
+  failure-coverage gaps, raw provider-exception leakage, unguarded store
+  eviction, unsafe direct index-build script, unvalidated safe-test root,
+  this manifest/`.gitignore` drift, SBOM coverage, unbounded LLM output) —
+  **all 11 fixed**, see `git log` commit messages ("fix round-5 Codex#…")
+  for the itemized fixes; Antigravity **PASS-with-nits** on the same commit
+  (two low-severity nits, not blocking). A sixth round re-reviewing these
+  round-5 fixes is the next step before push.
 
 ## Tracked files by area
+
+Per-area counts below were last verified at round 2 (commit `bcd9519`) and
+have not been re-walked file-by-file for rounds 3-5; `git ls-files <area>`
+is authoritative if these drift. The two numbers the automated preflight
+check enforces (total tracked files, total tests) are kept current above.
 
 | area | files | notes |
 | --- | --- | --- |
 | `app/` | 56 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
-| `tests/` | 70 | 38 test modules + fixtures |
+| `tests/` | 74 | 41 test modules + fixtures (round 5 added test_build_index_script.py, test_anthropic_client.py, test_preflight_manifest.py) |
 | `knowledge/` | 23 | 13 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
 | `rules/` | 13 | 7 rule YAMLs + category `.gitkeep`s |
 | `safe_tests/` | 4 | 4 vetted templates |
@@ -154,7 +171,7 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
 | CLI uses argparse, not Typer (spec §5) | accepted, documented |
 | Pack Manager (M9-M10) not in repo | out of scope; ZIP-import attack surface is future work |
 
-## Cross-AI review — two rounds, both closed
+## Cross-AI review — five rounds so far, round 6 pending
 
 1. **Round 1** (Codex code audit + Antigravity adversarial design audit) per
    `AI_RULES.md`, 2026-09-11, recorded in `HANDOFF.md`. Both verdicts:
@@ -169,10 +186,32 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
    compliance, request size limits). Round 1's fixes themselves held up under
    re-review. **All 13 fixed** — see `REVIEW_CHECKLIST.md` for both rounds'
    full findings-to-commit tables.
-3. `scripts/preflight.py`: **PASS** after both rounds' fixes (371 tests, ruff
-   + mypy --strict clean, commit `bcd9519`).
-4. A third re-review round is queued to confirm the round-2 fixes before
+3. **Rounds 3-4** (2026-09-12): re-review of the round-2 fixes and then the
+   round-3 fixes. Both verdicts **CHANGES-REQUIRED** each time — independent
+   findings each round, mostly in reindex TOCTOU/rollback edge cases, YAML
+   merge-key/nesting DoS, dependency-licence accuracy, and origin/body-size/
+   concurrency gaps. All fixed each round. See `git log` commit messages
+   ("fix round-3 Codex#…" / "fix round-4 Codex#…") for the itemized
+   findings-to-commit mapping — not reproduced in this file.
+4. **Round 5** (2026-09-12, audited commit `ecb410e`): Codex
+   **CHANGES-REQUIRED** — 11 findings (1 HIGH: a forgeable "localhost-only"
+   API boundary relying only on client-supplied headers; 8 MEDIUM: FTS
+   content-integrity gap, corpus load TOCTOU double-read, two reindex
+   failure-coverage/rollback-truthfulness gaps, raw provider-exception text
+   reaching a public finding, unguarded concurrent store eviction, an unsafe
+   direct index-build script overwriting a live index, this manifest and
+   `reviews/.gitignore` drifting from reality, SBOM coverage silently
+   omitting declared dependencies; 2 LOW: an unvalidated safe-test root, and
+   unbounded external LLM output). **All 11 fixed**, each with a regression
+   test confirmed to fail against the pre-fix code — see `git log` commit
+   messages ("fix round-5 Codex#…") for the itemized mapping. Antigravity's
+   independent adversarial design audit on the same commit: **PASS-with-
+   nits** (two low-severity nits, not blocking; `NIT-ADV-01`/`NIT-ADV-02`).
+5. `scripts/preflight.py`: **PASS** after all five rounds' fixes (427 tests,
+   ruff + mypy --strict clean, commit `3e886af`), including the new
+   manifest-consistency check added as part of round 5's Codex#9 fix.
+6. A sixth re-review round is queued to confirm the round-5 fixes before
    push, per the same AI_RULES requirement ("修正した上で再レビューを受ける
-   こと") applied a second time.
-5. Human confirmation: no real customer / private material in any commit —
+   こと") applied again.
+7. Human confirmation: no real customer / private material in any commit —
    still to confirm before push.
