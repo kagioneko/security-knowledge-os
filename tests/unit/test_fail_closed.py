@@ -153,6 +153,51 @@ def test_fts_wipe_fails_closed_even_though_chunks_and_meta_agree(
         conn.close()
 
 
+def test_fts_content_replacement_fails_closed_even_with_matching_counts(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex cross-review finding #2 (round 5, 2026-09-12),
+    reproduced exactly as reported: `chunks_fts` is contentless, so its
+    indexed text cannot be read back and verify_chunk_hashes only ever
+    compared row *counts* between `chunks` and `chunks_fts`. Wiping and
+    re-inserting the SAME rowid with DIFFERENT search text (`chunks`/`meta`
+    untouched, counts unchanged) used to pass every check - search() would
+    silently return results for content that no longer matches the chunk it
+    claims to index."""
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT rowid, title, section, text FROM chunks ORDER BY rowid"
+        ).fetchall()
+        assert len(rows) > 1
+        tampered_rowid = rows[0]["rowid"]
+
+        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('delete-all')")
+        for row in rows:
+            if row["rowid"] == tampered_rowid:
+                search_text = "omega marker completely different from the real chunk"
+            else:
+                search_text = "\n".join(
+                    part for part in (row["title"], row["section"], row["text"]) if part
+                ).strip()
+            conn.execute(
+                "INSERT INTO chunks_fts(rowid, search_text) VALUES (?, ?)",
+                (row["rowid"], search_text),
+            )
+        conn.commit()
+
+        # chunks/meta and the fts row COUNT all still agree (every rowid was
+        # reinserted) - only rowid `tampered_rowid`'s indexed content
+        # diverged from what `chunks` says it should be.
+        decision = verify_chunk_hashes(conn)
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        assert "chunks_fts content mismatch" in " ".join(decision.reasons)
+    finally:
+        conn.close()
+
+
 def test_blob_row_type_fails_closed_not_a_raw_attributeerror(
     tmp_path: Path, corpus_root: Path
 ) -> None:

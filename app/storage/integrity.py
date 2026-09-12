@@ -12,6 +12,15 @@ _VALID_CLASSIFICATIONS = {c.value for c in Classification}
 _VALID_CATEGORIES = {c.value for c in KnowledgeCategory}
 
 
+def _fts_phrase(text: str) -> str:
+    """Quote `text` as a single FTS5 phrase literal. Doubling an embedded
+    `"` is FTS5's own escaping rule for a quoted string; every other
+    character (including query-syntax metacharacters like `*`/`^`/`NEAR`) is
+    literal inside a quoted phrase, so this is safe for arbitrary chunk
+    text, not just pre-sanitised user search terms."""
+    return '"' + text.replace('"', '""') + '"'
+
+
 def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
     """Codex cross-review finding #7 (2026-09-11): the two gaps fixed here are
     both "an index can look fine while lying about its own contents":
@@ -27,9 +36,11 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
     try:
         mismatches: list[str] = []
         malformed: list[str] = []
+        fts_content_mismatches: list[str] = []
         actual_count = 0
         for row in conn.execute(
-            "SELECT chunk_id, text, hash, classification, category FROM chunks"
+            "SELECT rowid, chunk_id, title, section, text, hash, classification, category "
+            "FROM chunks"
         ):
             actual_count += 1
             # Codex cross-review finding #7, part 2 (round 2, 2026-09-11):
@@ -38,7 +49,12 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
             # `.encode()` raise AttributeError, an unhandled exception that
             # skipped the caller's fail-closed handling instead of producing
             # the POLICY_BLOCKED this function exists to return.
-            if not isinstance(row["text"], str) or not isinstance(row["hash"], str):
+            if (
+                not isinstance(row["text"], str)
+                or not isinstance(row["hash"], str)
+                or not isinstance(row["title"], str)
+                or not isinstance(row["section"], str)
+            ):
                 malformed.append(row["chunk_id"])
                 continue
             # Codex cross-review finding #7 (round 4, 2026-09-12): the same
@@ -59,6 +75,35 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
             expected = hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
             if expected != row["hash"]:
                 mismatches.append(row["chunk_id"])
+                continue
+            # Codex cross-review finding #2 (round 5, 2026-09-12): every check
+            # above reads `chunks` - none of them prove `chunks_fts` (a
+            # separate, contentless FTS5 table with no stored copy of its own
+            # indexed text) actually indexes that same text. Replacing a
+            # row's FTS postings in place (same rowid, same total row count -
+            # `INSERT INTO chunks_fts(chunks_fts) VALUES ('delete-all')`
+            # followed by re-inserting different `search_text` for the same
+            # rowids) left every check above ALLOWED while search() silently
+            # returned results for different content. `chunks_fts` cannot be
+            # read back directly (contentless), so this probes it the only
+            # way a read-only connection can: an exact-phrase MATCH for the
+            # canonical `search_text`, restricted to that row's rowid.
+            # Residual gap (accepted): if tampering *appends* extra tokens
+            # after an otherwise-intact canonical phrase, this exact-phrase
+            # probe still matches (the canonical text is a genuine contiguous
+            # prefix of the tampered one) - it is not a full content-equality
+            # proof, only a lower-bound integrity signal, but it directly
+            # detects the replace-in-place tamper reported above.
+            search_text = "\n".join(
+                part for part in (row["title"], row["section"], row["text"]) if part
+            ).strip()
+            if search_text:
+                probe = conn.execute(
+                    "SELECT 1 FROM chunks_fts WHERE rowid = ? AND chunks_fts MATCH ?",
+                    (row["rowid"], _fts_phrase(search_text)),
+                ).fetchone()
+                if probe is None:
+                    fts_content_mismatches.append(row["chunk_id"])
         if malformed:
             return stop(
                 PolicyOutcome.POLICY_BLOCKED,
@@ -73,6 +118,18 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                 "knowledge-index",
                 f"chunk hash mismatch for {mismatches[:5]}"
                 + ("" if len(mismatches) <= 5 else f" (+{len(mismatches) - 5} more)"),
+            )
+        if fts_content_mismatches:
+            return stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "knowledge-index",
+                f"chunks_fts content mismatch (indexed text does not match the "
+                f"chunk it claims to index) for {fts_content_mismatches[:5]}"
+                + (
+                    ""
+                    if len(fts_content_mismatches) <= 5
+                    else f" (+{len(fts_content_mismatches) - 5} more)"
+                ),
             )
 
         revision_row = conn.execute(
