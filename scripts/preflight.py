@@ -334,6 +334,99 @@ def _publication_manifest_matches_reality() -> bool:
     return ok
 
 
+def _parse_manifest_area_counts(text: str) -> dict[str, int] | None:
+    """Extract the `app/` (.py), `tests/` (total files), `tests/` (Python
+    test modules, from its notes column), and `root` counts from
+    PUBLICATION_MANIFEST.md's "Tracked files by area" table. Returns None
+    if any of the four cannot be found."""
+    patterns = {
+        "app_py": r"\|\s*`app/`\s*\|\s*(\d+)\s*\(\.py\)\s*\|",
+        "tests_total": r"\|\s*`tests/`\s*\|\s*(\d+)\s*\|",
+        "tests_modules": r"\|\s*`tests/`\s*\|\s*\d+\s*\|[^|\n]*?(\d+)\s+test modules",
+        "root": r"\|\s*root\s*\|\s*(\d+)\s*\|",
+    }
+    counts: dict[str, int] = {}
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text)
+        if match is None:
+            return None
+        counts[key] = int(match.group(1))
+    return counts
+
+
+def _actual_area_counts(root: Path) -> dict[str, int]:
+    def _tracked(*pathspecs: str) -> list[str]:
+        return subprocess.run(
+            ["git", "ls-files", *pathspecs], cwd=root, capture_output=True, text=True
+        ).stdout.splitlines()
+
+    return {
+        "app_py": len(_tracked("app/*.py", "app/**/*.py")),
+        "tests_total": len(_tracked("tests")),
+        "tests_modules": len(_tracked("tests/*.py", "tests/**/*.py")),
+        "root": len([f for f in _tracked() if "/" not in f]),
+    }
+
+
+def _manifest_area_counts_match_reality() -> bool:
+    """Codex#10 (round 10, 2026-09-13), reproduced exactly as reported: the
+    "Tracked files by area" table's per-area counts (56 vs actual 58 `app/`
+    files, 74/41 vs actual 76/45 `tests/` files/modules, 10 vs actual 11
+    root files) are hand-maintained and drift independently of the
+    header's own "Tracked files: **N**" total -
+    `_publication_manifest_matches_reality()` above already keeps THAT
+    total honest, but that says nothing about whether this table's
+    BREAKDOWN still adds up to it correctly."""
+    manifest = ROOT / "PUBLICATION_MANIFEST.md"
+    if not manifest.exists():
+        print("[FAIL] PUBLICATION_MANIFEST.md area-count table check (file missing)")
+        return False
+    claimed = _parse_manifest_area_counts(manifest.read_text(encoding="utf-8"))
+    if claimed is None:
+        print(
+            "[FAIL] PUBLICATION_MANIFEST.md area-count table check "
+            "(could not parse the 'Tracked files by area' table)"
+        )
+        return False
+    actual = _actual_area_counts(ROOT)
+    mismatches = [
+        f"{key}: manifest says {claimed[key]}, actual is {actual[key]}"
+        for key in sorted(claimed)
+        if claimed[key] != actual[key]
+    ]
+    ok = not mismatches
+    print(f"[{'ok ' if ok else 'FAIL'}] PUBLICATION_MANIFEST.md area-count table matches reality")
+    for m in mismatches:
+        print(f"    {m}")
+    return ok
+
+
+def _no_stale_license_undecided_text() -> bool:
+    """Codex#10 (round 10, 2026-09-13), reproduced exactly as reported:
+    `docs/threat-model.md` said "Project licence not yet chosen" despite
+    Apache-2.0 having already been selected and LICENSE/NOTICE already
+    committed (`_license_files_present()` above) - a stale residual-risk
+    bullet directly contradicting the rest of the publication
+    documentation."""
+    stale_markers = ("licence not yet chosen", "license not yet chosen", "licence undecided")
+    offenders = []
+    for rel in ("docs/threat-model.md", "PUBLICATION_MANIFEST.md", "REVIEW_CHECKLIST.md"):
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8").lower()
+        if any(marker in text for marker in stale_markers):
+            offenders.append(rel)
+    ok = not offenders
+    print(
+        f"[{'ok ' if ok else 'FAIL'}] no stale 'licence not yet chosen' text "
+        "(Apache-2.0 is selected)"
+    )
+    for rel in offenders:
+        print(f"    {rel}")
+    return ok
+
+
 def main() -> int:
     py = sys.executable
     checks = [
@@ -366,6 +459,8 @@ def main() -> int:
         _constraints_file_present(),
         _constraints_pins_are_complete(),
         _publication_manifest_matches_reality(),
+        _manifest_area_counts_match_reality(),
+        _no_stale_license_undecided_text(),
     ]
 
     print("\nManual gates still required before publishing:")

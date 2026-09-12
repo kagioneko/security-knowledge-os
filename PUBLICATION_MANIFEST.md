@@ -100,15 +100,15 @@ check enforces (total tracked files, total tests) are kept current above.
 
 | area | files | notes |
 | --- | --- | --- |
-| `app/` | 56 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
-| `tests/` | 74 | 41 test modules + fixtures (round 5 added test_build_index_script.py, test_anthropic_client.py, test_preflight_manifest.py) |
+| `app/` | 58 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
+| `tests/` | 76 | 45 test modules + fixtures |
 | `knowledge/` | 23 | 13 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
 | `rules/` | 13 | 7 rule YAMLs + category `.gitkeep`s |
 | `safe_tests/` | 4 | 4 vetted templates |
 | `scripts/` | 12 | validators, ingest/build_index, assess, evaluate, sbom, secret_scan, preflight, cross-review runner |
 | `docs/` | 9 | see below |
 | `reviews/` | 2 | `.gitignore` + `README.md` only — cross-review output `.md`/`.log` files are gitignored, never tracked |
-| root | 10 | `README.md`, `LICENSE`, `NOTICE`, `pyproject.toml`, `.gitignore`, `.env.example`, `sbom.json` |
+| root | 11 | `README.md`, `LICENSE`, `NOTICE`, `pyproject.toml`, `.gitignore`, `.env.example`, `constraints.txt`, `sbom.json` |
 | review docs | 3 | `REVIEW_PACKAGE.md`, `REVIEW_CHECKLIST.md`, `PUBLICATION_MANIFEST.md` |
 
 Docs: `architecture`, `threat-model`, `safety-boundaries`, `knowledge-schema`,
@@ -241,86 +241,17 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
 | CLI uses argparse, not Typer (spec §5) | accepted, documented |
 | Pack Manager (M9-M10) not in repo | out of scope; ZIP-import attack surface is future work |
 
-## Cross-AI review — seven rounds so far, round 8 pending
+## Cross-AI review — status
 
-1. **Round 1** (Codex code audit + Antigravity adversarial design audit) per
-   `AI_RULES.md`, 2026-09-11, recorded in `HANDOFF.md`. Both verdicts:
-   **CHANGES-REQUIRED**, 19 findings. 16 fixed (regression tests confirmed
-   to fail against the pre-fix code), 3 accepted/documented above.
-2. **Round 2** — re-review of the round-1 fixes, same two reviewers, same
-   date, against commit `28e3c06`. Both verdicts: **CHANGES-REQUIRED** again
-   — 13 NEW findings, independent of round 1's (mostly in code paths round 1
-   did not touch: RAG-source trust default, the `assess()`/`build_index()`
-   library entry points, reindex publish ordering, CSRF via Origin vs Host, a
-   second unguarded symlink read, SQLite/YAML edge cases, SBOM schema
-   compliance, request size limits). Round 1's fixes themselves held up under
-   re-review. **All 13 fixed** — see `REVIEW_CHECKLIST.md` for both rounds'
-   full findings-to-commit tables.
-3. **Rounds 3-4** (2026-09-12): re-review of the round-2 fixes and then the
-   round-3 fixes. Both verdicts **CHANGES-REQUIRED** each time — independent
-   findings each round, mostly in reindex TOCTOU/rollback edge cases, YAML
-   merge-key/nesting DoS, dependency-licence accuracy, and origin/body-size/
-   concurrency gaps. All fixed each round. See `git log` commit messages
-   ("fix round-3 Codex#…" / "fix round-4 Codex#…") for the itemized
-   findings-to-commit mapping — not reproduced in this file.
-4. **Round 5** (2026-09-12, audited commit `ecb410e`): Codex
-   **CHANGES-REQUIRED** — 11 findings (1 HIGH: a forgeable "localhost-only"
-   API boundary relying only on client-supplied headers; 8 MEDIUM: FTS
-   content-integrity gap, corpus load TOCTOU double-read, two reindex
-   failure-coverage/rollback-truthfulness gaps, raw provider-exception text
-   reaching a public finding, unguarded concurrent store eviction, an unsafe
-   direct index-build script overwriting a live index, this manifest and
-   `reviews/.gitignore` drifting from reality, SBOM coverage silently
-   omitting declared dependencies; 2 LOW: an unvalidated safe-test root, and
-   unbounded external LLM output). **All 11 fixed**, each with a regression
-   test confirmed to fail against the pre-fix code — see `git log` commit
-   messages ("fix round-5 Codex#…") for the itemized mapping. Antigravity's
-   independent adversarial design audit on the same commit: **PASS-with-
-   nits** (two low-severity nits, not blocking; `NIT-ADV-01`/`NIT-ADV-02`).
-5. **Round 6** (2026-09-12, audited commit `823c5e4`): Codex
-   **CHANGES-REQUIRED** — 10 findings independent of round 5's, mostly
-   deeper versions of the same areas round 5 touched (1 HIGH: the chunk
-   hash covered only `text`, so a classification flip passed integrity as
-   ALLOWED; 7 MEDIUM: the round-5 FTS exact-phrase probe missed an
-   appended-token tamper, the empty-knowledge-root guard was only at the
-   CLI layer not in `reindex_atomic()`/the API, an unrelated SQLite file
-   with a compatible `meta` table could be silently adopted and clobbered,
-   the symlink containment check was still TOCTOU-racy at the read itself,
-   `str(ValidationError)` leaked pydantic's rejected input value into a
-   public finding, an oversized rejected response was still forwarded
-   intact during LLM repair, preflight accepted and rewrote a partial SBOM;
-   2 LOW: reindex lock/setup failures raised raw exceptions instead of a
-   typed result, this manifest's own commit line was never checked against
-   git history). **All 10 fixed**, each with a regression test confirmed to
-   fail against the pre-fix code — see `git log` commit messages ("fix
-   round-6 Codex#…") for the itemized mapping.
-6. **Round 7** (2026-09-12, audited commit `ad03a9a`): Codex
-   **CHANGES-REQUIRED** — 13 findings independent of round 6's (3 HIGH:
-   reindex could publish transient/mixed corpus content changed and
-   restored during the build, symlink containment was still racy through
-   an ANCESTOR-directory swap rather than just the final component, a rule
-   with no conditions/checks/manual_review yielded a false PASS; 7 MEDIUM:
-   index files created world-readable, malformed corpus/YAML inputs
-   (invalid UTF-8, ~1,500 nested collections) escaped typed results in the
-   rule/safe-test loaders too, an empty safe-test catalogue was never
-   checked on the assess()/API path, an unpaired-surrogate LLM response
-   bypassed the repair flow, `--require-complete` could overwrite a valid
-   SBOM before deciding to fail, the SBOM inventoried environment noise
-   (pip, the project's own component) plus a license-classifier parsing
-   bug, secret-scan had whole-file/broad-word false negatives; 3 LOW:
-   `Finding` was mutable after validation via direct assignment,
-   `AnswerPatch`'s "no raw secret" claim was stronger than the schema
-   provides, dependency resolution admitted a known-vulnerable pytest
-   floor with an unversioned build backend). **All 13 fixed**, each with a
-   regression test confirmed to fail against the pre-fix code (or, for the
-   two pure dependency-management items, verified directly) — see `git
-   log` commit messages ("fix round-7 Codex#…") for the itemized mapping.
-7. `scripts/preflight.py`: **PASS** after all seven rounds' fixes (468
-   tests, ruff + mypy --strict clean, commit `bccbf6d`), now also running
-   `pip-audit` (round 7, Codex#13) and requiring the SBOM's
-   dependency-closure fixes (round 7, Codex#9).
-8. An eighth re-review round is queued to confirm the round-7 fixes before
-   push, per the same AI_RULES requirement ("修正した上で再レビューを受ける
-   こと") applied again.
-9. Human confirmation: no real customer / private material in any commit —
-   still to confirm before push.
+See the "Cross-AI review" bullet near the top of this file for the
+itemized round-by-round history (rounds 1-9 so far, each CHANGES-REQUIRED
+then fully fixed) - it is the single, current source of truth for round
+counts and findings-per-round numbers. This section used to duplicate that
+narrative independently and drifted out of sync with it (Codex#10, round
+10, 2026-09-13); a count or round-history claim is now written in exactly
+one place in this file.
+
+Outstanding before push:
+- The next cross-AI review round, per the same AI_RULES requirement
+  ("修正した上で再レビューを受けること") applied again.
+- Human confirmation: no real customer / private material in any commit.

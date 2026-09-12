@@ -73,7 +73,9 @@ SQL, file operations, missing tests.
 - [ ] CORS / host header / request size limits — anything needed for "localhost only"?
 
 ### A7. Test coverage gaps
-- [ ] 309 test items (308 pass, 1 skip). Which branches are untested?
+- [ ] see `PUBLICATION_MANIFEST.md`'s "Tests: **N**" line for the current
+      count (kept current there, not duplicated here - Codex#10, round 10,
+      2026-09-13). Which branches are untested?
 - [ ] `reindex_atomic` — the post-swap-integrity-fails branch (hard to trigger)
 - [ ] `llm_review` — a provider that raises `LLMError` mid-repair
 - [ ] `human_gate` aliases; `knowledge_guard` unknown-op

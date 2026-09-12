@@ -205,3 +205,48 @@ def test_real_manifest_commit_is_a_known_ancestor_of_head() -> None:
     commit = preflight._parse_manifest_commit(manifest.read_text(encoding="utf-8"))
     assert commit is not None
     assert preflight._commit_is_known_ancestor_of_head(preflight.ROOT, commit)
+
+
+def test_parses_the_area_count_table() -> None:
+    text = (
+        "| `app/` | 58 (.py) | engine, ... |\n"
+        "| `tests/` | 76 | 45 test modules + fixtures |\n"
+        "| root | 11 | `README.md`, ... |\n"
+    )
+    assert preflight._parse_manifest_area_counts(text) == {
+        "app_py": 58,
+        "tests_total": 76,
+        "tests_modules": 45,
+        "root": 11,
+    }
+
+
+def test_returns_none_when_an_area_count_row_is_missing() -> None:
+    assert preflight._parse_manifest_area_counts("| `app/` | 58 (.py) | ... |\n") is None
+
+
+def test_real_manifest_area_counts_match_reality() -> None:
+    """Regression for Codex#10 (round 10, 2026-09-13), reproduced exactly as
+    reported: the "Tracked files by area" table said 56 `app/` files (actual
+    58), 74/41 `tests/` files/modules (actual 76/45), and 10 root files
+    (actual 11) - all hand-maintained and drifted independently of the
+    header's own tracked-file total, which a different, existing check
+    already keeps honest."""
+    assert preflight._manifest_area_counts_match_reality() is True
+
+
+def test_no_stale_license_undecided_text_in_the_real_docs() -> None:
+    """Regression for Codex#10 (round 10, 2026-09-13), reproduced exactly as
+    reported: docs/threat-model.md said "Project licence not yet chosen"
+    despite Apache-2.0 having already been selected and LICENSE/NOTICE
+    already committed."""
+    assert preflight._no_stale_license_undecided_text() is True
+
+
+def test_stale_license_undecided_text_is_detected(tmp_path, monkeypatch) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "threat-model.md").write_text(
+        "Project licence not yet chosen.\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(preflight, "ROOT", tmp_path)
+    assert preflight._no_stale_license_undecided_text() is False

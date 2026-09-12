@@ -51,4 +51,4 @@ that edits knowledge content.
   trusted-manifest / human-approval is Pack Manager (M9-M10) work.
 - Fixtures are artificial; the evaluation numbers show mechanism, not field
   performance.
-- Project licence not yet chosen.
+- Licence: Apache-2.0 (`LICENSE`, `NOTICE`).
