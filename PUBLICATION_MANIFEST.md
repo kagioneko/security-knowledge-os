@@ -3,45 +3,47 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `3ab3bf6` (round-6 cross-review findings addressed, **not yet pushed**)
+- Commit: `bccbf6d` (round-7 cross-review findings addressed, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **203**
-- Tests: **443** items (442 pass, 1 skip = JA-R02)
-- `scripts/preflight.py`: **PASS** (the `PUBLICATION_MANIFEST.md`-vs-reality
-  check added in round 5 — Codex#9 — now also verifies the commit hash
-  above is a real ancestor of HEAD, round 6 Codex#10; the SBOM check now
-  requires complete dependency-group coverage, round 6 Codex#8)
+- Tracked files: **206**
+- Tests: **468** items (467 pass, 1 skip = JA-R02)
+- `scripts/preflight.py`: **PASS** (now also runs `pip-audit`, round 7
+  Codex#13, and enforces the SBOM's dependency-closure/license fixes,
+  round 7 Codex#9)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **six rounds**, 2026-09-11 -- 2026-09-12. Rounds 1-2 (2026-09-11):
-  CHANGES-REQUIRED both times, 19 then 13 findings, all fixed — see
-  `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-4 (2026-09-12, commits
-  `a548b6d`/`ecb410e` before round-5 fixes): CHANGES-REQUIRED each time,
-  independent findings in code paths earlier rounds did not touch —
-  itemized in `git log` commit messages ("fix round-3 Codex#…" / "fix
-  round-4 Codex#…") rather than this file. Round 5 (2026-09-12, audited
-  commit `ecb410e`): Codex **CHANGES-REQUIRED** (11 findings: forgeable
-  localhost boundary, FTS content-integrity gap, corpus TOCTOU, reindex
-  failure-coverage gaps, raw provider-exception leakage, unguarded store
-  eviction, unsafe direct index-build script, unvalidated safe-test root,
-  this manifest/`.gitignore` drift, SBOM coverage, unbounded LLM output) —
-  **all 11 fixed**; Antigravity **PASS-with-nits** on the same commit (two
-  low-severity nits, not blocking). Round 6 (2026-09-12, audited commit
-  `823c5e4`): Codex **CHANGES-REQUIRED** again (10 findings independent of
-  round 5's, mostly deeper versions of the same areas: the chunk hash
-  covered only `text` — a classification flip passed integrity as ALLOWED;
-  the round-5 FTS exact-phrase probe missed an appended-token tamper; the
-  empty-knowledge-root guard was only at the CLI layer, not in
-  `reindex_atomic()`/the API itself; an unrelated SQLite file with a
-  compatible `meta` table could be silently adopted and clobbered; the
-  symlink containment check was still TOCTOU-racy at the read itself;
-  `str(ValidationError)` leaked pydantic's rejected input value into a
-  public finding; an oversized rejected response was still forwarded intact
-  during LLM repair; preflight accepted and rewrote a partial SBOM; reindex
-  lock/setup failures raised raw exceptions instead of a typed result; this
-  manifest's own commit line was never checked against git history) — **all
-  10 fixed**, see `git log` commit messages ("fix round-6 Codex#…") for the
-  itemized mapping. A seventh round re-reviewing these round-6 fixes is the
-  next step before push.
+  audit), **seven rounds**, 2026-09-11 -- 2026-09-12. Rounds 1-2
+  (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
+  fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
+  (2026-09-12): CHANGES-REQUIRED each time, independent findings each
+  round, mostly deeper versions of the same areas the previous round
+  touched (reindex TOCTOU/rollback edge cases, YAML/dependency/licence
+  accuracy, concurrency gaps, chunk-hash/FTS-integrity coverage, the
+  empty-root guard, foreign-database clobbering, secret leakage into
+  public findings, SBOM/manifest/secret-scan self-consistency) — all
+  fixed each round; Antigravity **PASS-with-nits** on the round-5 commit
+  (two low-severity nits, not blocking). Itemized in `git log` commit
+  messages ("fix round-N Codex#…") rather than this file. Round 7
+  (2026-09-12, audited commit `ad03a9a`): Codex **CHANGES-REQUIRED** again
+  (13 findings independent of round 6's: 3 HIGH — reindex could publish
+  transient/mixed corpus content read during the build, symlink
+  containment was still racy through an ANCESTOR-directory swap (not just
+  the final component), a rule with no conditions/checks/manual_review
+  yielded a false PASS; 7 MEDIUM — index files created world-readable,
+  malformed corpus/YAML inputs (invalid UTF-8, deep nesting) escaped typed
+  results in rule/safe-test loaders too, an empty safe-test catalogue was
+  never checked on the assess()/API path, an unpaired-surrogate LLM
+  response bypassed the repair flow, `--require-complete` could overwrite
+  a valid SBOM before deciding to fail, the SBOM inventoried environment
+  noise (pip, the project itself) and had a license-classifier parsing
+  bug, secret-scan had whole-file/broad-word false negatives; 3 LOW —
+  `Finding` was mutable after validation, `AnswerPatch`'s "no raw secret"
+  claim was stronger than the schema provides, dependency resolution
+  admitted a known-vulnerable pytest floor) — **all 13 fixed**, each with
+  a regression test confirmed to fail against the pre-fix code (or, for
+  the two pure dependency-management items, verified directly) — see
+  `git log` commit messages ("fix round-7 Codex#…") for the itemized
+  mapping. An eighth round re-reviewing these round-7 fixes is the next
+  step before push.
 
 ## Tracked files by area
 
@@ -186,7 +188,7 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
 | CLI uses argparse, not Typer (spec §5) | accepted, documented |
 | Pack Manager (M9-M10) not in repo | out of scope; ZIP-import attack surface is future work |
 
-## Cross-AI review — six rounds so far, round 7 pending
+## Cross-AI review — seven rounds so far, round 8 pending
 
 1. **Round 1** (Codex code audit + Antigravity adversarial design audit) per
    `AI_RULES.md`, 2026-09-11, recorded in `HANDOFF.md`. Both verdicts:
@@ -239,12 +241,33 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
    git history). **All 10 fixed**, each with a regression test confirmed to
    fail against the pre-fix code — see `git log` commit messages ("fix
    round-6 Codex#…") for the itemized mapping.
-6. `scripts/preflight.py`: **PASS** after all six rounds' fixes (443 tests,
-   ruff + mypy --strict clean, commit `3ab3bf6`), including the manifest
-   commit-identity check added as part of round 6's Codex#10 fix and the
-   SBOM completeness requirement added as part of round 6's Codex#8 fix.
-7. A seventh re-review round is queued to confirm the round-6 fixes before
+6. **Round 7** (2026-09-12, audited commit `ad03a9a`): Codex
+   **CHANGES-REQUIRED** — 13 findings independent of round 6's (3 HIGH:
+   reindex could publish transient/mixed corpus content changed and
+   restored during the build, symlink containment was still racy through
+   an ANCESTOR-directory swap rather than just the final component, a rule
+   with no conditions/checks/manual_review yielded a false PASS; 7 MEDIUM:
+   index files created world-readable, malformed corpus/YAML inputs
+   (invalid UTF-8, ~1,500 nested collections) escaped typed results in the
+   rule/safe-test loaders too, an empty safe-test catalogue was never
+   checked on the assess()/API path, an unpaired-surrogate LLM response
+   bypassed the repair flow, `--require-complete` could overwrite a valid
+   SBOM before deciding to fail, the SBOM inventoried environment noise
+   (pip, the project's own component) plus a license-classifier parsing
+   bug, secret-scan had whole-file/broad-word false negatives; 3 LOW:
+   `Finding` was mutable after validation via direct assignment,
+   `AnswerPatch`'s "no raw secret" claim was stronger than the schema
+   provides, dependency resolution admitted a known-vulnerable pytest
+   floor with an unversioned build backend). **All 13 fixed**, each with a
+   regression test confirmed to fail against the pre-fix code (or, for the
+   two pure dependency-management items, verified directly) — see `git
+   log` commit messages ("fix round-7 Codex#…") for the itemized mapping.
+7. `scripts/preflight.py`: **PASS** after all seven rounds' fixes (468
+   tests, ruff + mypy --strict clean, commit `bccbf6d`), now also running
+   `pip-audit` (round 7, Codex#13) and requiring the SBOM's
+   dependency-closure fixes (round 7, Codex#9).
+8. An eighth re-review round is queued to confirm the round-7 fixes before
    push, per the same AI_RULES requirement ("修正した上で再レビューを受ける
    こと") applied again.
-8. Human confirmation: no real customer / private material in any commit —
+9. Human confirmation: no real customer / private material in any commit —
    still to confirm before push.
