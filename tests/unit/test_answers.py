@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from app.models.answer import AnswerPatch
 from app.models.assessment import AssessmentInput, OverallStatus
-from app.reviewer.answers import apply_patch
+from app.reviewer.answers import AnswerValidationError, apply_patch
 from app.reviewer.assess import assess
 from app.reviewer.rule_loader import RuleCatalogue
 
@@ -39,6 +39,16 @@ def test_no_raw_secret_field_exists() -> None:
     banned = ("key", "secret", "token", "password", "credential_value")
     for name in AnswerPatch.model_fields:
         assert not any(b in name for b in banned), name
+
+
+def test_assessment_input_rejects_an_oversized_total_payload() -> None:
+    """Regression for Codex cross-review finding #3 (round 3, 2026-09-12),
+    reproduced exactly as reported: every individual field bound
+    (user_prompts item <= 50,000 chars, <= 200 items) is satisfied, but the
+    combination serializes to ~10 MB - AssessmentInput had no bound on the
+    total request size, only on each field in isolation."""
+    with pytest.raises(ValidationError):
+        AssessmentInput(name="size", user_prompts=["x" * 50_000] * 200)
 
 
 def test_allow_list_of_fields() -> None:
@@ -104,6 +114,43 @@ def test_new_tool_name_is_added_to_the_assessment(load_assessment: Loader) -> No
 def test_bad_permission_value_is_rejected() -> None:
     with pytest.raises(ValidationError):
         AnswerPatch.model_validate({"tool_permissions": {"t": "root"}})
+
+
+def test_oversized_single_field_is_rejected_by_the_patch_schema_itself() -> None:
+    """Regression for Codex cross-review finding #6 (round 3, 2026-09-12):
+    AnswerPatch had none of AssessmentInput's field-level bounds, so an
+    oversized single field passed this schema untouched (and only failed
+    later, inside apply_patch)."""
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"system_prompt": "x" * 50_001})
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"rag_sources": ["s"] * 201})
+
+
+def test_merge_exceeding_assessment_bounds_is_a_clean_answer_validation_error(
+    load_assessment: Loader,
+) -> None:
+    """Regression for Codex cross-review finding #6, part 2 (round 3,
+    2026-09-12), reproduced exactly as reported: a patch that adds new tool
+    names can push the MERGED `tools` list over AssessmentInput's max_length
+    even when the patch itself is small and individually within bounds.
+    apply_patch() used to let pydantic's ValidationError escape uncaught here
+    - the API layer only catches AnswerValidationError - turning this into an
+    HTTP 500 instead of the controlled rejection every other bad patch in
+    this module produces."""
+    original = load_assessment("S-001-prompt-only")
+    original = AssessmentInput.model_validate(
+        original.model_dump()
+        | {
+            "tools": [
+                {"name": f"tool-{i}", "permissions": "read", "requires_approval": None}
+                for i in range(199)
+            ]
+        }
+    )
+    patch = AnswerPatch(tool_permissions={"new-tool-a": "read", "new-tool-b": "read"})
+    with pytest.raises(AnswerValidationError):
+        apply_patch(original, patch)
 
 
 def test_arbitrary_approval_action_is_merged(load_assessment: Loader) -> None:

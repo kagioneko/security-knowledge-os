@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.risk import Finding, Severity
 
@@ -19,6 +19,15 @@ from app.models.risk import Finding, Severity
 # finite bounds on free text / list sizes, not a tuned production limit.
 _Short = Annotated[str, Field(max_length=500)]
 _Text = Annotated[str, Field(max_length=50_000)]
+
+# Codex cross-review finding #3 (round 3, 2026-09-12): the per-field bounds
+# above cap any ONE field, but nothing capped the serialized size of the
+# WHOLE input. `user_prompts=["x" * 50_000] * 200` is well within every
+# individual field limit yet serializes to ~10 MB; the 5,000-entry
+# `_STORE` cap in app/main.py then permits roughly 50 GB of accepted input
+# alone. This bounds the total request, independent of how the bytes are
+# distributed across fields.
+_MAX_SERIALIZED_BYTES = 300_000
 
 
 class RagInput(BaseModel):
@@ -66,6 +75,16 @@ class AssessmentInput(BaseModel):
     outbound: OutboundInput = Field(default_factory=OutboundInput)
     human_approval: dict[_Short, bool] = Field(default_factory=dict, max_length=200)
     credentials: CredentialInput = Field(default_factory=CredentialInput)
+
+    @model_validator(mode="after")
+    def _bound_total_size(self) -> AssessmentInput:
+        size = len(self.model_dump_json().encode("utf-8"))
+        if size > _MAX_SERIALIZED_BYTES:
+            raise ValueError(
+                f"assessment input is {size} bytes, exceeding the "
+                f"{_MAX_SERIALIZED_BYTES}-byte total limit"
+            )
+        return self
 
 
 # --------------------------------------------------------------------------- #

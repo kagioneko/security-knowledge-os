@@ -19,6 +19,8 @@ is a first-class re-evaluation target: the rule engine sees the new tool.
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from app.models.answer import AnswerPatch
 from app.models.assessment import AssessmentInput
 
@@ -76,4 +78,18 @@ def apply_patch(original: AssessmentInput, patch: AnswerPatch) -> AssessmentInpu
     if patch.human_approval is not None:
         data["human_approval"].update(patch.human_approval)
 
-    return AssessmentInput.model_validate(data)
+    try:
+        return AssessmentInput.model_validate(data)
+    except ValidationError as exc:
+        # Codex cross-review finding #6 (round 3, 2026-09-12): AnswerPatch's
+        # own per-field bounds catch an oversized single field, but a merge
+        # can still exceed AssessmentInput's bounds even when every patched
+        # field is individually within limits - e.g. tool_permissions adding
+        # names to an already-near-the-cap `tools` list, or the merged total
+        # size exceeding AssessmentInput's own total-size guard. That raised
+        # pydantic's ValidationError here, uncaught - the API layer only
+        # catches AnswerValidationError, so this escaped as an HTTP 500
+        # instead of the controlled 422 every other rejection in this module
+        # produces.
+        reasons = [f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()]
+        raise AnswerValidationError(reasons) from exc
