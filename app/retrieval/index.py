@@ -183,11 +183,39 @@ def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexRe
     """
     knowledge_root = Path(knowledge_root)
     db_path = Path(db_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = db_path.with_suffix(db_path.suffix + ".lock")
 
-    with open(lock_path, "a", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+    # Codex#9 (round 6, 2026-09-12), reproduced exactly as reported:
+    # parent-directory creation, lock-file opening, and the initial
+    # flock() all ran outside any try/except -
+    # `reindex_atomic("knowledge", "/proc/1/skos-audit.sqlite")` raised a
+    # raw FileNotFoundError instead of the POLICY_BLOCKED ReindexReport
+    # every other failure path in this module returns. The existing
+    # index, if any, is never touched either way (this call never gets
+    # far enough to read or write one) - a contract/operability gap, not
+    # a fail-open one, but every caller of this function is entitled to
+    # get a ReindexReport back, not an arbitrary exception type.
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = open(lock_path, "a", encoding="utf-8")  # noqa: SIM115 - `with` below
+    except OSError as exc:
+        return ReindexReport(
+            decision=stop(
+                PolicyOutcome.POLICY_BLOCKED, "reindex", f"could not prepare the lock file: {exc}"
+            )
+        )
+
+    with lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+        except OSError as exc:
+            return ReindexReport(
+                decision=stop(
+                    PolicyOutcome.POLICY_BLOCKED,
+                    "reindex",
+                    f"could not acquire the reindex lock: {exc}",
+                )
+            )
         try:
             return _reindex_atomic_locked(knowledge_root, db_path)
         finally:

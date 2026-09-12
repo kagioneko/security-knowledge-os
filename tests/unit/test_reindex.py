@@ -547,6 +547,18 @@ def test_build_index_rejects_a_file_as_root(tmp_path: Path) -> None:
         build_index(a_file, tmp_path / "idx.sqlite")
 
 
+def test_reindex_fails_closed_when_the_lock_setup_itself_fails(corpus_alt_root: Path) -> None:
+    """Regression for Codex#9 (round 6, 2026-09-12), reproduced exactly as
+    reported: parent-directory creation, lock-file opening, and the
+    initial flock() ran outside any try/except in reindex_atomic() -
+    reindex_atomic("knowledge", "/proc/1/skos-audit.sqlite") raised a raw
+    FileNotFoundError/PermissionError instead of returning a
+    POLICY_BLOCKED ReindexReport."""
+    report = reindex_atomic(corpus_alt_root, Path("/proc/1/skos-audit.sqlite"))
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+
+
 def test_reindex_signature_takes_no_content() -> None:
     import inspect
 
