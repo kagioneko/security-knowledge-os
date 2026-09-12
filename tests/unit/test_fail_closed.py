@@ -133,6 +133,82 @@ def test_missing_revision_meta_fails_closed(tmp_path: Path, corpus_root: Path) -
         conn.close()
 
 
+def test_forged_revision_fails_closed(tmp_path: Path, corpus_root: Path) -> None:
+    """Regression for Codex#6 (round 8, 2026-09-12), reproduced exactly as
+    reported: `verify_chunk_hashes()` only checked knowledge_revision for
+    presence/truthiness, not shape - a hand-forged, non-hex-digest value
+    passed cleanly and was reported back as the index's revision."""
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        conn.execute(
+            "UPDATE meta SET value = 'FORGED-REVISION' WHERE key = 'knowledge_revision'"
+        )
+        conn.commit()
+        decision = verify_chunk_hashes(conn)
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        assert "knowledge_revision" in " ".join(decision.reasons)
+    finally:
+        conn.close()
+
+
+def test_non_string_revision_fails_closed_not_a_raw_error(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex#6 (round 8, 2026-09-12), reproduced exactly as
+    reported: SQLite's non-STRICT tables never enforced `meta.value` as
+    TEXT - a BLOB value for `knowledge_revision` passed the
+    presence/truthiness check and could later raise a raw pydantic
+    ValidationError downstream instead of failing closed here."""
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        conn.execute(
+            "UPDATE meta SET value = ? WHERE key = 'knowledge_revision'", (b"\xff\xfe",)
+        )
+        conn.commit()
+        decision = verify_chunk_hashes(conn)
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        assert "knowledge_revision" in " ".join(decision.reasons)
+    finally:
+        conn.close()
+
+
+def test_missing_fts_shadow_table_fails_closed_not_a_raw_indexerror(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex#6 (round 8, 2026-09-12), reproduced exactly as
+    reported: `PRAGMA table_info(<missing table>)` returns zero rows
+    rather than raising - for an index missing an expected chunks_fts
+    shadow table, `compute_fts_shadow_digest()`'s `columns[0]` raised a
+    raw IndexError. Dropping any one of the four shadow tables also
+    breaks FTS5's own vtable connection for every later query against
+    `chunks_fts` (verified directly: `SELECT count(*) FROM chunks_fts`
+    itself then raises "vtable constructor failed"), so `verify_chunk_
+    hashes()`'s own earlier `fts_count` check already fails closed via
+    the generic sqlite3.DatabaseError handler before ever reaching
+    `compute_fts_shadow_digest()` in that full-integration path - this
+    tests the helper directly, at the same unit granularity the raw
+    IndexError was reported at."""
+    from app.storage.integrity import compute_fts_shadow_digest
+
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        conn.execute("DROP TABLE chunks_fts_config")
+        conn.commit()
+        with pytest.raises(RuntimeError, match="chunks_fts_config"):
+            compute_fts_shadow_digest(conn)
+        # the full integration path still fails closed too, just via the
+        # earlier fts_count check's generic sqlite3.DatabaseError handler.
+        assert verify_chunk_hashes(conn).outcome is PolicyOutcome.POLICY_BLOCKED
+    finally:
+        conn.close()
+
+
 def test_truncated_index_with_stale_chunk_count_fails_closed(
     tmp_path: Path, corpus_root: Path
 ) -> None:

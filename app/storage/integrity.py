@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 
 from app.models.knowledge import Classification, KnowledgeCategory
@@ -11,6 +12,23 @@ from app.models.retrieval import chunk_content_hash
 
 _VALID_CLASSIFICATIONS = {c.value for c in Classification}
 _VALID_CATEGORIES = {c.value for c in KnowledgeCategory}
+
+# Codex#6 (round 8, 2026-09-12): both `knowledge_revision` and
+# `fts_shadow_digest` are always `hashlib.sha256(...).hexdigest()` output
+# (see app.ingestion.loader.compute_knowledge_revision and
+# compute_fts_shadow_digest above) - a lowercase 64-character hex string.
+# Requiring that exact shape catches a forged/hand-edited value
+# (`UPDATE meta SET value = 'FORGED-REVISION' ...`) or a non-string value
+# (a BLOB, which SQLite's non-STRICT tables never prevented) at this
+# fail-closed boundary, instead of letting it read back "successfully" and
+# fail later - e.g. as an unhandled pydantic ValidationError somewhere
+# downstream that expects a proper hex digest string.
+_HEX_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class _FtsShadowTableMissing(RuntimeError):
+    """A `chunks_fts` shadow table `compute_fts_shadow_digest` expects to
+    read does not exist - the index is corrupt/partially written."""
 
 # Codex#2 (round 6, 2026-09-12): the tables FTS5 actually stores a
 # contentless table's postings in. Table names, not user input - safe to
@@ -58,6 +76,14 @@ def compute_fts_shadow_digest(conn: sqlite3.Connection) -> str:
         digest.update(table.encode("utf-8"))
         digest.update(b"\x00")
         columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+        # Codex#6 (round 8, 2026-09-12), reproduced exactly as reported:
+        # `PRAGMA table_info` on a MISSING table returns zero rows rather
+        # than raising - for an empty/corrupt index missing an expected
+        # chunks_fts shadow table, `columns` was `[]` and `columns[0]`
+        # below raised a raw IndexError instead of the fail-closed
+        # POLICY_BLOCKED this whole check exists to produce.
+        if not columns:
+            raise _FtsShadowTableMissing(table)
         select = f"SELECT {', '.join(columns)} FROM {table} ORDER BY {columns[0]}"  # noqa: S608
         for row in conn.execute(select):
             for value in row:
@@ -214,6 +240,21 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
             return stop(
                 PolicyOutcome.POLICY_BLOCKED, "knowledge-index", "no knowledge_revision recorded"
             )
+        # Codex#6 (round 8, 2026-09-12), reproduced exactly as reported:
+        # this only checked for presence/truthiness, not shape - a
+        # hand-forged `UPDATE meta SET value = 'FORGED-REVISION' ...` (or
+        # any non-hex-digest string) passed cleanly and was reported back
+        # as the index's revision. `knowledge_revision` is always a
+        # `hashlib.sha256(...).hexdigest()`; reject anything else.
+        if not isinstance(revision_row["value"], str) or not _HEX_DIGEST_RE.match(
+            revision_row["value"]
+        ):
+            return stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "knowledge-index",
+                f"knowledge_revision is not a valid sha256 hex digest: "
+                f"{revision_row['value']!r}",
+            )
 
         count_row = conn.execute(
             "SELECT value FROM meta WHERE key = 'chunk_count'"
@@ -278,6 +319,17 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
             return stop(
                 PolicyOutcome.POLICY_BLOCKED, "knowledge-index", "no fts_shadow_digest recorded"
             )
+        # Codex#6 (round 8, 2026-09-12): same forged/non-string-value gap as
+        # knowledge_revision above, for the other sha256 hexdigest this
+        # function trusts from `meta`.
+        if not isinstance(digest_row["value"], str) or not _HEX_DIGEST_RE.match(
+            digest_row["value"]
+        ):
+            return stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "knowledge-index",
+                f"fts_shadow_digest is not a valid sha256 hex digest: {digest_row['value']!r}",
+            )
         actual_digest = compute_fts_shadow_digest(conn)
         if actual_digest != digest_row["value"]:
             return stop(
@@ -291,5 +343,11 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
         # exists to catch, so it must be a policy decision, not a raised
         # exception that skips the caller's fail-closed handling.
         return stop(PolicyOutcome.POLICY_BLOCKED, "knowledge-index", f"index schema error: {exc}")
+    except _FtsShadowTableMissing as exc:
+        return stop(
+            PolicyOutcome.POLICY_BLOCKED,
+            "knowledge-index",
+            f"chunks_fts shadow table missing: {exc}",
+        )
 
     return allow("knowledge-index")
