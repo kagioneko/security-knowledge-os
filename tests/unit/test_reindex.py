@@ -668,6 +668,60 @@ def test_reindex_rejects_a_backup_path_precreated_as_a_symlink(
     assert victim.read_text(encoding="utf-8") == "victim content untouched"
 
 
+def test_reindex_rejects_a_staging_database_substituted_before_publish(
+    tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#2 (round 10, 2026-09-13), reproduced exactly as
+    reported: `staging` was verified by PATHNAME, its connection closed,
+    and `os.replace(staging, db_path)` later re-resolved that pathname -
+    a writer able to replace `staging` with a symlink to a separately-
+    built, internally self-consistent "valid" database in that window
+    got it published instead. `os.replace()` does not follow symlinks -
+    it moves the symlink ENTRY itself into db_path's place - so db_path
+    would become a symlink into the attacker's own database, which every
+    later read (including the post-swap integrity check) transparently
+    follows and happily verifies on its own terms.
+
+    Monkeypatching `os.replace` to perform the substitution immediately
+    before the real call simulates the attacker winning the race,
+    independent of how much real wall-clock time the backup-copy step
+    (the actual window in production) takes."""
+    import shutil
+
+    import app.retrieval.index as index_module
+    from app.retrieval.index import build_index
+
+    db = tmp_path / "idx.sqlite"
+    first = reindex_atomic(corpus_alt_root, db)
+    assert first.ok, "test assumption: an existing index to trigger the backup-copy window"
+
+    evil_root = tmp_path / "evil_corpus"
+    shutil.copytree(corpus_alt_root, evil_root)
+    evil_db = tmp_path / "evil.sqlite"
+    build_index(evil_root, evil_db)
+
+    real_copy = index_module._copy_no_follow_exclusive
+    swapped = {"done": False}
+
+    def racy_copy(src: Path, dst: Path) -> None:
+        # simulates the actual production window: the attacker acts during
+        # the (potentially slow) backup-copy step, AFTER staging was
+        # verified but BEFORE the pre-swap re-check this fix adds.
+        real_copy(src, dst)
+        staging = next(tmp_path.glob("idx.sqlite.staging.*"))
+        staging.unlink()
+        staging.symlink_to(evil_db)
+        swapped["done"] = True
+
+    monkeypatch.setattr(index_module, "_copy_no_follow_exclusive", racy_copy)
+
+    report = reindex_atomic(corpus_alt_root, db)
+
+    assert swapped["done"], "test assumption: the swap actually happened"
+    assert not report.ok
+    assert not db.is_symlink(), "db_path must never become a symlink into attacker content"
+
+
 def test_reindex_snapshot_is_immune_to_source_mutation_after_it_is_taken(
     tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

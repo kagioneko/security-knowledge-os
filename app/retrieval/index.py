@@ -11,6 +11,7 @@ import fcntl
 import os
 import shutil
 import sqlite3
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
@@ -495,6 +496,27 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
             conn.close()
         if not integrity.is_allowed:
             raise _ReindexAbort(f"staging integrity check failed: {integrity.reasons}")
+
+        # Codex#2 (round 10, 2026-09-13), reproduced exactly as reported:
+        # `staging` was verified by PATHNAME above, the connection then
+        # closed - the publish step below can take real time (copying the
+        # EXISTING db_path to `backup`, proportional to its size), during
+        # which a writer able to write in this directory could replace
+        # `staging` with a symlink to a separately-built, internally
+        # self-consistent "valid" database. `os.replace()` does not follow
+        # symlinks - it moves the SYMLINK ENTRY itself into db_path's
+        # place, so db_path becomes a symlink into attacker-controlled
+        # content, and every later read of db_path (including the
+        # post-swap integrity check right after the swap) transparently
+        # follows it and verifies the attacker's own database instead.
+        # Capturing staging's identity now, right after it was verified,
+        # and re-checking it immediately before the swap (see below)
+        # narrows this window to the stat-then-replace gap; it cannot
+        # eliminate the race entirely (no fd-based replace API exists),
+        # matching this project's existing inode-identity-check posture
+        # elsewhere (app/storage/db.py's connect()).
+        verified_staging_stat = os.stat(staging, follow_symlinks=False)
+        verified_staging_identity = (verified_staging_stat.st_dev, verified_staging_stat.st_ino)
     except (_ReindexAbort, IndexBuildError, OSError, sqlite3.Error, ValueError) as abort:
         # any failure before the swap - including an unexpected OSError while
         # building, not just our own _ReindexAbort - leaves db_path untouched.
@@ -530,6 +552,20 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
     try:
         if had_existing:
             _copy_no_follow_exclusive(db_path, backup)
+        # Codex#2 (round 10, 2026-09-13): re-verify staging's identity
+        # immediately before the swap - see the comment where
+        # `verified_staging_identity` was captured above for why. A
+        # symlink at `staging` reports its OWN (dev, ino) here (`lstat`
+        # never follows), which can never equal the original regular
+        # file's identity, so a swap either way is caught.
+        current_staging_stat = os.stat(staging, follow_symlinks=False)
+        if (
+            current_staging_stat.st_dev,
+            current_staging_stat.st_ino,
+        ) != verified_staging_identity or not stat.S_ISREG(current_staging_stat.st_mode):
+            raise _StagingSubstituted(
+                f"{staging}: changed after verification and before publish; refusing to publish"
+            )
         os.replace(staging, db_path)  # atomic; db_path is never absent
         published = True
 
@@ -589,3 +625,11 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
 
 class _ReindexAbort(Exception):
     pass
+
+
+class _StagingSubstituted(OSError):
+    """The verified staging database was replaced (with a symlink or a
+    different regular file) between verification and publish - see the
+    Codex#2 (round 10, 2026-09-13) comment where this is raised. An
+    OSError subclass so it is caught by the same publish-failure handling
+    as any other OSError during the swap."""
