@@ -24,7 +24,14 @@ from app.ingestion.validator import Level, iter_knowledge_files, validate_tree
 from app.models.knowledge import KnowledgeUnitFrontMatter
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
 from app.models.retrieval import Chunk, chunk_content_hash
-from app.storage.db import ForeignDatabaseError, connect, open_no_follow, verify_application_id
+from app.storage.db import (
+    ForeignDatabaseError,
+    UntrustedStateDirectoryError,
+    connect,
+    open_no_follow,
+    untrusted_state_dir_reason,
+    verify_application_id,
+)
 from app.storage.integrity import verify_chunk_hashes
 from app.storage.repository import ChunkRepository
 
@@ -172,29 +179,6 @@ def _current_revision(db_path: Path) -> str | None:
         conn.close()
 
 
-def _untrusted_state_dir_reason(parent: Path) -> str | None:
-    """Codex#3 (round 11, 2026-09-13): every symlink-substitution TOCTOU in
-    this module's publish path (rounds 10-11, Codex#1/#2/#3) requires an
-    attacker able to write in `db_path`'s parent directory. That directory
-    is not owned by this process, or is writable by anyone else with a
-    local account, means that precondition already holds regardless of how
-    many of these individual races get narrowed - refuse to reindex at all
-    rather than publish under it. Returns None if the directory passes.
-    """
-    try:
-        st = parent.stat()
-    except OSError as exc:
-        return f"could not verify ownership/permissions of {parent}: {exc}"
-    if st.st_uid != os.geteuid():
-        return f"{parent} is not owned by this process (uid {st.st_uid}); refusing to reindex"
-    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-        return (
-            f"{parent} is group- or world-writable (mode {oct(stat.S_IMODE(st.st_mode))}); "
-            "refusing to reindex"
-        )
-    return None
-
-
 def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexReport:
     """Rebuild the index from an already-verified, read-only knowledge root.
 
@@ -243,7 +227,9 @@ def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexRe
         # cannot write into this directory in the first place; verifying
         # that (not owned by this process, or group/world-writable) closes
         # the THREAT rather than continuing to chase an unwinnable race.
-        untrusted = _untrusted_state_dir_reason(db_path.parent)
+        # Shared with connect()'s own write-path check (Codex#6, round 11)
+        # via app.storage.db.untrusted_state_dir_reason() - one definition.
+        untrusted = untrusted_state_dir_reason(db_path.parent)
         if untrusted is not None:
             return ReindexReport(
                 decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", untrusted)
@@ -555,7 +541,14 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
         # elsewhere (app/storage/db.py's connect()).
         verified_staging_stat = os.stat(staging, follow_symlinks=False)
         verified_staging_identity = (verified_staging_stat.st_dev, verified_staging_stat.st_ino)
-    except (_ReindexAbort, IndexBuildError, OSError, sqlite3.Error, ValueError) as abort:
+    except (
+        _ReindexAbort,
+        IndexBuildError,
+        OSError,
+        sqlite3.Error,
+        ValueError,
+        UntrustedStateDirectoryError,
+    ) as abort:
         # any failure before the swap - including an unexpected OSError while
         # building, not just our own _ReindexAbort - leaves db_path untouched.
         # Codex#4 sub-point 2 (round 5, 2026-09-12): ValueError is included as

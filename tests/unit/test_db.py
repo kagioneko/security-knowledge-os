@@ -84,6 +84,33 @@ def test_connect_does_not_chmod_a_preexisting_parent_directory(tmp_path: Path) -
     assert stat.S_IMODE(parent.stat().st_mode) == 0o755
 
 
+def test_connect_refuses_to_write_into_a_world_writable_directory(tmp_path: Path) -> None:
+    """Regression for Codex#6 (round 11, 2026-09-13), reproduced exactly as
+    reported: connect()'s write-path identity check (pre-open O_NOFOLLOW
+    stat, sqlite3.connect(), post-open PRAGMA database_list + os.stat())
+    can be defeated by an ABA race - substitute a symlink, let SQLite
+    write through it, then restore the original pathname BEFORE the
+    post-check runs; the post-check re-resolves the pathname AFTER the
+    restore and observes the (by then correct) identity. Every such
+    substitution needs an attacker able to write in db_path's parent
+    directory - connect() now refuses outright to write into one that is
+    group- or world-writable, closing the actual threat rather than
+    continuing to chase an unwinnable stat-then-open race. This is the
+    same check reindex_atomic() applies to itself (round 11, Codex#3),
+    now shared so every direct connect() write-path caller gets it too,
+    not just the reindex path."""
+    from app.storage.db import UntrustedStateDirectoryError
+
+    parent = tmp_path / "shared"
+    parent.mkdir()
+    os.chmod(parent, 0o777)
+
+    with pytest.raises(UntrustedStateDirectoryError):
+        connect(parent / "idx.sqlite")
+
+    assert not (parent / "idx.sqlite").exists()
+
+
 def test_connect_rejects_a_symlinked_db_path(tmp_path: Path) -> None:
     """Regression for Codex#4 (round 8, 2026-09-12), reproduced exactly as
     reported: `os.chmod(db_path, ...)` follows a symlink at that exact

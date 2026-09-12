@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import os
 import sqlite3
+import stat
 from pathlib import Path
 
 SCHEMA = """
@@ -60,6 +61,51 @@ _APPLICATION_ID = int.from_bytes(b"SKOS", "big")
 class ForeignDatabaseError(RuntimeError):
     """db_path already contains tables, but they are not a Security
     Knowledge OS index - refusing to write into an unrelated database."""
+
+
+class UntrustedStateDirectoryError(RuntimeError):
+    """db_path's parent directory is not owned by this process, or is
+    writable by anyone else with a local account - see
+    untrusted_state_dir_reason()."""
+
+
+def untrusted_state_dir_reason(parent: Path) -> str | None:
+    """Codex#6 (round 11, 2026-09-13), reproduced exactly as reported: the
+    write-path identity check in connect() below (pre-open O_NOFOLLOW
+    stat, sqlite3.connect(), post-open PRAGMA database_list + os.stat())
+    can be defeated by an ABA race - rename the verified file aside,
+    substitute a symlink, let SQLite open and write through it, then
+    restore the original pathname BEFORE the post-check runs. The
+    post-check's `os.stat(opened_path)` re-resolves the pathname from
+    scratch, at a point in time AFTER the restore - it observes the
+    correctly-restored identity and passes, even though SQLite already
+    wrote its schema to the symlink's target moments earlier. No
+    stdlib sqlite3 API exposes the actual file descriptor SQLite has
+    open, so there is no fd to verify against instead.
+
+    Every such substitution requires an attacker able to write in
+    db_path's parent directory - the same precondition
+    app/retrieval/index.py's reindex_atomic() already verifies before
+    doing any of its own publish-path writes (round 11, Codex#3). Sharing
+    that check here closes the identical class of gap for connect()'s
+    write path directly, covering every caller of connect() (a direct
+    build_index()/scripts/build_index.py call, not just reindex_atomic()),
+    not by trying to detect a substitution that can be timed around the
+    check, but by refusing to write into a directory an untrusted writer
+    could already reach. Returns None if the directory passes.
+    """
+    try:
+        st = parent.stat()
+    except OSError as exc:
+        return f"could not verify ownership/permissions of {parent}: {exc}"
+    if st.st_uid != os.geteuid():
+        return f"{parent} is not owned by this process (uid {st.st_uid}); refusing to write"
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return (
+            f"{parent} is group- or world-writable (mode {oct(stat.S_IMODE(st.st_mode))}); "
+            "refusing to write"
+        )
+    return None
 
 
 # Codex#4 (round 8, 2026-09-12), reproduced exactly as reported: `os.chmod`
@@ -164,6 +210,15 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
         if not parent_already_existed:
             with contextlib.suppress(OSError):  # best-effort: no POSIX perms on this fs
                 os.chmod(parent, 0o700)
+        # Codex#6 (round 11, 2026-09-13): see untrusted_state_dir_reason()'s
+        # own comment - the pre/post identity check further down can be
+        # defeated by an ABA race (substitute, let SQLite write, restore
+        # before the check runs); refusing to write at all into a
+        # directory an untrusted writer could reach closes the actual
+        # threat instead.
+        untrusted = untrusted_state_dir_reason(parent)
+        if untrusted is not None:
+            raise UntrustedStateDirectoryError(untrusted)
         # Codex#4 (round 8, 2026-09-12): verify db_path's final component
         # is not a symlink (and is regular-file-safe to chmod) BEFORE
         # sqlite3 ever opens it - `open_no_follow` raises OSError (ELOOP)
