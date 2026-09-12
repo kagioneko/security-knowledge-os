@@ -169,13 +169,36 @@ def build_sbom() -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=Path("sbom.json"))
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="build and report coverage without writing --out (non-mutating)",
+    )
+    parser.add_argument(
+        "--require-complete",
+        action="store_true",
+        help=(
+            "exit non-zero if any package declared in pyproject.toml (any "
+            "group) is not installed in this environment - use in CI/preflight "
+            "so a partial-coverage SBOM fails loudly instead of being written "
+            "and reported as a passing check (Codex#8, round 6, 2026-09-12)"
+        ),
+    )
     args = parser.parse_args(argv)
     sbom = build_sbom()
-    args.out.write_text(json.dumps(sbom, indent=2) + "\n", encoding="utf-8")
-    print(f"wrote {args.out}")
-    for prop in sbom["metadata"]["properties"]:  # type: ignore[index]
-        if prop["name"] == "skos:sbom-coverage":
-            print(prop["value"])
+    coverage = next(
+        p["value"] for p in sbom["metadata"]["properties"] if p["name"] == "skos:sbom-coverage"  # type: ignore[index]
+    )
+    if not args.check:
+        args.out.write_text(json.dumps(sbom, indent=2) + "\n", encoding="utf-8")
+        print(f"wrote {args.out}")
+    print(coverage)
+    if args.require_complete and coverage.startswith("PARTIAL"):
+        print(
+            "refusing: --require-complete was set and coverage is not complete",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

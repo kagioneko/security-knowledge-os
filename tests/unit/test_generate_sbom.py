@@ -13,7 +13,7 @@ from importlib import metadata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from generate_sbom import build_sbom, declared_dependencies  # noqa: E402
+from generate_sbom import build_sbom, declared_dependencies, main  # noqa: E402
 
 
 def test_sbom_includes_transitive_dependencies() -> None:
@@ -77,6 +77,37 @@ def test_sbom_components_are_tagged_with_their_declared_scope_and_group() -> Non
     ]
     assert by_name["pytest"]["scope"] == "optional"
     assert by_name["pytest"]["properties"] == [{"name": "skos:dependency-group", "value": "dev"}]
+
+
+def test_require_complete_fails_when_coverage_is_partial(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Regression for Codex#8 (round 6, 2026-09-12), reproduced exactly as
+    reported: generate_sbom.py overwrote sbom.json and exited 0 even when
+    the committed coverage property said PARTIAL - preflight invoked it
+    plainly and treated that as a passing check. --require-complete must
+    make the generator itself refuse."""
+    import generate_sbom as sbom_module
+
+    original = sbom_module.declared_dependencies
+
+    def _with_a_missing_package():
+        declared = dict(original())
+        declared["definitely-not-installed-anywhere"] = "runtime"
+        return declared
+
+    monkeypatch.setattr(sbom_module, "declared_dependencies", _with_a_missing_package)
+
+    exit_code = main(["--out", str(tmp_path / "sbom.json"), "--require-complete"])
+    assert exit_code == 1
+    assert "PARTIAL" in capsys.readouterr().out
+
+
+def test_check_mode_does_not_write_the_output_file(tmp_path) -> None:
+    out = tmp_path / "sbom.json"
+    exit_code = main(["--out", str(out), "--check"])
+    assert exit_code == 0
+    assert not out.exists()
 
 
 def test_sbom_has_the_schema_required_top_level_version() -> None:

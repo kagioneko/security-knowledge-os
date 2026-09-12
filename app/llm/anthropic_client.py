@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from app.llm.base import LLMError, Message
+
+if TYPE_CHECKING:
+    from anthropic.types import MessageParam
 
 DEFAULT_MODEL = "claude-sonnet-5"
 
@@ -20,10 +25,17 @@ class AnthropicClient:
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model or DEFAULT_MODEL
         self._max_tokens = max_tokens
+        # Codex#8 fallout (round 6, 2026-09-12): with the `[llm]` extra
+        # actually installed (added to close the SBOM-coverage gap, Codex#8),
+        # mypy resolves the real anthropic SDK types here for the first
+        # time and rejects `system=None`/an untyped `messages` list -
+        # `NOT_GIVEN` is the SDK's own "omit this parameter" sentinel, not
+        # `None`.
+        self._not_given: Any = anthropic.NOT_GIVEN
 
     def complete(self, messages: list[Message]) -> str:
         system = "\n\n".join(m.content for m in messages if m.role == "system")
-        turns = [
+        turns: list[MessageParam] = [
             {"role": m.role, "content": m.content}
             for m in messages
             if m.role in ("user", "assistant")
@@ -31,7 +43,7 @@ class AnthropicClient:
         try:
             response = self._client.messages.create(
                 model=self._model,
-                system=system or None,
+                system=system or self._not_given,
                 messages=turns,
                 max_tokens=self._max_tokens,
             )
@@ -48,6 +60,4 @@ class AnthropicClient:
             # anyone with an in-process debugger or a `raise` re-inspection;
             # it is only the reported *message* that is redacted.
             raise LLMError(f"anthropic request failed: {type(exc).__name__}") from exc
-        return "".join(
-            block.text for block in response.content if getattr(block, "type", None) == "text"
-        )
+        return "".join(block.text for block in response.content if block.type == "text")

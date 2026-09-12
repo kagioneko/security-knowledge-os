@@ -143,7 +143,12 @@ def main() -> int:
         _run("validate-rules", [py, "scripts/validate_rules.py", "rules"]),
         _run("validate-safe-tests", [py, "scripts/validate_safe_tests.py", "safe_tests"]),
         _run("secret-scan", [py, "scripts/secret_scan.py"]),
-        _run("sbom", [py, "scripts/generate_sbom.py"]),
+        # Codex#8 (round 6, 2026-09-12): this used to invoke the generator
+        # plainly - it overwrites sbom.json and exits 0 even when coverage
+        # is PARTIAL, so a partial SBOM was written AND reported as a
+        # passing preflight check. --require-complete makes generate_sbom.py
+        # itself refuse (see scripts/generate_sbom.py::main()).
+        _run("sbom", [py, "scripts/generate_sbom.py", "--require-complete"]),
         _tracked_knowledge_all_public(),
         _no_private_or_secret_tracked(),
         _license_files_present(),

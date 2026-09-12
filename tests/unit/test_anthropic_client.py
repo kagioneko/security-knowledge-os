@@ -21,6 +21,7 @@ def _client_with_fake_sdk(create: Any) -> AnthropicClient:
     client = object.__new__(AnthropicClient)
     client._model = "claude-sonnet-5"  # type: ignore[attr-defined]
     client._max_tokens = 2048  # type: ignore[attr-defined]
+    client._not_given = None  # type: ignore[attr-defined]
 
     class _FakeMessages:
         pass
