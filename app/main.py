@@ -495,39 +495,27 @@ def _build_report(
     )
 
 
-def _evaluate(
-    inp: AssessmentInput, settings: Settings, resources: _EvaluationResources
-) -> AssessmentReport:
-    # Codex#6 (round 9, 2026-09-12): bound how many assessments (each a real
-    # rule-load, and a real provider call when an LLM is configured) can run
-    # concurrently - see _ASSESSMENT_SEMAPHORE above for what this does and
-    # does not cover. Used by submit_answers() on a cache MISS only - a cache
-    # HIT is deliberately never gated by this at all (self-review, round 10,
-    # 2026-09-13: it does no rule-load and no provider call, `resources` was
-    # already loaded to compute the cache key regardless of hit or miss, so
-    # there is no cost left here for the semaphore to protect on a hit).
-    if not _ASSESSMENT_SEMAPHORE.acquire(blocking=False):
-        raise HTTPException(
-            status_code=429,
-            detail=f"too many assessments in flight (max {_MAX_CONCURRENT_ASSESSMENTS}); "
-            "retry shortly",
-        )
-    try:
-        return _build_report(inp, settings, resources)
-    finally:
-        _ASSESSMENT_SEMAPHORE.release()
+@contextlib.contextmanager
+def _admitted_resources(settings: Settings) -> Iterator[_EvaluationResources]:
+    """Acquire _ASSESSMENT_SEMAPHORE (429 if already at capacity), THEN
+    call _load_resources() (a real rule-load, safe-test-load, and sqlite
+    connect()) - in that order, so a burst of requests beyond the
+    concurrency cap is rejected immediately instead of each still paying
+    the load cost first (self-review, round 10, 2026-09-13, restoring the
+    round-9 Codex#6 fix's own stated intent - its comment on
+    _ASSESSMENT_SEMAPHORE names "a real rule-load" as one of the two costs
+    being bounded, not just the provider call).
 
-
-def _run(inp: AssessmentInput, settings: Settings) -> AssessmentReport:
-    # Self-review (round 10, 2026-09-13): _load_resources() below (a real
-    # rule-load, a real safe-test-load, a real sqlite connect()) must not
-    # run before the semaphore admits this request - unlike submit_answers()
-    # (which has no choice: it needs `resources` loaded just to know whether
-    # a request is even a cache miss), every call here goes on to actually
-    # evaluate, so there is nothing to lose by gating the load itself too,
-    # restoring the round-9 fix's original intent for this call path (its
-    # own comment on _ASSESSMENT_SEMAPHORE names "a real rule-load" as one
-    # of the two costs being bounded, not just the provider call).
+    Codex#5 (round 11, 2026-09-13), reproduced exactly as reported:
+    submit_answers() used to call _load_resources() BEFORE ever checking
+    the semaphore - it has no choice but to load resources to compute the
+    cache key and know whether a request is even a cache miss, but that
+    is an argument for gating the load too (a cache hit paying the
+    admission cost is preferable to snapshot/database work being
+    unbounded), not for skipping the gate. Both call paths now go through
+    this single admission+load helper, closing resources.conn and
+    releasing the semaphore on the way out either way.
+    """
     if not _ASSESSMENT_SEMAPHORE.acquire(blocking=False):
         raise HTTPException(
             status_code=429,
@@ -537,12 +525,17 @@ def _run(inp: AssessmentInput, settings: Settings) -> AssessmentReport:
     try:
         resources = _load_resources(settings)
         try:
-            return _build_report(inp, settings, resources)
+            yield resources
         finally:
             if resources.conn is not None:
                 resources.conn.close()
     finally:
         _ASSESSMENT_SEMAPHORE.release()
+
+
+def _run(inp: AssessmentInput, settings: Settings) -> AssessmentReport:
+    with _admitted_resources(settings) as resources:
+        return _build_report(inp, settings, resources)
 
 
 def _rules_and_safe_tests_fingerprint(resources: _EvaluationResources) -> str:
@@ -706,13 +699,19 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
     # cache hit could return a result computed against rules/knowledge that
     # have since changed. _evaluation_fingerprint() covers those inputs too.
     #
-    # Codex#5 (round 10, 2026-09-13): resources are now loaded exactly ONCE
-    # here, up front, and the SAME loaded catalogue/safe_tests/connection
-    # are reused for both the fingerprint below and the actual evaluation on
-    # a cache miss - see _evaluation_fingerprint()'s own comment for why the
-    # old two-independent-reads approach was racy.
-    resources = _load_resources(settings)
-    try:
+    # Codex#5 (round 10, 2026-09-13): resources are loaded exactly ONCE and
+    # the SAME loaded catalogue/safe_tests/connection are reused for both
+    # the fingerprint below and the actual evaluation on a cache miss - see
+    # _evaluation_fingerprint()'s own comment for why the old
+    # two-independent-reads approach was racy.
+    #
+    # Codex#5 (round 11, 2026-09-13), reproduced exactly as reported: that
+    # load used to happen OUTSIDE any admission control - a burst of
+    # requests could each still snapshot the rule/safe-test catalogues and
+    # open the database, unbounded, before any of them reached a semaphore
+    # check. _admitted_resources() gates the load itself, not just the
+    # eventual build_report() call on a cache miss.
+    with _admitted_resources(settings) as resources:
         cache_key = (
             assessment_id,
             hashlib.sha256(new_input.model_dump_json().encode("utf-8")).hexdigest(),
@@ -733,7 +732,7 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
                 if cached_entry is not None:
                     return _respond(cached_entry[1])
 
-            report = _evaluate(new_input, settings, resources)
+            report = _build_report(new_input, settings, resources)
             if report.result is not None:
                 prev_revision = (
                     original_report.result.revision if original_report.result is not None else 1
@@ -742,9 +741,6 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
                 report.result.revision = prev_revision + 1
                 _store_put(report.result.assessment_id, (new_input, report))
                 _answer_cache_put(cache_key, report.result.assessment_id)
-    finally:
-        if resources.conn is not None:
-            resources.conn.close()
     return _respond(report)
 
 

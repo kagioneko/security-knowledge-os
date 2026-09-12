@@ -94,11 +94,12 @@ def test_concurrent_identical_answers_do_not_duplicate_the_assessment(
     sequential-repeat cache (above) before either could populate it, used to
     each run a full re-assessment and create two distinct child assessments.
     A lock per cache key now serializes the check-cache/run/store section -
-    `_evaluate` (the actual per-request evaluation call since round 10's
-    _load_resources()/_evaluate() split, Codex#5) is slowed down (not raced
-    with a rendezvous barrier, which would deadlock against the fix's own
-    serialization) to widen the window a real assessment might not reliably
-    hit."""
+    `_build_report` (the actual per-request evaluation call since round 10's
+    _load_resources()/_evaluate() split, Codex#5, and round 11's removal of
+    the now-redundant _evaluate() wrapper, Codex#5) is slowed down (not
+    raced with a rendezvous barrier, which would deadlock against the
+    fix's own serialization) to widen the window a real assessment might
+    not reliably hit."""
     import threading
     import time
 
@@ -109,15 +110,15 @@ def test_concurrent_identical_answers_do_not_duplicate_the_assessment(
     ).json()
     aid = created["result"]["assessment_id"]
 
-    original_evaluate = main_module._evaluate
+    original_build_report = main_module._build_report
     call_count = {"n": 0}
 
-    def _slow_evaluate(inp, settings, resources):  # type: ignore[no-untyped-def]
+    def _slow_build_report(inp, settings, resources):  # type: ignore[no-untyped-def]
         call_count["n"] += 1
         time.sleep(0.1)
-        return original_evaluate(inp, settings, resources)
+        return original_build_report(inp, settings, resources)
 
-    main_module._evaluate = _slow_evaluate  # type: ignore[assignment]
+    main_module._build_report = _slow_build_report  # type: ignore[assignment]
     try:
         start = threading.Event()
         results: list[str] = []
@@ -136,9 +137,9 @@ def test_concurrent_identical_answers_do_not_duplicate_the_assessment(
         for t in threads:
             t.join()
     finally:
-        main_module._evaluate = original_evaluate
+        main_module._build_report = original_build_report
 
-    assert call_count["n"] == 1  # the lock collapsed every concurrent call to one _evaluate()
+    assert call_count["n"] == 1  # the lock collapsed every concurrent call to one _build_report()
     assert len(set(results)) == 1  # and every thread got that same assessment_id
 
 
@@ -232,6 +233,52 @@ def test_run_rejects_before_loading_resources_when_the_semaphore_is_full(
                     main_module.AssessmentInput(name="t"), main_module._settings()
                 )
             assert excinfo.value.status_code == 429
+        finally:
+            main_module._ASSESSMENT_SEMAPHORE.release()
+    finally:
+        main_module._MAX_CONCURRENT_ASSESSMENTS = original_max
+        main_module._ASSESSMENT_SEMAPHORE = main_module.threading.Semaphore(original_max)
+
+    assert called["n"] == 0, "_load_resources() must not run when the semaphore is full"
+
+
+def test_answers_rejects_before_loading_resources_when_the_semaphore_is_full(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#5 (round 11, 2026-09-13), reproduced exactly as
+    reported: submit_answers() called _load_resources() - a real rule-
+    load, safe-test-load, and sqlite connect() - BEFORE ever checking
+    _ASSESSMENT_SEMAPHORE, unlike _run() (already fixed in round 10's own
+    self-review). A burst of /answers requests beyond the concurrency cap
+    would each still pay the full resource-loading cost - even a request
+    that will turn out to be a cache HIT - before being told 429.
+    _admitted_resources() now gates the load itself for both call paths."""
+    import app.main as main_module
+
+    created = client.post(
+        "/v1/assessments", json=_input("U-002-memory-persistence-unspecified")
+    ).json()
+    aid = created["result"]["assessment_id"]
+
+    original_max = main_module._MAX_CONCURRENT_ASSESSMENTS
+    main_module._MAX_CONCURRENT_ASSESSMENTS = 1
+    main_module._ASSESSMENT_SEMAPHORE = main_module.threading.Semaphore(1)
+    called = {"n": 0}
+    original_load_resources = main_module._load_resources
+
+    def _tracking_load_resources(settings):  # type: ignore[no-untyped-def]
+        called["n"] += 1
+        return original_load_resources(settings)
+
+    monkeypatch.setattr(main_module, "_load_resources", _tracking_load_resources)
+    try:
+        acquired_first = main_module._ASSESSMENT_SEMAPHORE.acquire(blocking=False)
+        assert acquired_first
+        try:
+            resp = client.post(
+                f"/v1/assessments/{aid}/answers", json={"memory_persistent": True}
+            )
+            assert resp.status_code == 429
         finally:
             main_module._ASSESSMENT_SEMAPHORE.release()
     finally:
