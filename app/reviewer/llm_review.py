@@ -117,10 +117,21 @@ def _extract_json(text: str) -> str:
 
 
 def _try_parse(raw: str) -> tuple[ReviewerObservations | None, str | None]:
-    size = len(raw.encode("utf-8"))
-    if size > _MAX_RAW_RESPONSE_BYTES:
-        return None, f"response is {size} bytes, over the {_MAX_RAW_RESPONSE_BYTES}-byte limit"
     try:
+        # Codex#7 (round 7, 2026-09-12), reproduced exactly as reported:
+        # this size check used to run BEFORE the try block - a provider
+        # returning a Python string containing an unpaired surrogate (e.g.
+        # "\ud800") made raw.encode("utf-8") itself raise a raw
+        # UnicodeEncodeError, bypassing the normal LLM_PARSE_ERROR /
+        # one-repair-attempt flow entirely. Moved inside the same try/except
+        # boundary as parsing - UnicodeEncodeError is a ValueError subclass,
+        # already handled below.
+        size = len(raw.encode("utf-8"))
+        if size > _MAX_RAW_RESPONSE_BYTES:
+            return (
+                None,
+                f"response is {size} bytes, over the {_MAX_RAW_RESPONSE_BYTES}-byte limit",
+            )
         return ReviewerObservations.model_validate_json(_extract_json(raw)), None
     except ValidationError as exc:
         # Codex#6 (round 6, 2026-09-12), reproduced exactly as reported:
@@ -190,11 +201,15 @@ def run_llm_review(
     # assistant message and sent through in full on the repair call -
     # preserving the exact provider-cost/memory-amplification path the cap
     # exists to close, just delayed by one round trip.
-    raw_for_repair = (
-        "[response omitted: exceeded the size limit]"
-        if len(raw.encode("utf-8")) > _MAX_RAW_RESPONSE_BYTES
-        else raw
-    )
+    # Codex#7 (round 7, 2026-09-12): the same unguarded raw.encode("utf-8")
+    # this function's OWN 200KB check (round 6) used - an unpaired
+    # surrogate would raise UnicodeEncodeError here too, uncaught, escaping
+    # run_llm_review() entirely instead of the normal repair flow.
+    try:
+        raw_is_oversized = len(raw.encode("utf-8")) > _MAX_RAW_RESPONSE_BYTES
+    except UnicodeEncodeError:
+        raw_is_oversized = True  # unencodable is treated the same as oversized: omit it
+    raw_for_repair = "[response omitted: exceeded the size limit]" if raw_is_oversized else raw
     messages += [
         Message("assistant", raw_for_repair),
         Message(

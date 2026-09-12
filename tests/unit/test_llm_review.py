@@ -256,6 +256,24 @@ def test_oversized_response_is_not_forwarded_intact_during_repair() -> None:
     assert max(second_call_sizes) < 10_000  # smallest of the 4 messages should dwarf 500,000
 
 
+def test_an_unpaired_surrogate_response_fails_closed_not_a_raw_unicodeencodeerror() -> None:
+    """Regression for Codex#7 (round 7, 2026-09-12), reproduced exactly as
+    reported: the UTF-8 size check ran BEFORE the parsing try block - a
+    provider returning a Python string containing an unpaired surrogate
+    made raw.encode("utf-8") itself raise a raw UnicodeEncodeError,
+    bypassing the normal LLM_PARSE_ERROR / one-repair-attempt flow."""
+
+    class _SurrogateClient:
+        name = "x"
+
+        def complete(self, messages: list[Message]) -> str:
+            return "\ud800"
+
+    result = _review(_SurrogateClient())  # must not raise
+    assert result.parse_status is ParseStatus.LLM_PARSE_ERROR
+    assert result.observations.observations == []
+
+
 def test_observations_to_findings_are_capped_llm_obs() -> None:
     result = _review(MockClient([DEFAULT_MOCK_RESPONSE]))
     findings = observations_to_findings(result.observations)
