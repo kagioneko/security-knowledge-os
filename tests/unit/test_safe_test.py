@@ -113,6 +113,22 @@ def test_symlinked_safe_test_template_is_rejected(tmp_path: Path) -> None:
         load_safe_test_templates(root)
 
 
+def test_deeply_nested_safe_test_yaml_fails_closed_not_a_raw_recursionerror(
+    tmp_path: Path,
+) -> None:
+    """Regression for Codex#5 (round 7, 2026-09-12), reproduced exactly as
+    reported: plain yaml.safe_load() had none of the merge-key ban / size
+    cap / RecursionError handling the knowledge front-matter loader already
+    had - roughly 1,500 nested YAML collections raised an uncaught
+    RecursionError straight out of load_safe_test_templates()."""
+    root = tmp_path / "safe_tests"
+    root.mkdir()
+    nested = "x: " + "[" * 1500 + "]" * 1500
+    (root / "bad.yaml").write_text(nested, encoding="utf-8")
+    with pytest.raises(SafeTestLoadError, match="deeply nested"):
+        load_safe_test_templates(root)
+
+
 def test_missing_safe_tests_root_is_rejected(tmp_path: Path) -> None:
     """Regression for Codex#8 (round 5, 2026-09-12), reproduced exactly as
     reported: `load_safe_test_templates("/typo'd/path")` used to silently

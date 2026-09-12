@@ -62,21 +62,25 @@ class _RestrictedSafeLoader(yaml.SafeLoader):
         super().flatten_mapping(node)
 
 
-def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
-    match = _FRONT_MATTER_RE.match(text.lstrip("﻿"))
-    if match is None:
-        raise FrontMatterError(
-            "missing or malformed YAML front matter (expected a leading '---' block)"
-        )
-    raw_front_matter = match.group("fm")
-    if len(raw_front_matter.encode("utf-8", errors="replace")) > _MAX_FRONT_MATTER_BYTES:
-        raise FrontMatterError(
-            f"front matter exceeds {_MAX_FRONT_MATTER_BYTES} bytes"
-        )
+def safe_load_bounded(text: str, *, max_bytes: int, what: str = "YAML content") -> Any:
+    """A size-capped ``yaml.load`` using ``_RestrictedSafeLoader`` (merge
+    keys refused) that converts every way PyYAML can blow up on hostile
+    input into ``FrontMatterError``, never a raw exception.
+
+    Codex#5 (round 7, 2026-09-12), reproduced exactly as reported: rule and
+    safe-test YAML files had none of these protections at all - only
+    knowledge front matter did (round 2/3, Codex#8/#2). Roughly 1,500
+    nested YAML collections raised an uncaught ``RecursionError`` straight
+    out of both loaders. Shared here so every YAML boundary in this app -
+    front matter, rules, safe tests - has the same protections and cannot
+    independently regress.
+    """
+    if len(text.encode("utf-8", errors="replace")) > max_bytes:
+        raise FrontMatterError(f"{what} exceeds {max_bytes} bytes")
     try:
-        data = yaml.load(raw_front_matter, Loader=_RestrictedSafeLoader)
+        return yaml.load(text, Loader=_RestrictedSafeLoader)
     except yaml.YAMLError as exc:
-        raise FrontMatterError(f"invalid YAML in front matter: {exc}") from exc
+        raise FrontMatterError(f"invalid YAML in {what}: {exc}") from exc
     except ValueError as exc:
         # Codex cross-review finding #8 (round 2, 2026-09-11): a
         # syntactically-shaped but semantically invalid scalar (e.g. the
@@ -86,7 +90,7 @@ def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
         # not caught here, and POST /v1/knowledge/validate (meant to always
         # return a clean {valid: false, errors: [...]} response for exactly
         # this kind of bad input) returned an HTTP 500 instead.
-        raise FrontMatterError(f"invalid value in front matter: {exc}") from exc
+        raise FrontMatterError(f"invalid value in {what}: {exc}") from exc
     except RecursionError as exc:
         # Codex cross-review finding #2, part 2 (round 3, 2026-09-12): a
         # small document with hundreds of nested flow collections
@@ -94,7 +98,18 @@ def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
         # Python's recursion limit. That is not a YAMLError subclass either,
         # so it also escaped as an HTTP 500 instead of a controlled
         # {valid: false} response.
-        raise FrontMatterError("front matter is too deeply nested") from exc
+        raise FrontMatterError(f"{what} is too deeply nested") from exc
+
+
+def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
+    match = _FRONT_MATTER_RE.match(text.lstrip("﻿"))
+    if match is None:
+        raise FrontMatterError(
+            "missing or malformed YAML front matter (expected a leading '---' block)"
+        )
+    data = safe_load_bounded(
+        match.group("fm"), max_bytes=_MAX_FRONT_MATTER_BYTES, what="front matter"
+    )
     if not isinstance(data, dict):
         raise FrontMatterError("front matter must be a YAML mapping")
     return data, match.group("body")
@@ -130,7 +145,14 @@ def _read_text_no_follow(path: Path) -> str:
             if not chunk:
                 break
             chunks.append(chunk)
-        return b"".join(chunks).decode("utf-8")
+        try:
+            return b"".join(chunks).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            # Codex#5 (round 7, 2026-09-12), reproduced exactly as reported:
+            # invalid UTF-8 in a KU raised a raw UnicodeDecodeError out of
+            # reindex_atomic() instead of a typed POLICY_BLOCKED/validation
+            # error - the API received a 500 rather than a clean rejection.
+            raise FrontMatterError(f"{path}: not valid UTF-8: {exc}") from exc
     finally:
         os.close(fd)
 

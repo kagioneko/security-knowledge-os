@@ -20,13 +20,17 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
-import yaml
 from pydantic import ValidationError
 
-from app.ingestion.parser import FrontMatterError, _read_text_no_follow
+from app.ingestion.parser import FrontMatterError, _read_text_no_follow, safe_load_bounded
 from app.models.assessment import SafeTest, SafeTestEnvironment, UntrustedSafeTestProposal
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
 from app.models.risk import RiskRule
+
+# Codex#5 (round 7, 2026-09-12): a hand-authored safe-test template file is
+# at most a few KB in real use; bounds the raw text handed to the YAML
+# parser regardless of how it would blow up.
+_MAX_SAFE_TEST_FILE_BYTES = 50_000
 
 _FORBIDDEN = [
     (re.compile(r"\bprod(uction)?\b", re.I), "references a production target"),
@@ -125,12 +129,14 @@ def load_safe_test_templates(root: Path | str) -> dict[str, SafeTest]:
         try:
             # Codex#5 (round 7, 2026-09-12): this yaml.safe_load() call used
             # to run OUTSIDE any try/except at all - invalid YAML raised a
-            # bare yaml.YAMLError straight out of load_safe_test_templates(),
-            # not the SafeTestLoadError every other per-file problem here
-            # produces.
-            raw = yaml.safe_load(text)
-        except yaml.YAMLError as exc:
-            raise SafeTestLoadError(f"{path}: invalid YAML: {exc}") from exc
+            # bare yaml.YAMLError straight out of load_safe_test_templates().
+            # Also had none of the merge-key ban / size cap / RecursionError
+            # handling the knowledge front-matter loader already had.
+            raw = safe_load_bounded(
+                text, max_bytes=_MAX_SAFE_TEST_FILE_BYTES, what="safe-test file"
+            )
+        except FrontMatterError as exc:
+            raise SafeTestLoadError(f"{path}: {exc}") from exc
         try:
             test = SafeTest.model_validate(raw)
         except ValidationError as exc:

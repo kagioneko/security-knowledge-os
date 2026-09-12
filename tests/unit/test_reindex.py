@@ -548,6 +548,29 @@ def test_build_index_rejects_a_file_as_root(tmp_path: Path) -> None:
         build_index(a_file, tmp_path / "idx.sqlite")
 
 
+def test_reindex_fails_closed_on_invalid_utf8_not_a_raw_unicodedecodeerror(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#5 (round 7, 2026-09-12), reproduced exactly as
+    reported: invalid UTF-8 in a KU raised a raw UnicodeDecodeError out of
+    reindex_atomic() instead of a typed POLICY_BLOCKED result."""
+    import shutil
+
+    corpus2 = tmp_path / "corpus2"
+    shutil.copytree(corpus_alt_root, corpus2)
+    ku_path = next(corpus2.glob("public/**/*.md"))
+    ku_path.write_bytes(
+        b"---\nid: KU-BAD\ntitle: t\ncategory: prompt-security\n"
+        b"classification: public\nversion: '0.1'\nsource_ref: x\n---\n"
+        b"\xff\xfe invalid utf-8 bytes"
+    )
+
+    db = tmp_path / "idx.sqlite"
+    report = reindex_atomic(corpus2, db)  # must not raise
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+
+
 def test_reindex_creates_the_index_directory_and_file_non_world_readable(
     tmp_path: Path, corpus_alt_root: Path
 ) -> None:

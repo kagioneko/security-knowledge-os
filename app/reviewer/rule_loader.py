@@ -11,10 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import ValidationError
 
-from app.ingestion.parser import FrontMatterError, _read_text_no_follow
+from app.ingestion.parser import FrontMatterError, _read_text_no_follow, safe_load_bounded
 from app.models.risk import LLM_OBS_PREFIX, RiskRule
 from app.models.rule_clause import Clause, Operator
 from app.reviewer.clause_eval import ClauseError, validate_clause
@@ -22,6 +21,11 @@ from app.reviewer.evidence import EVIDENCE_KEYS
 
 _CLAUSE_KEYS = {"field", "op", "value"}
 _CONDITIONS_KEYS = {"all", "any"}
+
+# Codex#5 (round 7, 2026-09-12): a hand-authored rule file (id/title/
+# conditions/checks/...) is at most a few KB in real use; bounds the raw
+# text handed to the YAML parser regardless of how it would blow up.
+_MAX_RULE_FILE_BYTES = 50_000
 
 
 class RuleLoadError(Exception):
@@ -195,9 +199,14 @@ def load_rules(rules_root: Path | str) -> RuleCatalogue:
         except (OSError, FrontMatterError) as exc:
             raise RuleLoadError(f"{path}: {exc}") from exc
         try:
-            raw = yaml.safe_load(text)
-        except yaml.YAMLError as exc:
-            raise RuleLoadError(f"{path}: invalid YAML: {exc}") from exc
+            # Codex#5 (round 7, 2026-09-12): plain yaml.safe_load() had none
+            # of the merge-key ban / size cap / RecursionError handling the
+            # knowledge front-matter loader already had - ~1,500 nested YAML
+            # collections raised an uncaught RecursionError straight out of
+            # load_rules(). Reuses the exact same bounded loader.
+            raw = safe_load_bounded(text, max_bytes=_MAX_RULE_FILE_BYTES, what="rule file")
+        except FrontMatterError as exc:
+            raise RuleLoadError(f"{path}: {exc}") from exc
         if not isinstance(raw, dict):
             raise RuleLoadError(f"{path}: a rule file must contain one mapping")
 

@@ -62,6 +62,20 @@ def test_unknown_evidence_key_is_rejected(tmp_path: Path) -> None:
         load_rules(root)
 
 
+def test_deeply_nested_rule_yaml_fails_closed_not_a_raw_recursionerror(
+    tmp_path: Path,
+) -> None:
+    """Regression for Codex#5 (round 7, 2026-09-12), reproduced exactly as
+    reported: plain yaml.safe_load() had none of the merge-key ban / size
+    cap / RecursionError handling the knowledge front-matter loader already
+    had - roughly 1,500 nested YAML collections raised an uncaught
+    RecursionError straight out of load_rules()."""
+    nested = "x: " + "[" * 1500 + "]" * 1500
+    root = _write_rule(tmp_path, nested)
+    with pytest.raises(RuleLoadError, match="deeply nested"):
+        load_rules(root)
+
+
 def test_a_rule_with_no_conditions_or_checks_is_rejected(tmp_path: Path) -> None:
     """Regression for Codex#3 (round 7, 2026-09-12), reproduced exactly as
     reported: a rule with empty conditions, checks, and manual_review=False
