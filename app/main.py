@@ -82,6 +82,45 @@ class _MaxBodySizeMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Codex#13 (round 8, 2026-09-12), reproduced exactly as reported: a
+        # POST to /v1/knowledge/reindex (a bodyless endpoint - its handler
+        # takes no Request/body parameter) with an oversized body returned
+        # 200. `_limited_receive` below only counts bytes if the DOWNSTREAM
+        # app ever calls `receive()`; an endpoint that never reads the body
+        # never triggers it. A `Content-Length` header states the size
+        # up front, before any bytes even need to be read - reject on that
+        # alone as a fast, general pre-check that does not depend on
+        # whether the endpoint underneath happens to read its body. (A
+        # client using chunked transfer-encoding, which omits
+        # Content-Length, is not covered by this pre-check specifically -
+        # `_limited_receive`'s streaming count below is what still catches
+        # that for any endpoint that DOES read the body; an endpoint that
+        # reads neither the header nor the body is documented as this
+        # project's own localhost/no-auth MVP scope, not a gap this
+        # middleware alone can close for every conceivable client.)
+        for key, value in scope.get("headers") or ():
+            if key == b"content-length":
+                try:
+                    declared = int(value)
+                except ValueError:
+                    declared = None
+                if declared is not None and declared > _MAX_BODY_BYTES:
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": 413,
+                            "headers": [(b"content-type", b"application/json")],
+                        }
+                    )
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": b'{"detail":"request body too large"}',
+                        }
+                    )
+                    return
+                break
+
         seen = 0
 
         async def _limited_receive() -> Any:

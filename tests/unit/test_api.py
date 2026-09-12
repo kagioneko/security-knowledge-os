@@ -338,6 +338,27 @@ def test_reindex_endpoint(
     assert resp.json()["decision"]["outcome"] == "ALLOWED"
 
 
+def test_reindex_rejects_an_oversized_body_despite_taking_no_body_param(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#13 (round 8, 2026-09-12), reproduced exactly as
+    reported: `_MaxBodySizeMiddleware` only counts bytes if the DOWNSTREAM
+    handler calls `receive()` - the reindex() handler takes no
+    Request/body parameter and never reads the body, so a POST with a
+    body far over `_MAX_BODY_BYTES` returned 200 instead of 413."""
+    import app.main as main_module
+
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(REPO / "tests" / "fixtures" / "corpus_alt"))
+    monkeypatch.setenv("SKOS_DB_PATH", str(tmp_path / "idx.sqlite"))
+    oversized = b"x" * (main_module._MAX_BODY_BYTES + 1)
+    resp = client.post(
+        "/v1/knowledge/reindex",
+        content=oversized,
+        headers={"Content-Type": "application/octet-stream"},
+    )
+    assert resp.status_code == 413
+
+
 def test_reindex_fails_closed_returns_422(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
