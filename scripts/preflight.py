@@ -10,6 +10,7 @@ classification check, and a reminder of the manual gates that a script cannot do
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -69,6 +70,69 @@ def _license_files_present() -> bool:
     return ok
 
 
+def _parse_manifest_claims(text: str) -> tuple[int, int] | None:
+    """Extract the `(tracked files, tests)` counts PUBLICATION_MANIFEST.md
+    claims for itself, from its "Tracked files: **N**" / "Tests: **N**
+    items" lines. Returns None if either line is missing/unparseable."""
+    claimed_files_match = re.search(r"Tracked files:\s*\*\*(\d+)\*\*", text)
+    claimed_tests_match = re.search(r"Tests:\s*\*\*(\d+)\*\*\s*items", text)
+    if claimed_files_match is None or claimed_tests_match is None:
+        return None
+    return int(claimed_files_match.group(1)), int(claimed_tests_match.group(1))
+
+
+def _actual_tracked_files_and_tests(root: Path) -> tuple[int, int]:
+    actual_files = len(
+        subprocess.run(
+            ["git", "ls-files"], cwd=root, capture_output=True, text=True
+        ).stdout.splitlines()
+    )
+    collect = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--collect-only"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    collected_match = re.search(r"^(\d+) tests? collected", collect.stdout, re.MULTILINE)
+    actual_tests = int(collected_match.group(1)) if collected_match else -1
+    return actual_files, actual_tests
+
+
+def _publication_manifest_matches_reality() -> bool:
+    """Codex#9 (round 5, 2026-09-12), reproduced exactly as reported:
+    PUBLICATION_MANIFEST.md is hand-edited and drifts from the real
+    tracked-file / test counts the moment another commit lands after it was
+    last written (the audited commit had 200 tracked files / 393 tests
+    against a manifest still claiming 199 / 371). A stale manifest is
+    exactly the kind of publication-review claim that should fail loudly,
+    not silently mislead whoever reads it before pushing. Regenerate the
+    manifest's "Tracked files" / "Tests" lines to match reality, then rerun
+    preflight, before actually publishing.
+    """
+    manifest = ROOT / "PUBLICATION_MANIFEST.md"
+    if not manifest.exists():
+        print("[FAIL] PUBLICATION_MANIFEST.md consistency check (file missing)")
+        return False
+
+    claimed = _parse_manifest_claims(manifest.read_text(encoding="utf-8"))
+    if claimed is None:
+        print(
+            "[FAIL] PUBLICATION_MANIFEST.md consistency check "
+            "(could not find 'Tracked files: **N**' / 'Tests: **N** items' lines)"
+        )
+        return False
+    claimed_files, claimed_tests = claimed
+    actual_files, actual_tests = _actual_tracked_files_and_tests(ROOT)
+
+    ok = claimed_files == actual_files and claimed_tests == actual_tests
+    print(f"[{'ok ' if ok else 'FAIL'}] PUBLICATION_MANIFEST.md matches reality")
+    if not ok:
+        print(f"    tracked files: manifest says {claimed_files}, actual {actual_files}")
+        print(f"    tests        : manifest says {claimed_tests}, actual {actual_tests}")
+        print("    regenerate PUBLICATION_MANIFEST.md before publishing")
+    return ok
+
+
 def main() -> int:
     py = sys.executable
     checks = [
@@ -83,6 +147,7 @@ def main() -> int:
         _tracked_knowledge_all_public(),
         _no_private_or_secret_tracked(),
         _license_files_present(),
+        _publication_manifest_matches_reality(),
     ]
 
     print("\nManual gates still required before publishing:")
