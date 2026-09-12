@@ -1,0 +1,53 @@
+"""scripts/secret_scan.py: exact-value allowlist, not whole-file/word-based."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from secret_scan import _PATTERNS, _SAFE_VALUES  # noqa: E402
+
+
+def test_the_one_known_safe_value_is_exempted() -> None:
+    text = "access_key = 'AKIAIOSFODNN7EXAMPLE'"
+    match = _PATTERNS["aws-access-key"].search(text)
+    assert match is not None
+    assert match.group(0) in _SAFE_VALUES
+
+
+def test_a_real_shaped_credential_near_a_broad_safe_word_is_still_flagged() -> None:
+    """Regression for Codex#10 (round 7, 2026-09-12), reproduced exactly as
+    reported: a match used to be suppressed whenever nearby text contained
+    a broad word such as "example" or "dummy" - a real credential that
+    merely sits near either word was suppressed too. Only the exact known
+    dummy VALUE is exempted now, not the word next to it."""
+    text = "# this is just an example config\napi_key = 'AKIAABCDEFGHIJKLMNOP'"
+    match = _PATTERNS["aws-access-key"].search(text)
+    assert match is not None
+    assert match.group(0) not in _SAFE_VALUES
+
+
+def test_a_real_shaped_credential_in_a_formerly_allow_listed_file_is_flagged(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Regression for Codex#10 (round 7, 2026-09-12), reproduced exactly as
+    reported: a whole-FILE allowlist (app/policy/safe_test.py,
+    docs/attribution.md, ...) meant a real credential accidentally added to
+    any of those files was never inspected at all. There is no per-file
+    exemption left - main() runs the patterns against every tracked file's
+    content unconditionally."""
+    import subprocess
+
+    import secret_scan
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    target = tmp_path / "app" / "policy" / "safe_test.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("AKIAABCDEFGHIJKLMNOP", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+
+    monkeypatch.chdir(tmp_path)
+    exit_code = secret_scan.main()
+    assert exit_code == 1
+    assert "safe_test.py" in capsys.readouterr().out

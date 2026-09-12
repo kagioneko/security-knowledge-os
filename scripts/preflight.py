@@ -186,13 +186,18 @@ def main() -> int:
         _run("validate-knowledge", [py, "scripts/validate_knowledge.py", "knowledge"]),
         _run("validate-rules", [py, "scripts/validate_rules.py", "rules"]),
         _run("validate-safe-tests", [py, "scripts/validate_safe_tests.py", "safe_tests"]),
-        _run("secret-scan", [py, "scripts/secret_scan.py"]),
         # Codex#8 (round 6, 2026-09-12): this used to invoke the generator
         # plainly - it overwrites sbom.json and exits 0 even when coverage
         # is PARTIAL, so a partial SBOM was written AND reported as a
         # passing preflight check. --require-complete makes generate_sbom.py
         # itself refuse (see scripts/generate_sbom.py::main()).
+        #
+        # Codex#10 (round 7, 2026-09-12): runs BEFORE secret-scan now -
+        # secret-scan reads the CURRENT on-disk sbom.json, so running it
+        # first would scan yesterday's content and never see what this
+        # regeneration just wrote.
         _run("sbom", [py, "scripts/generate_sbom.py", "--require-complete"]),
+        _run("secret-scan", [py, "scripts/secret_scan.py"]),
         _tracked_knowledge_all_public(),
         _no_private_or_secret_tracked(),
         _license_files_present(),
