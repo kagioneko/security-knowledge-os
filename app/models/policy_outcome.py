@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PolicyOutcome(StrEnum):
@@ -28,6 +28,13 @@ _STOPS = {
 
 
 class PolicyDecision(BaseModel):
+    # Codex#7 (round 9, 2026-09-12): round 8's extra="forbid" pass (Codex#14)
+    # covered the report envelope and its immediately-nested models but
+    # missed this one - an extra/misspelled property here validated and
+    # was silently discarded, the same schema-drift/tamper gap round 8
+    # closed elsewhere.
+    model_config = ConfigDict(extra="forbid")
+
     outcome: PolicyOutcome
     subject: str
     reasons: list[str] = Field(default_factory=list)

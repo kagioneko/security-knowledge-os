@@ -111,6 +111,12 @@ class OverallStatus(StrEnum):
 
 
 class AttackSurface(BaseModel):
+    # Codex#7 (round 9, 2026-09-12): round 8's extra="forbid" pass (Codex#14)
+    # covered the report envelope and selected nested models but missed
+    # these remaining ones - an extra/misspelled property here validated
+    # and was silently discarded.
+    model_config = ConfigDict(extra="forbid")
+
     input_channels: list[str] = Field(default_factory=list)
     external_content_sources: list[str] = Field(default_factory=list)
     retrieval_sources: list[str] = Field(default_factory=list)
@@ -125,12 +131,14 @@ class AttackSurface(BaseModel):
 
 
 class MissingInformation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     field: str
     why_needed: str
     related_rule_ids: list[str] = Field(default_factory=list)
 
 
 class Question(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     text: str
     field: str | None = None
     related_rule_ids: list[str] = Field(default_factory=list)

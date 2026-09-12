@@ -148,6 +148,29 @@ def test_a_saved_report_with_an_extra_field_is_rejected(
         AssessmentReport.model_validate(dumped)
 
 
+def test_extra_field_is_rejected_on_remaining_nested_models() -> None:
+    """Regression for Codex#7 (round 9, 2026-09-12), reproduced exactly as
+    reported: round 8's extra="forbid" pass (Codex#14) covered the report
+    envelope and selected nested models but missed AttackSurface,
+    MissingInformation, Question, and PolicyDecision - an extra/misspelled
+    property on any of these validated and was silently discarded."""
+    from app.models.assessment import AttackSurface, MissingInformation, Question
+    from app.models.policy_outcome import PolicyDecision, PolicyOutcome
+
+    with pytest.raises(pydantic.ValidationError):
+        AttackSurface.model_validate({"unexpected": "accepted"})
+    with pytest.raises(pydantic.ValidationError):
+        MissingInformation.model_validate(
+            {"field": "f", "why_needed": "w", "unexpected": "accepted"}
+        )
+    with pytest.raises(pydantic.ValidationError):
+        Question.model_validate({"text": "t", "unexpected": "accepted"})
+    with pytest.raises(pydantic.ValidationError):
+        PolicyDecision.model_validate(
+            {"outcome": PolicyOutcome.ALLOWED, "subject": "s", "unexpected": "accepted"}
+        )
+
+
 def test_a_saved_report_with_an_extra_field_on_a_nested_finding_is_rejected(
     load_assessment: Loader, catalogue: RuleCatalogue
 ) -> None:
