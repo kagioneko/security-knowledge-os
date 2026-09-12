@@ -37,6 +37,36 @@ class SnapshotError(OSError):
     """The knowledge root could not be safely snapshotted."""
 
 
+# Codex#7 (round 11, 2026-09-13), reproduced exactly as reported: this walk
+# copied every regular file it found with no count, size, or depth bound -
+# a multi-gigabyte file placed anywhere under a configured rules/
+# safe-tests/knowledge root was copied into a fresh /tmp directory on
+# EVERY resource load (every /v1/assessments and /v1/assessments/*/answers
+# request now that main.py loads resources per request), even though
+# per-file content bounds elsewhere (e.g. rule_loader.py's 50 KB rule-file
+# cap) would reject it immediately afterward - the disk/IO cost of the
+# copy itself happens first, unconditionally. These bounds are generous
+# relative to every real per-file cap already enforced downstream (the
+# largest today is 50 KB) while still making a planted oversized file (or
+# a huge number of small ones) fail fast instead of exhausting disk.
+_MAX_SNAPSHOT_FILES = 20_000
+_MAX_SNAPSHOT_FILE_BYTES = 5_000_000
+_MAX_SNAPSHOT_TOTAL_BYTES = 200_000_000
+_MAX_SNAPSHOT_DEPTH = 64
+
+
+class _Budget:
+    """Mutable running totals threaded through the recursive walk below -
+    a plain int can't be updated by a callee and observed by its caller
+    without either this or a `nonlocal` per recursion level."""
+
+    __slots__ = ("files", "bytes_copied")
+
+    def __init__(self) -> None:
+        self.files = 0
+        self.bytes_copied = 0
+
+
 def _open_dir_no_follow(name: str, dir_fd: int | None = None) -> int:
     return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
 
@@ -60,7 +90,9 @@ def _check_identity_unchanged(scanned: os.stat_result, opened: os.stat_result, w
         raise SnapshotError(f"{what}: replaced with a different inode between scan and open")
 
 
-def _copy_file_no_follow(entry: os.DirEntry[str], dir_fd: int, dest: Path) -> None:
+def _copy_file_no_follow(
+    entry: os.DirEntry[str], dir_fd: int, dest: Path, budget: _Budget
+) -> None:
     scanned = entry.stat(follow_symlinks=False)
     fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
     try:
@@ -68,6 +100,27 @@ def _copy_file_no_follow(entry: os.DirEntry[str], dir_fd: int, dest: Path) -> No
         if not stat.S_ISREG(before.st_mode):
             raise SnapshotError(f"{dest.name}: not a regular file")
         _check_identity_unchanged(scanned, before, dest.name)
+        # Codex#7 (round 11, 2026-09-13): checked on the fd's own fstat (not
+        # the pre-open scandir() size, which could itself be spoofed by a
+        # substitution the identity check above didn't happen to catch),
+        # BEFORE copying a single byte - an oversized file fails fast
+        # instead of paying its full read/write cost first.
+        if before.st_size > _MAX_SNAPSHOT_FILE_BYTES:
+            raise SnapshotError(
+                f"{dest.name}: {before.st_size} bytes exceeds the "
+                f"{_MAX_SNAPSHOT_FILE_BYTES}-byte per-file snapshot limit"
+            )
+        budget.files += 1
+        if budget.files > _MAX_SNAPSHOT_FILES:
+            raise SnapshotError(
+                f"more than {_MAX_SNAPSHOT_FILES} files under this root; refusing to snapshot"
+            )
+        budget.bytes_copied += before.st_size
+        if budget.bytes_copied > _MAX_SNAPSHOT_TOTAL_BYTES:
+            raise SnapshotError(
+                f"more than {_MAX_SNAPSHOT_TOTAL_BYTES} total bytes under this root; "
+                "refusing to snapshot"
+            )
         with os.fdopen(fd, "rb", closefd=False) as src, open(dest, "wb") as out:
             shutil.copyfileobj(src, out)
         # Codex#2 (round 8, 2026-09-12), reproduced exactly as reported:
@@ -95,7 +148,17 @@ def _copy_file_no_follow(entry: os.DirEntry[str], dir_fd: int, dest: Path) -> No
             os.close(fd)
 
 
-def _walk_no_follow(src_dir_fd: int, display: str, dest: Path) -> None:
+def _walk_no_follow(
+    src_dir_fd: int, display: str, dest: Path, budget: _Budget, depth: int = 0
+) -> None:
+    # Codex#7 (round 11, 2026-09-13): an attacker-controlled or accidentally
+    # very deep directory tree recurses this function once per level - a
+    # depth bound caps the stack/inode-open cost the same way the
+    # count/size bounds cap the copy cost.
+    if depth > _MAX_SNAPSHOT_DEPTH:
+        raise SnapshotError(
+            f"{display}: exceeds the {_MAX_SNAPSHOT_DEPTH}-level snapshot depth limit"
+        )
     dest.mkdir(exist_ok=True)
     entries = list(os.scandir(src_dir_fd))
     before_names = {entry.name for entry in entries}
@@ -108,11 +171,11 @@ def _walk_no_follow(src_dir_fd: int, display: str, dest: Path) -> None:
             child_fd = _open_dir_no_follow(entry.name, dir_fd=src_dir_fd)
             try:
                 _check_identity_unchanged(scanned, os.fstat(child_fd), child_display)
-                _walk_no_follow(child_fd, child_display, dest / entry.name)
+                _walk_no_follow(child_fd, child_display, dest / entry.name, budget, depth + 1)
             finally:
                 os.close(child_fd)
         elif entry.is_file(follow_symlinks=False):
-            _copy_file_no_follow(entry, src_dir_fd, dest / entry.name)
+            _copy_file_no_follow(entry, src_dir_fd, dest / entry.name, budget)
         # any other type (fifo, socket, device, ...) is silently skipped -
         # iter_knowledge_files() only ever looks for plain `*.md` files.
     # Codex#2 (round 8, 2026-09-12), reproduced exactly as reported:
@@ -140,7 +203,7 @@ def snapshot_tree(root: Path) -> Path:
     try:
         root_fd = _open_dir_no_follow(str(root))
         try:
-            _walk_no_follow(root_fd, str(root), dest)
+            _walk_no_follow(root_fd, str(root), dest, _Budget())
         finally:
             os.close(root_fd)
     except BaseException:

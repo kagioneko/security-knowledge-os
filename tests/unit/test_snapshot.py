@@ -146,8 +146,8 @@ def test_rejects_a_directory_whose_entries_changed_during_the_walk(
 
     real_copy = snapshot_module._copy_file_no_follow
 
-    def racy_copy(entry: os.DirEntry[str], dir_fd: int, dest: Path) -> None:
-        real_copy(entry, dir_fd, dest)
+    def racy_copy(entry: os.DirEntry[str], dir_fd: int, dest: Path, budget: object) -> None:
+        real_copy(entry, dir_fd, dest, budget)
         (root / "added-during-walk.md").write_text("surprise", encoding="utf-8")
 
     monkeypatch.setattr(snapshot_module, "_copy_file_no_follow", racy_copy)
@@ -168,3 +168,62 @@ def test_snapshot_is_a_private_copy_immune_to_later_source_mutation(tmp_path: Pa
         assert (dest / "ku.md").read_text(encoding="utf-8") == "original"
     finally:
         shutil.rmtree(dest, ignore_errors=True)
+
+
+def test_rejects_a_file_over_the_per_file_snapshot_size_limit(tmp_path: Path) -> None:
+    """Regression for Codex#7 (round 11, 2026-09-13), reproduced exactly as
+    reported: a multi-gigabyte file placed anywhere under a configured
+    rules/safe-tests/knowledge root used to be copied into a fresh /tmp
+    directory in full, unconditionally, on every resource load - even
+    though every real per-file content cap downstream (the largest today
+    is 50 KB) would reject it immediately afterward. The size is checked
+    on the opened file's own fstat, before a single byte is copied."""
+    import app.ingestion.snapshot as snapshot_module
+
+    root = tmp_path / "src"
+    root.mkdir()
+    oversized = root / "junk.bin"
+    with oversized.open("wb") as f:
+        f.seek(snapshot_module._MAX_SNAPSHOT_FILE_BYTES)
+        f.write(b"\0")
+
+    with pytest.raises(SnapshotError, match="per-file snapshot limit"):
+        snapshot_tree(root)
+
+
+def test_rejects_more_files_than_the_snapshot_count_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same protection as the size limit above, for file COUNT - a
+    directory with an enormous number of tiny files is an equally real
+    disk/inode exhaustion vector the size cap alone does not bound."""
+    import app.ingestion.snapshot as snapshot_module
+
+    monkeypatch.setattr(snapshot_module, "_MAX_SNAPSHOT_FILES", 3)
+    root = tmp_path / "src"
+    root.mkdir()
+    for i in range(5):
+        (root / f"f{i}.md").write_text("x", encoding="utf-8")
+
+    with pytest.raises(SnapshotError, match="files under this root"):
+        snapshot_tree(root)
+
+
+def test_rejects_a_tree_deeper_than_the_snapshot_depth_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same protection, for directory NESTING depth - each level recurses
+    _walk_no_follow() once; an unbounded depth is an unbounded stack/
+    inode-open cost regardless of how few files are actually at the
+    bottom."""
+    import app.ingestion.snapshot as snapshot_module
+
+    monkeypatch.setattr(snapshot_module, "_MAX_SNAPSHOT_DEPTH", 3)
+    root = tmp_path / "src"
+    nested = root
+    for _ in range(6):
+        nested = nested / "d"
+    nested.mkdir(parents=True)
+
+    with pytest.raises(SnapshotError, match="snapshot depth limit"):
+        snapshot_tree(root)
