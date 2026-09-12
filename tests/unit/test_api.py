@@ -302,6 +302,43 @@ def test_answers_evaluates_against_the_rules_state_the_fingerprint_describes(
     )
 
 
+def test_answers_does_not_500_on_a_foreign_sqlite_database(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#8 (round 10, 2026-09-13), reproduced exactly as
+    reported: pointing SKOS_DB_PATH at a valid SQLite file that just
+    contains an unrelated table (no Security Knowledge OS `meta` table)
+    made the /answers cache-fingerprint's ChunkRepository.knowledge_revision()
+    call raise a bare `sqlite3.OperationalError: no such table: meta`
+    straight out of the endpoint - an untyped 500 - before the normal
+    fail-closed assessment path (verify_chunk_hashes(), which already
+    handles a missing/malformed meta/chunks table as a POLICY_BLOCKED
+    decision, not an exception) ever got a chance to run."""
+    import sqlite3
+
+    # Created BEFORE the foreign db is in place - build_report()'s own
+    # fail-closed path (verify_chunk_hashes()) would otherwise correctly
+    # POLICY_BLOCK creation itself, and this test needs an existing parent
+    # assessment to submit an answer patch against.
+    created = client.post(
+        "/v1/assessments", json=_input("U-002-memory-persistence-unspecified")
+    ).json()
+    aid = created["result"]["assessment_id"]
+
+    foreign_db = tmp_path / "foreign.sqlite"
+    conn = sqlite3.connect(foreign_db)
+    try:
+        conn.execute("CREATE TABLE unrelated_app_table (x INTEGER)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("SKOS_DB_PATH", str(foreign_db))
+
+    resp = client.post(f"/v1/assessments/{aid}/answers", json={"memory_persistent": True})
+    assert resp.status_code != 500
+
+
 def test_assessment_input_rejects_an_oversized_prompt(client: TestClient) -> None:
     """Regression for Codex cross-review finding #6 (round 2, 2026-09-11),
     reproduced close to the reviewer's own repro: an assessment containing a

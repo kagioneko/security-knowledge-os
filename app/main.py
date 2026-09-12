@@ -566,12 +566,26 @@ def _evaluation_fingerprint(
     but that read is now immediately adjacent to _load_resources()'s own
     parse of the same files, not separated from it by anything
     attacker-influenceable.
+
+    Codex#8 (round 10, 2026-09-13), reproduced exactly as reported: a
+    corrupt or foreign SQLite file (one that opens fine but lacks this
+    app's tables - e.g. `sqlite3.OperationalError: no such table: meta`)
+    made this query raise straight out of submit_answers(), an untyped
+    500, before the normal fail-closed assessment path ever got a chance
+    to run. `_evaluate()` below already handles this safely -
+    `verify_chunk_hashes()` (app/storage/integrity.py) treats a missing/
+    malformed `meta`/`chunks` table as a POLICY_BLOCKED decision, not an
+    exception - so swallowing the same class of error HERE and falling
+    back to a plain `None` revision (an uninformative but valid cache-key
+    component) defers entirely to that already-fail-closed path instead of
+    duplicating its error handling.
     """
-    revision = (
-        ChunkRepository(resources.conn).knowledge_revision()
-        if resources.conn is not None
-        else None
-    )
+    revision: str | None = None
+    if resources.conn is not None:
+        try:
+            revision = ChunkRepository(resources.conn).knowledge_revision()
+        except sqlite3.Error:
+            revision = None
     return (
         settings.mode.value,
         settings.allow_confidential,
