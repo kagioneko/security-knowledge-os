@@ -35,10 +35,49 @@ def test_type_mismatch_is_rejected() -> None:
         AnswerPatch.model_validate({"tool_permissions": {"t": "superuser"}})
 
 
-def test_no_raw_secret_field_exists() -> None:
+def test_no_dedicated_raw_secret_field_exists() -> None:
+    """Only checks field NAMES - AnswerPatch has no field dedicated to
+    holding a credential value. This does NOT mean arbitrary secret-shaped
+    text is rejected; see the test immediately below (Codex#12, round 7,
+    2026-09-12)."""
     banned = ("key", "secret", "token", "password", "credential_value")
     for name in AnswerPatch.model_fields:
         assert not any(b in name for b in banned), name
+
+
+def test_free_text_fields_accept_a_raw_secret_this_is_a_known_limitation() -> None:
+    """Regression for Codex#12 (round 7, 2026-09-12), reproduced exactly as
+    reported: `test_no_dedicated_raw_secret_field_exists` above checks only
+    field names - that is a stronger claim than the schema provides.
+    Every free-text field here accepts arbitrary text, including a value
+    that happens to look like a credential; nothing in this schema detects
+    or redacts one. This test documents that limitation explicitly rather
+    than leaving it implicit."""
+    patch = AnswerPatch.model_validate(
+        {
+            "system_prompt": "AKIAABCDEFGHIJKLMNOP",
+            "rag_sources": ["AKIAABCDEFGHIJKLMNOP"],
+            "tool_permissions": {"AKIAABCDEFGHIJKLMNOP": "read"},
+        }
+    )
+    assert patch.system_prompt == "AKIAABCDEFGHIJKLMNOP"
+    assert patch.rag_sources == ["AKIAABCDEFGHIJKLMNOP"]
+    assert patch.tool_permissions == {"AKIAABCDEFGHIJKLMNOP": "read"}
+
+
+def test_list_elements_and_mapping_keys_are_length_bounded() -> None:
+    """Regression for Codex#12 (round 7, 2026-09-12), reproduced exactly as
+    reported: rag_sources/outbound_destinations capped the number of
+    entries but not each entry's length; tool_permissions/human_approval
+    capped the number of keys but not each key's length."""
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"rag_sources": ["x" * 501]})
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"outbound_destinations": ["x" * 501]})
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"tool_permissions": {"x" * 501: "read"}})
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"human_approval": {"x" * 501: True}})
 
 
 def test_assessment_input_rejects_an_oversized_total_payload() -> None:
