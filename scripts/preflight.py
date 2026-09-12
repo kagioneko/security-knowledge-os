@@ -71,21 +71,66 @@ def _license_files_present() -> bool:
     return ok
 
 
+def _parse_constraints(text: str) -> dict[str, str]:
+    """Parse `name==version` pin lines from constraints.txt (comments and
+    blank lines ignored). Keys are normalized (PyPI-style: case-insensitive,
+    '_'/'.' treated as '-') so they compare correctly against installed
+    distribution names regardless of which spelling either side uses."""
+    pins: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;]+)", line)
+        if match:
+            name = re.sub(r"[-_.]+", "-", match.group(1)).strip().lower()
+            pins[name] = match.group(2)
+    return pins
+
+
 def _constraints_file_present() -> bool:
     """Codex#15 (round 8, 2026-09-12), reproduced exactly as reported:
     pyproject.toml declares only lower bounds (>=), not a reviewed lock -
     two clean installations can resolve different dependency graphs, and
-    nothing before this audited a specific, reviewed one.
-    constraints.txt (see its own header for how to regenerate it) is that
-    reviewed baseline; this only checks it exists and is non-empty, not
-    that it is currently up to date with what is installed - regenerating
-    it is a deliberate, reviewed action, not something to infer here."""
+    nothing before this audited a specific, reviewed one. constraints.txt
+    (see its own header for how to regenerate it) is that reviewed
+    baseline.
+
+    Codex#8 (round 9, 2026-09-12), reproduced exactly as reported: this
+    only ever checked the file exists and is non-empty - a stale or even
+    fabricated constraints file still passed, since nothing compared it
+    against what is actually installed. Every package this file pins AND
+    that is currently installed must match its pinned version exactly;
+    a pinned-but-not-installed package is a declared-dependency gap the
+    SBOM completeness check (Codex#10, round 5 / #9, round 9) already
+    catches, and an installed-but-unpinned package is not itself wrong
+    (constraints.txt need not be perfectly exhaustive) - only a version
+    MISMATCH for something both pinned and installed means this
+    environment no longer matches the reviewed baseline it claims to."""
+    from importlib import metadata
+
     path = ROOT / "constraints.txt"
-    ok = path.exists() and any(
-        line.strip() and not line.lstrip().startswith("#")
-        for line in path.read_text(encoding="utf-8").splitlines()
-    )
-    print(f"[{'ok ' if ok else 'FAIL'}] constraints.txt present with pinned versions")
+    if not path.exists():
+        print("[FAIL] constraints.txt present with pinned versions (file missing)")
+        return False
+    pins = _parse_constraints(path.read_text(encoding="utf-8"))
+    if not pins:
+        print("[FAIL] constraints.txt present with pinned versions (no pins found)")
+        return False
+
+    mismatches = []
+    for name, pinned_version in sorted(pins.items()):
+        try:
+            installed_version = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            continue  # not installed here - not this check's concern
+        if installed_version != pinned_version:
+            mismatches.append(
+                f"{name}: constraints.txt says {pinned_version}, installed {installed_version}"
+            )
+
+    ok = not mismatches
+    print(f"[{'ok ' if ok else 'FAIL'}] constraints.txt matches the installed environment")
+    for m in mismatches:
+        print(f"    {m}")
     return ok
 
 

@@ -100,6 +100,48 @@ def test_constraints_check_fails_when_the_file_is_only_comments(
     assert preflight._constraints_file_present() is False
 
 
+def test_parses_name_equals_version_pins_ignoring_comments_and_markers() -> None:
+    text = (
+        "# a header comment\n"
+        "\n"
+        "pydantic==2.13.5\n"
+        "Some_Weird.Name==1.0  # trailing comment\n"
+        "typing-extensions==4.16.0; python_version < '3.13'\n"
+    )
+    assert preflight._parse_constraints(text) == {
+        "pydantic": "2.13.5",
+        "some-weird-name": "1.0",
+        "typing-extensions": "4.16.0",
+    }
+
+
+def test_constraints_check_fails_on_a_version_mismatch_with_the_installed_environment(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression for Codex#8 (round 9, 2026-09-12), reproduced exactly as
+    reported: preflight only checked that constraints.txt exists and is
+    non-empty - a stale or even fabricated constraints file still passed,
+    since nothing compared it against what is actually installed."""
+    import importlib.metadata as importlib_metadata
+
+    real_pydantic_version = importlib_metadata.version("pydantic")
+    fake_version = f"{real_pydantic_version}.does-not-exist"
+    (tmp_path / "constraints.txt").write_text(f"pydantic=={fake_version}\n", encoding="utf-8")
+    monkeypatch.setattr(preflight, "ROOT", tmp_path)
+
+    assert preflight._constraints_file_present() is False
+
+
+def test_constraints_check_ignores_a_pin_for_something_not_installed(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "constraints.txt").write_text(
+        "definitely-not-installed-anywhere==1.0\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(preflight, "ROOT", tmp_path)
+    assert preflight._constraints_file_present() is True
+
+
 def test_head_itself_is_a_known_ancestor_of_head() -> None:
     import subprocess
 
