@@ -204,6 +204,58 @@ def test_reviewer_observations_rejects_an_oversized_free_text_field() -> None:
         )
 
 
+def test_pydantic_parse_error_never_leaks_the_rejected_value() -> None:
+    """Regression for Codex#6 (round 6, 2026-09-12), reproduced exactly as
+    reported: str(ValidationError) includes pydantic's own
+    `input_value=...` - the rejected raw value, verbatim. Two responses
+    containing {"observations": [], "extra": "SUPERSECRET..."} used to put
+    the secret into both LLMReviewResult.error and the reported finding's
+    reasoning_summary after the repair attempt also failed."""
+    bad = '{"observations": [], "extra": "SUPERSECRET_CANARY_987654321"}'
+    client = MockClient([bad, bad])
+    result = _review(client)
+    assert result.parse_status is ParseStatus.LLM_PARSE_ERROR
+    assert result.error is not None
+    assert "SUPERSECRET_CANARY_987654321" not in result.error
+
+    finding = degraded_review_finding(result)
+    assert finding is not None
+    assert "SUPERSECRET_CANARY_987654321" not in finding.reasoning_summary
+
+
+def test_oversized_response_is_not_forwarded_intact_during_repair() -> None:
+    """Regression for Codex#7 (round 6, 2026-09-12), reproduced exactly as
+    reported: the 200KB check prevents PARSING an oversized response, but
+    the oversized raw text itself was still sent through in full on the
+    repair call - a custom client returning 500,000 characters on its
+    first call observed a repair request containing the entire rejected
+    response."""
+
+    class _RecordingClient:
+        name = "x"
+
+        def __init__(self, responses: list[str]) -> None:
+            self._responses = responses
+            self.calls = 0
+            self.seen_message_sizes: list[list[int]] = []
+
+        def complete(self, messages: list[Message]) -> str:
+            self.seen_message_sizes.append([len(m.content) for m in messages])
+            response = self._responses[min(self.calls, len(self._responses) - 1)]
+            self.calls += 1
+            return response
+
+    huge = "x" * 500_000
+    client = _RecordingClient([huge, DEFAULT_MOCK_RESPONSE])
+    result = _review(client)
+    assert result.parse_status is ParseStatus.REPAIRED
+    assert client.calls == 2
+
+    second_call_sizes = client.seen_message_sizes[1]
+    assert 500_000 not in second_call_sizes  # the huge response was not forwarded as-is
+    assert max(second_call_sizes) < 10_000  # smallest of the 4 messages should dwarf 500,000
+
+
 def test_observations_to_findings_are_capped_llm_obs() -> None:
     result = _review(MockClient([DEFAULT_MOCK_RESPONSE]))
     findings = observations_to_findings(result.observations)

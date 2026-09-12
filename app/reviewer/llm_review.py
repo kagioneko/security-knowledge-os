@@ -122,7 +122,22 @@ def _try_parse(raw: str) -> tuple[ReviewerObservations | None, str | None]:
         return None, f"response is {size} bytes, over the {_MAX_RAW_RESPONSE_BYTES}-byte limit"
     try:
         return ReviewerObservations.model_validate_json(_extract_json(raw)), None
-    except (ValidationError, json.JSONDecodeError, ValueError) as exc:
+    except ValidationError as exc:
+        # Codex#6 (round 6, 2026-09-12), reproduced exactly as reported:
+        # str(ValidationError) includes pydantic's own `input_value=...` -
+        # the REJECTED RAW VALUE, verbatim - which is exactly the untrusted
+        # LLM output this error is ABOUT. A response containing
+        # {"extra": "SUPERSECRET..."} put the secret straight into this
+        # return value, then (after the repair attempt also failed) into
+        # the public LLM-OBS-00000 finding via degraded_review_finding().
+        # errors(include_input=False, include_url=False) gives the same
+        # loc/type/msg diagnostic with the rejected value itself omitted.
+        return None, str(exc.errors(include_input=False, include_url=False))
+    except (json.JSONDecodeError, ValueError) as exc:
+        # a JSON/extraction failure's message is about the STRUCTURE of
+        # `raw` (an unterminated string, a stray comma, "not JSON at all")
+        # - it does not echo an arbitrary field's value back the way
+        # pydantic's input_value does, so str(exc) here stays as it was.
         return None, str(exc)
 
 
@@ -169,8 +184,19 @@ def run_llm_review(
     if parsed is not None:
         return LLMReviewResult(observations=_sanitize(parsed), parse_status=ParseStatus.OK)
 
+    # Codex#7 (round 6, 2026-09-12), reproduced exactly as reported: the
+    # 200KB check in _try_parse() prevents PARSING an oversized response,
+    # but the oversized `raw` text itself was still appended as an
+    # assistant message and sent through in full on the repair call -
+    # preserving the exact provider-cost/memory-amplification path the cap
+    # exists to close, just delayed by one round trip.
+    raw_for_repair = (
+        "[response omitted: exceeded the size limit]"
+        if len(raw.encode("utf-8")) > _MAX_RAW_RESPONSE_BYTES
+        else raw
+    )
     messages += [
-        Message("assistant", raw),
+        Message("assistant", raw_for_repair),
         Message(
             "user",
             f"That was not valid JSON for the schema ({err}). "
