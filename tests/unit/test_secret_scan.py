@@ -38,6 +38,52 @@ def test_a_real_shaped_credential_near_a_broad_safe_word_is_still_flagged() -> N
     assert match.group(0) not in _SAFE_VALUES
 
 
+def test_a_shell_script_is_scanned_not_skipped_by_the_suffix_allowlist(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Regression for Codex#11 (round 8, 2026-09-12), reproduced exactly as
+    reported: the old suffix ALLOWLIST omitted .sh (and extensionless
+    files, and other config filename forms) outright - never even opened,
+    let alone scanned."""
+    import subprocess
+
+    import secret_scan
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    target = tmp_path / "deploy.sh"
+    target.write_text(f"export API_KEY='{_fake_aws_key()}'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+
+    monkeypatch.chdir(tmp_path)
+    exit_code = secret_scan.main()
+    assert exit_code == 1
+    assert "deploy.sh" in capsys.readouterr().out
+
+
+def test_an_undecodable_file_fails_the_scan_instead_of_being_silently_skipped(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Regression for Codex#11 (round 8, 2026-09-12), reproduced exactly as
+    reported: a tracked file with invalid UTF-8 (before or after a
+    secret-like assignment) was silently SKIPPED after UnicodeDecodeError,
+    and the scan still exited 0 - a file this scanner cannot read is a
+    file it cannot vouch for, which must fail the check rather than pass
+    it silently."""
+    import subprocess
+
+    import secret_scan
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    target = tmp_path / "notes.txt"
+    target.write_bytes(b"\xff\xfe some notes, definitely not a secret\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+
+    monkeypatch.chdir(tmp_path)
+    exit_code = secret_scan.main()
+    assert exit_code == 1
+    assert "notes.txt" in capsys.readouterr().out
+
+
 def test_a_real_shaped_credential_in_a_formerly_allow_listed_file_is_flagged(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

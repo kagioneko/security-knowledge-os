@@ -50,20 +50,49 @@ _SAFE_VALUES = {
 }
 
 
+# Codex#11 (round 8, 2026-09-12), reproduced exactly as reported: the
+# previous suffix ALLOWLIST (.py/.md/.yaml/.yml/.toml/.json/.txt/.cfg/.ini)
+# omitted .sh, extensionless files (LICENSE, NOTICE, Makefile, ...), and
+# other common config filename forms outright - never even opened, let
+# alone scanned. Scanning every tracked file EXCEPT a known-binary
+# denylist (the inverse policy) means a new text file type is scanned by
+# default instead of silently falling through a gap in the list.
+_BINARY_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".webp",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z",
+    ".pdf", ".sqlite", ".sqlite3", ".db",
+    ".pyc", ".so", ".dylib", ".dll", ".exe", ".bin",
+    ".mp3", ".mp4", ".wav", ".ogg", ".webm",
+}  # fmt: skip
+
+
 def _tracked_files() -> list[Path]:
     out = subprocess.run(
         ["git", "ls-files"], capture_output=True, text=True, check=True
     ).stdout.splitlines()
-    keep = (".py", ".md", ".yaml", ".yml", ".toml", ".json", ".txt", ".cfg", ".ini")
-    return [Path(p) for p in out if p.endswith(keep)]
+    return [Path(p) for p in out if Path(p).suffix.lower() not in _BINARY_EXTENSIONS]
 
 
 def main() -> int:
     findings: list[str] = []
-    for path in _tracked_files():
+    unreadable: list[str] = []
+    tracked = _tracked_files()
+    for path in tracked:
         try:
             text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+        except UnicodeDecodeError as exc:
+            # Codex#11 (round 8, 2026-09-12), reproduced exactly as
+            # reported: a tracked file with invalid UTF-8 was silently
+            # SKIPPED (fail-open) - a secret-like assignment right after
+            # the invalid byte(s) was never inspected, and the scan still
+            # exited 0. A file this scanner cannot read is a scan it
+            # cannot vouch for; that must fail the check, not pass it
+            # silently.
+            unreadable.append(f"{path}: could not decode as UTF-8 ({exc})")
+            continue
+        except OSError as exc:
+            unreadable.append(f"{path}: could not read ({exc})")
             continue
         for name, pattern in _PATTERNS.items():
             for match in pattern.finditer(text):
@@ -72,12 +101,17 @@ def main() -> int:
                 line = text[: match.start()].count("\n") + 1
                 findings.append(f"{path}:{line}  [{name}]")
 
+    if unreadable:
+        print("COULD NOT SCAN (treat as a possible secret until verified by hand):")
+        for u in unreadable:
+            print(f"  {u}")
     if findings:
         print("POSSIBLE SECRETS:")
         for f in findings:
             print(f"  {f}")
+    if findings or unreadable:
         return 1
-    print(f"secret scan clean ({len(_tracked_files())} tracked text files)")
+    print(f"secret scan clean ({len(tracked)} tracked text files)")
     return 0
 
 
