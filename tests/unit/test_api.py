@@ -608,6 +608,27 @@ def test_reindex_endpoint_refuses_an_empty_knowledge_root(
         conn.close()
 
 
+def test_concurrent_reindex_admission_is_bounded(client: TestClient) -> None:
+    """Regression for Codex#6 (round 10, 2026-09-13), reproduced exactly as
+    reported: /v1/knowledge/reindex is unauthenticated by design (spec §18
+    localhost scope) and enters reindex_atomic()'s own BLOCKING flock() -
+    a concurrent request while a rebuild is already running used to occupy
+    an AnyIO worker thread waiting on that lock instead of getting an
+    immediate answer, exactly the class of gap _ASSESSMENT_SEMAPHORE
+    already closes for /v1/assessments (round 9, Codex#6). A nonblocking
+    admission gate at the endpoint now rejects with 429 immediately
+    instead."""
+    import app.main as main_module
+
+    acquired_first = main_module._REINDEX_LOCK.acquire(blocking=False)
+    assert acquired_first
+    try:
+        resp = client.post("/v1/knowledge/reindex")
+        assert resp.status_code == 429
+    finally:
+        main_module._REINDEX_LOCK.release()
+
+
 def test_assessment_endpoint_rejects_a_foreign_origin(client: TestClient) -> None:
     """Regression for Codex#5 / Antigravity SKOS-ADV-13 (round 4,
     2026-09-12), reproduced exactly as reported: only

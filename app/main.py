@@ -220,6 +220,18 @@ _ANSWER_CACHE: dict[tuple[object, ...], str] = {}
 _MAX_CONCURRENT_ASSESSMENTS = 10
 _ASSESSMENT_SEMAPHORE = threading.Semaphore(_MAX_CONCURRENT_ASSESSMENTS)
 
+# Codex#6 (round 10, 2026-09-13), reproduced exactly as reported:
+# reindex_atomic()'s own flock() (app/retrieval/index.py) serializes
+# concurrent rebuilds, but it BLOCKS - a burst of concurrent
+# POST /v1/knowledge/reindex requests (this endpoint is unauthenticated by
+# design, spec §18 localhost scope) each occupy an AnyIO worker thread
+# waiting on that lock instead of getting an immediate answer, and each
+# queued request still eventually performs a full, expensive rebuild once
+# admitted. A nonblocking admission gate at the endpoint - the same shape
+# as _ASSESSMENT_SEMAPHORE above - rejects with 429 immediately instead of
+# occupying a worker thread, mirroring the existing assessment control.
+_REINDEX_LOCK = threading.Lock()
+
 # Codex#5 (round 5, 2026-09-12), reproduced exactly as reported: with
 # `_MAX_STORE_ENTRIES = 1`, 32 threads calling `_store_put` concurrently (each
 # FastAPI sync endpoint runs in its own worker thread) produced
@@ -760,8 +772,18 @@ def reindex() -> ReindexReport:
     are verified before the atomic swap; on failure the existing index is kept.
     The Host/Origin check is now the global `_local_origin_gate` middleware
     (round 4, 2026-09-12), not a per-endpoint call - see its definition."""
-    settings = _settings()
-    report = reindex_atomic(settings.knowledge_root, settings.db_path)
+    # Codex#6 (round 10, 2026-09-13): see _REINDEX_LOCK's own comment - reject
+    # immediately instead of blocking a worker thread on reindex_atomic()'s
+    # own flock() while a rebuild is already running.
+    if not _REINDEX_LOCK.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429, detail="a reindex is already running; retry shortly"
+        )
+    try:
+        settings = _settings()
+        report = reindex_atomic(settings.knowledge_root, settings.db_path)
+    finally:
+        _REINDEX_LOCK.release()
     if not report.ok:
         # Codex#11 (round 9, 2026-09-12), reproduced exactly as reported:
         # `decision.reasons` can embed configured filesystem paths and raw
