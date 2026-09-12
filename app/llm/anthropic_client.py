@@ -36,7 +36,18 @@ class AnthropicClient:
                 max_tokens=self._max_tokens,
             )
         except Exception as exc:  # pragma: no cover - network path
-            raise LLMError(f"anthropic request failed: {exc}") from exc
+            # Codex#6 (round 5, 2026-09-12): `str(exc)` on an Anthropic SDK
+            # exception can include the raw HTTP response body, request
+            # headers, or other provider-side diagnostic text (the review's
+            # repro: an exception message containing "token=SUPERSECRET").
+            # LLMError.error flows straight into a public LLM-OBS-00000
+            # Finding (see degraded_review_finding() in llm_review.py), so
+            # only a stable, safe category - the exception's TYPE name, never
+            # its message - is exposed there. `from exc` still keeps the full
+            # original exception (message included) on `__cause__` for
+            # anyone with an in-process debugger or a `raise` re-inspection;
+            # it is only the reported *message* that is redacted.
+            raise LLMError(f"anthropic request failed: {type(exc).__name__}") from exc
         return "".join(
             block.text for block in response.content if getattr(block, "type", None) == "text"
         )

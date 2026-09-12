@@ -112,6 +112,22 @@ def _try_parse(raw: str) -> tuple[ReviewerObservations | None, str | None]:
         return None, str(exc)
 
 
+def _error_category(exc: LLMError) -> str:
+    """Codex#6 (round 5, 2026-09-12), reproduced exactly as reported: a
+    provider's exception message can carry a response body, an internal
+    endpoint, or credential-bearing diagnostic text (the review's repro: a
+    message containing "token=SUPERSECRET"). `LLMReviewResult.error` flows
+    straight into a public `LLM-OBS-00000` Finding
+    (`degraded_review_finding` below), so only a stable, safe CATEGORY - the
+    exception's type name, never `str(exc)` - may end up there, regardless
+    of which `LLMClient` implementation raised it. Prefers the chained
+    cause's type name (e.g. "AuthenticationError", "RateLimitError") when a
+    client raised `LLMError(...) from exc` (`AnthropicClient` does); falls
+    back to `LLMError`'s own type name otherwise."""
+    cause = exc.__cause__
+    return type(cause).__name__ if cause is not None else type(exc).__name__
+
+
 def run_llm_review(
     client: LLMClient | None,
     *,
@@ -133,7 +149,7 @@ def run_llm_review(
     try:
         raw = client.complete(messages)
     except LLMError as exc:
-        return LLMReviewResult(parse_status=ParseStatus.LLM_PARSE_ERROR, error=str(exc))
+        return LLMReviewResult(parse_status=ParseStatus.LLM_PARSE_ERROR, error=_error_category(exc))
 
     parsed, err = _try_parse(raw)
     if parsed is not None:
@@ -150,7 +166,9 @@ def run_llm_review(
     try:
         raw2 = client.complete(messages)
     except LLMError as exc:
-        return LLMReviewResult(parse_status=ParseStatus.LLM_PARSE_ERROR, error=str(exc), repairs=1)
+        return LLMReviewResult(
+            parse_status=ParseStatus.LLM_PARSE_ERROR, error=_error_category(exc), repairs=1
+        )
 
     parsed, err = _try_parse(raw2)
     if parsed is not None:
