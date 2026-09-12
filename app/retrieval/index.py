@@ -172,6 +172,29 @@ def _current_revision(db_path: Path) -> str | None:
         conn.close()
 
 
+def _untrusted_state_dir_reason(parent: Path) -> str | None:
+    """Codex#3 (round 11, 2026-09-13): every symlink-substitution TOCTOU in
+    this module's publish path (rounds 10-11, Codex#1/#2/#3) requires an
+    attacker able to write in `db_path`'s parent directory. That directory
+    is not owned by this process, or is writable by anyone else with a
+    local account, means that precondition already holds regardless of how
+    many of these individual races get narrowed - refuse to reindex at all
+    rather than publish under it. Returns None if the directory passes.
+    """
+    try:
+        st = parent.stat()
+    except OSError as exc:
+        return f"could not verify ownership/permissions of {parent}: {exc}"
+    if st.st_uid != os.geteuid():
+        return f"{parent} is not owned by this process (uid {st.st_uid}); refusing to reindex"
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return (
+            f"{parent} is group- or world-writable (mode {oct(stat.S_IMODE(st.st_mode))}); "
+            "refusing to reindex"
+        )
+    return None
+
+
 def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexReport:
     """Rebuild the index from an already-verified, read-only knowledge root.
 
@@ -210,6 +233,21 @@ def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexRe
         if not parent_already_existed:
             with contextlib.suppress(OSError):
                 os.chmod(db_path.parent, 0o700)
+        # Codex#3 (round 11, 2026-09-13): finding #1/#2 (round 10) each
+        # narrowed a symlink-substitution TOCTOU window in this function to
+        # a single stat-then-use gap, but a residual window is provably
+        # unavoidable through more syscalls alone - POSIX has no
+        # rename-from-fd or replace-from-fd primitive, so the pathname must
+        # always be re-resolved at the moment of use. The actual guarantee
+        # against every attack in this class is that an untrusted writer
+        # cannot write into this directory in the first place; verifying
+        # that (not owned by this process, or group/world-writable) closes
+        # the THREAT rather than continuing to chase an unwinnable race.
+        untrusted = _untrusted_state_dir_reason(db_path.parent)
+        if untrusted is not None:
+            return ReindexReport(
+                decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", untrusted)
+            )
         # Codex#4 (round 8, 2026-09-12), reproduced exactly as reported:
         # plain `open(lock_path, "a")` + `os.chmod(lock_path, ...)` both
         # follow a symlink at `lock_path` - precreating it as a symlink to

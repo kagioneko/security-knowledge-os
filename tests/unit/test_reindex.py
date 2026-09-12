@@ -38,6 +38,54 @@ def test_reindex_from_scratch(tmp_path: Path, corpus_alt_root: Path) -> None:
     assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
 
 
+def test_reindex_refuses_a_world_writable_state_directory(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#3 (round 11, 2026-09-13), reproduced exactly as
+    reported: the round-10 fixes (Codex#1/#2) each narrowed a symlink-
+    substitution TOCTOU in reindex_atomic()'s publish path to a single
+    stat-then-use gap, but a residual window is provably unavoidable
+    through more syscalls alone - POSIX has no rename-from-fd or
+    replace-from-fd primitive, so the code itself documented this as an
+    accepted residual risk. The actual guarantee against every attack in
+    this class is that an untrusted writer cannot write into db_path's
+    parent directory at all; reindex_atomic() now verifies that
+    precondition and refuses outright rather than publishing under a
+    directory anyone else could already write into."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    os.chmod(state_dir, 0o777)
+    db = state_dir / "idx.sqlite"
+
+    report = reindex_atomic(corpus_alt_root, db)
+
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert "writable" in " ".join(report.decision.reasons)
+    assert not db.exists()
+
+
+def test_reindex_refuses_a_state_directory_not_owned_by_this_process(
+    tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same protection as above, for the ownership half of the check -
+    simulated via monkeypatching os.geteuid() since a real ownership
+    mismatch needs a second local account."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    db = state_dir / "idx.sqlite"
+
+    real_geteuid = os.geteuid
+    monkeypatch.setattr(os, "geteuid", lambda: real_geteuid() + 1)
+
+    report = reindex_atomic(corpus_alt_root, db)
+
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert "not owned" in " ".join(report.decision.reasons)
+    assert not db.exists()
+
+
 def test_reindex_replaces_and_reports_old_revision(tmp_path: Path, corpus_alt_root: Path) -> None:
     db = tmp_path / "idx.sqlite"
     first = reindex_atomic(corpus_alt_root, db)
