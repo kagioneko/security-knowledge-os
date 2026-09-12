@@ -92,6 +92,57 @@ def test_dependency_closure_skips_a_requirement_gated_by_an_unselected_extra() -
     assert "pip" not in closure
 
 
+def test_dependency_closure_skips_a_platform_inapplicable_requirement() -> None:
+    """Regression for Codex#9 (round 9, 2026-09-12), reproduced exactly as
+    reported: the old `"extra ==" in req` substring test only ever handled
+    the extras marker - `httpx2`'s own `httpx2-jsfetch; sys_platform ==
+    "emscripten" and python_version >= "3.12"` requirement has nothing to
+    do with extras, so it was never evaluated at all and was always
+    treated as applicable, even on a platform (Linux, here) it plainly
+    is not for."""
+    import generate_sbom as sbom_module
+
+    closure = sbom_module._dependency_closure({"httpx2"})
+    assert "httpx2" in closure, "test assumption: still an installed dependency"
+    assert "httpx2-jsfetch" not in closure
+
+
+def test_build_sbom_flags_an_applicable_missing_transitive_dependency() -> None:
+    """Regression for Codex#9 (round 9, 2026-09-12), reproduced exactly as
+    reported: `missing` only ever checked DIRECTLY declared roots - an
+    applicable transitive dependency absent from the environment was
+    silently omitted from `missing` while coverage still said "complete".
+    Mocking an installed declared root whose metadata requires an absent,
+    unconditional package simulates exactly that."""
+    import importlib.metadata as importlib_metadata
+
+    import generate_sbom as sbom_module
+
+    class _FakeDistribution:
+        requires = ["definitely-not-installed-anywhere-xyz"]
+        metadata = {"Name": "pydantic"}
+        version = "0.0.0"
+
+    real_distribution = importlib_metadata.distribution
+
+    def fake_distribution(name: str) -> object:
+        if name == "pydantic":
+            return _FakeDistribution()
+        return real_distribution(name)
+
+    import unittest.mock as mock
+
+    with mock.patch.object(importlib_metadata, "distribution", side_effect=fake_distribution):
+        sbom = sbom_module.build_sbom()
+
+    coverage = next(
+        p["value"] for p in sbom["metadata"]["properties"] if p["name"] == "skos:sbom-coverage"
+    )
+    assert coverage.startswith("PARTIAL")
+    assert "definitely-not-installed-anywhere-xyz" in coverage
+    assert "TRANSITIVE" in coverage
+
+
 def test_declared_dependencies_covers_every_pyproject_group() -> None:
     """Regression for Codex#10 (round 5, 2026-09-12): pyproject.toml declares
     anthropic/uvicorn/hatchling, none of which appeared in the SBOM (only

@@ -17,6 +17,8 @@ import tomllib
 from importlib import metadata
 from pathlib import Path
 
+from packaging.requirements import Requirement
+
 _ROOT = Path(__file__).resolve().parents[1]
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -109,6 +111,18 @@ def _dependency_closure(roots: set[str]) -> set[str]:
     keeps the round-2 fix's goal (never hand-maintain a drifting allowlist -
     Codex cross-review finding #12) while excluding whatever else happens
     to be installed in this venv for unrelated reasons.
+
+    Codex#9 (round 9, 2026-09-12), reproduced exactly as reported: the
+    original `"extra ==" in req` substring test only ever handled the
+    extras marker, never platform/Python-version markers (`sys_platform`,
+    `platform_system`, `python_version`, ...) - the raw closure included
+    inapplicable packages for this environment (`colorama` on non-Windows,
+    an emscripten-only fetch shim, ...), proving markers were not actually
+    evaluated. Parsing each requirement with `packaging.requirements.
+    Requirement` and evaluating its marker for real (against this
+    interpreter's true environment, with `extra` fixed to "" - this walk
+    never selects a specific extra for a transitive dependency) correctly
+    handles every PEP 508 marker type at once, not just extras.
     """
     seen: set[str] = set()
     frontier = set(roots)
@@ -121,15 +135,14 @@ def _dependency_closure(roots: set[str]) -> set[str]:
             dist = metadata.distribution(name)
         except metadata.PackageNotFoundError:
             continue  # declared but not installed here - already in "missing" below
-        for req in dist.requires or []:
-            if "extra ==" in req or "extra==" in req:
-                # gated behind one of THAT package's own optional extras
-                # (e.g. mypy's `pip; extra == "install-types"`) - we never
-                # select extras when installing a transitive dependency, so
-                # walking into these pulls in packages nothing in this
-                # project's closure actually needs (Codex#9's own repro).
+        for req_str in dist.requires or []:
+            req = Requirement(req_str)
+            if req.marker is not None and not req.marker.evaluate({"extra": ""}):
+                # not applicable to this environment/interpreter, or gated
+                # behind an extra this walk never selects for a transitive
+                # dependency (Codex#9, round 7's own repro).
                 continue
-            req_name = _requirement_name(req)
+            req_name = _normalize(req.name)
             if req_name not in seen:
                 frontier.add(req_name)
     return seen
@@ -225,13 +238,32 @@ def build_sbom() -> dict[str, object]:
     # what this particular SBOM does and does not claim to cover, instead
     # of looking identical to a full-closure release SBOM either way.
     missing = sorted(name for name, group in declared.items() if name not in installed_normalized)
+    # Codex#9 (round 9, 2026-09-12), reproduced exactly as reported: this
+    # only ever checked DIRECTLY declared roots - an applicable transitive
+    # dependency that is absent from the environment (a broken/inconsistent
+    # venv; pip's own resolver should prevent this in a healthy install, but
+    # nothing here verified that) was silently omitted from `missing` while
+    # coverage still said "complete". `closure` (built above from
+    # `reachable_from`) is always a superset of `declared`'s own keys - every
+    # declared root is added to a `_dependency_closure()` walk's `seen` set
+    # even when it turns out to be uninstalled - so checking the closure
+    # subsumes the direct-only check and adds the transitive case.
+    transitively_missing = sorted(name for name in closure if name not in installed_normalized)
     coverage = (
         "complete: every declared dependency (all groups) is installed in this environment"
-        if not missing
+        if not missing and not transitively_missing
         else (
             "PARTIAL: generated from an environment missing these declared "
             f"dependencies: {', '.join(missing)} - regenerate after "
             '`pip install -e ".[llm,api,dev]"` for full release coverage'
+            + (
+                f"; also missing these applicable TRANSITIVE dependencies: "
+                f"{', '.join(sorted(set(transitively_missing) - set(missing)))} "
+                "(a broken/inconsistent environment - pip's own resolver should "
+                "have installed these automatically)"
+                if set(transitively_missing) - set(missing)
+                else ""
+            )
         )
     )
 
