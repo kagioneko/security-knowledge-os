@@ -213,6 +213,96 @@ def test_reindex_rejects_a_build_that_skipped_units(
     assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
 
 
+def test_reindex_rejects_when_the_tree_changes_between_the_two_reads(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#2 / Antigravity SKOS-ADV-11 (round 4,
+    2026-09-12), reproduced exactly as reported: a file that DISAPPEARS
+    between step 1's file count and build_index()'s own independent
+    re-enumeration is invisible to the round-3 build.skipped check - a
+    vanished file is never "skipped", it is simply never seen a second time.
+    Simulated here by making step 1's own count see one MORE file than
+    actually exists (the same "the two independent reads disagree"
+    condition the fix detects, regardless of which direction the count
+    moves)."""
+    import app.retrieval.index as index_module
+
+    db = tmp_path / "idx.sqlite"
+    real_files = index_module.iter_knowledge_files(corpus_alt_root)
+    assert real_files  # sanity: the fixture corpus is non-empty
+    original = index_module.iter_knowledge_files
+    index_module.iter_knowledge_files = lambda root: [*original(root), Path("/phantom.md")]
+    try:
+        report = index_module.reindex_atomic(corpus_alt_root, db)
+    finally:
+        index_module.iter_knowledge_files = original
+
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert "changed during reindex" in " ".join(report.decision.reasons)
+    assert not db.exists()  # nothing published - there was no previous index either
+
+
+def test_reindex_never_falsely_claims_restoration_when_restore_itself_fails(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#3 / Antigravity SKOS-ADV-12 (round 4,
+    2026-09-12), reproduced exactly as reported: restoring the backup after
+    a failed post-swap integrity check can ITSELF fail - the previous
+    version suppressed that with `contextlib.suppress(OSError)` and
+    unconditionally reported "previous index restored" regardless of
+    whether the replace actually succeeded. The report must never claim a
+    success it cannot verify, and must fail closed (remove the
+    unverified/bad content from service) rather than leave it live."""
+    import shutil
+
+    import app.retrieval.index as index_module
+
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    assert good.ok
+
+    corpus2 = tmp_path / "corpus2"
+    shutil.copytree(corpus_alt_root, corpus2)
+    ku = next(corpus2.glob("public/**/*.md"))
+    ku.write_text(ku.read_text(encoding="utf-8").replace("0.1", "0.2"), encoding="utf-8")
+
+    class _FakeStop:
+        is_allowed = False
+        reasons = ["simulated post-swap corruption"]
+
+    original_verify = index_module.verify_chunk_hashes
+    calls = {"n": 0}
+
+    def _flaky_verify(conn):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 2:  # 1st call = staging check (let it pass); 2nd = post-swap
+            return _FakeStop()
+        return original_verify(conn)
+
+    original_replace = index_module.os.replace
+
+    def _flaky_replace(src, dst):  # type: ignore[no-untyped-def]
+        if ".bak." in str(src):  # this is the RESTORE call (backup -> db_path); fail it
+            raise PermissionError("simulated restore failure")
+        return original_replace(src, dst)
+
+    index_module.verify_chunk_hashes = _flaky_verify  # type: ignore[assignment]
+    index_module.os.replace = _flaky_replace  # type: ignore[assignment]
+    try:
+        bad = reindex_atomic(corpus2, db)
+    finally:
+        index_module.verify_chunk_hashes = original_verify  # type: ignore[assignment]
+        index_module.os.replace = original_replace  # type: ignore[assignment]
+
+    assert not bad.ok
+    assert bad.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    reason = " ".join(bad.decision.reasons)
+    assert "RESTORE ALSO FAILED" in reason
+    assert "previous index restored" not in reason  # never a false success claim
+    assert not db.exists()  # fail closed: the bad/unverified content is not left live
+
+
 def test_reindex_publish_never_leaves_db_path_missing(
     tmp_path: Path, corpus_alt_root: Path
 ) -> None:

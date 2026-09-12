@@ -19,7 +19,7 @@ from uuid import uuid4
 from pydantic import BaseModel, computed_field
 
 from app.ingestion.loader import LoadedUnit, compute_knowledge_revision, load_corpus
-from app.ingestion.validator import Level, validate_tree
+from app.ingestion.validator import Level, iter_knowledge_files, validate_tree
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
 from app.models.retrieval import Chunk
 from app.storage.db import connect
@@ -190,19 +190,56 @@ def _cleanup(*paths: Path) -> None:
             p.unlink(missing_ok=True)
 
 
-def _restore_or_remove(db_path: Path, backup: Path, had_existing: bool) -> None:
-    """Never leave an unverified/failed publish live at ``db_path``."""
-    if had_existing:
+def _restore_or_remove(db_path: Path, backup: Path, had_existing: bool) -> bool:
+    """Try to put the last known-good index back at ``db_path``.
+
+    Returns True if ``db_path`` is now known to be back in its pre-reindex
+    state (restored from ``backup``, or correctly absent if there was none).
+    Returns False if the restore itself failed.
+
+    Codex#3 / Antigravity SKOS-ADV-12 (round 4, 2026-09-12): the previous
+    version did `with contextlib.suppress(OSError): os.replace(backup,
+    db_path)` and unconditionally returned/reported "previous index
+    restored" regardless of whether that replace actually succeeded - a
+    second, unrelated failure right after the first (e.g. the backup itself
+    became unreadable) left the known-bad/unverified content live at
+    db_path while the caller told the operator recovery had happened.
+    Restoration failure must never be silently swallowed: if it happens,
+    fail closed by removing the bad content from service entirely (no index
+    is safer than a known-bad one) and leave `backup` on disk for manual
+    recovery, and tell the caller so it can report the truth.
+    """
+    if not had_existing:
+        _cleanup(db_path)
+        return not db_path.exists()
+    try:
+        os.replace(backup, db_path)
+        return True
+    except OSError:
         with contextlib.suppress(OSError):
-            os.replace(backup, db_path)  # restore the last known-good index
-    else:
-        _cleanup(db_path)  # there was nothing before this reindex; go back to that
+            db_path.unlink(missing_ok=True)
+        return False
+
+
+def _restore_note(restored: bool, had_existing: bool, backup: Path) -> str:
+    """A truthful, human-readable suffix for the POLICY_BLOCKED reason - never
+    claims "restored" unless the restore actually succeeded."""
+    if restored:
+        return "; previous index restored" if had_existing else "; no previous index existed"
+    return (
+        "; RESTORE ALSO FAILED - unverified/bad index removed from service; "
+        f"manual recovery required from backup at {backup}"
+    )
 
 
 def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport:
     old_revision = _current_revision(db_path)
 
     # 1. knowledge must validate clean (no ERROR-level issues)
+    # Codex#2 / Antigravity SKOS-ADV-11 (round 4, 2026-09-12): the file count
+    # seen here is recorded so it can be cross-checked against what
+    # build_index() -> load_corpus() sees below - see that check for why.
+    expected_file_count = len(iter_knowledge_files(knowledge_root))
     issues = validate_tree(knowledge_root)
     errors = [i for i in issues if i.level is Level.ERROR]
     if errors:
@@ -226,6 +263,27 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
 
     try:
         build = build_index(knowledge_root, staging)
+
+        # Codex#2 / Antigravity SKOS-ADV-11 (round 4, 2026-09-12): a file
+        # that simply DISAPPEARS between step 1's enumeration and this
+        # build's own re-enumeration is invisible to the build.skipped check
+        # right below - load_corpus() only records a skip for a file it
+        # FOUND and then rejected; a vanished file (removed, an unmounted
+        # subtree, an interrupted corpus sync) is never seen at all, so
+        # units_indexed can silently drop to zero with build.skipped == [].
+        # A fault-injected repro reproduced exactly that: step 1 saw a full
+        # corpus (0 errors), the build saw none of it, and the resulting
+        # empty index passed every check below as ALLOWED. Comparing the
+        # file COUNT the two independent walks actually saw closes this -
+        # any mismatch (fewer OR more files) means the tree changed under
+        # us, and reindex must refuse to publish from an inconsistent read.
+        actual_file_count = build.units_indexed + len(build.skipped)
+        if actual_file_count != expected_file_count:
+            raise _ReindexAbort(
+                f"knowledge root changed during reindex: step 1 saw "
+                f"{expected_file_count} file(s), the build saw {actual_file_count}; "
+                "refusing to publish from an inconsistent read"
+            )
 
         # Codex cross-review finding #4 (round 3, 2026-09-12): step 1 above
         # validates the tree, but build_index() -> load_corpus() re-walks and
@@ -304,26 +362,26 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
         # cleanly but failing on the first query), which escaped uncaught and
         # skipped this restore path entirely.
         if published:
-            _restore_or_remove(db_path, backup, had_existing)
+            restored = _restore_or_remove(db_path, backup, had_existing)
             _cleanup(staging)
+            reason = f"publication failed: {exc}" + _restore_note(restored, had_existing, backup)
         else:
             _cleanup(staging, backup)
+            reason = f"publication failed: {exc}"
         return ReindexReport(
-            decision=stop(
-                PolicyOutcome.POLICY_BLOCKED, "reindex", f"publication failed: {exc}"
-            ),
+            decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", reason),
             old_revision=old_revision,
             new_revision=build.knowledge_revision,
         )
 
     if not post.is_allowed:
-        _restore_or_remove(db_path, backup, had_existing)
+        restored = _restore_or_remove(db_path, backup, had_existing)
+        reason = (
+            f"post-swap integrity check failed: {post.reasons}"
+            + _restore_note(restored, had_existing, backup)
+        )
         return ReindexReport(
-            decision=stop(
-                PolicyOutcome.POLICY_BLOCKED,
-                "reindex",
-                f"post-swap integrity check failed: {post.reasons}; previous index restored",
-            ),
+            decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", reason),
             old_revision=old_revision,
             new_revision=build.knowledge_revision,
         )
