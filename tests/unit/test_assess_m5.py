@@ -11,6 +11,7 @@ import pytest
 from app.config import LLMProvider, Mode, Settings
 from app.llm.mock import MockClient
 from app.models.assessment import AssessmentInput
+from app.models.policy_outcome import PolicyOutcome, PolicyStop
 from app.retrieval.index import build_index
 from app.reviewer import assess as assess_module
 from app.reviewer.assess import assess
@@ -125,6 +126,25 @@ def test_safe_tests_are_attached_for_flagged_findings(
         assert test.origin in ("template", "human")
         assert test.environment
         assert test.cleanup
+
+
+def test_assess_fails_closed_when_a_referenced_safe_test_template_is_missing(
+    load_assessment: Loader, catalogue: RuleCatalogue
+) -> None:
+    """Regression for Codex#6 (round 7, 2026-09-12), reproduced exactly as
+    reported: an existing but empty (or otherwise incomplete) safe-test
+    catalogue used to let assessment continue silently - a normal FAIL with
+    safe_tests=[] - instead of surfacing a policy/configuration error.
+    PI-003 (the rule V-001 triggers) references ST-IPI-001
+    (test_safe_tests_are_attached_for_flagged_findings above); passing an
+    empty safe_tests dict reproduces the missing-template repro exactly."""
+    with pytest.raises(PolicyStop) as exc_info:
+        assess(
+            load_assessment("V-001-indirect-injection-auto-email"),
+            catalogue,
+            safe_tests={},
+        )
+    assert exc_info.value.decision.outcome is PolicyOutcome.POLICY_BLOCKED
 
 
 def test_llm_suggestions_land_as_untrusted_proposals_not_safe_tests(

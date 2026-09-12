@@ -34,7 +34,11 @@ from app.models.knowledge import Classification
 from app.models.policy_outcome import PolicyOutcome, PolicyStop, stop
 from app.models.retrieval import RetrievedChunk
 from app.models.risk import Finding, FindingStatus
-from app.policy.safe_test import load_safe_test_templates, validate_safe_test
+from app.policy.safe_test import (
+    load_safe_test_templates,
+    unresolved_safe_test_references,
+    validate_safe_test,
+)
 from app.retrieval.bm25 import Bm25Retriever
 from app.reviewer.attack_surface import extract_attack_surface
 from app.reviewer.evidence import available_evidence
@@ -90,6 +94,28 @@ def assess(
                 PolicyOutcome.POLICY_BLOCKED,
                 "rule-catalogue",
                 "rule catalogue is empty - refusing to assess against zero rules",
+            )
+        )
+
+    # Codex#6 (round 7, 2026-09-12), reproduced exactly as reported: an
+    # existing but EMPTY (or otherwise incomplete) safe-test catalogue
+    # returns {} - `unresolved_safe_test_references()` (round 5, Codex#8)
+    # exists precisely to catch a rule referencing a missing template, but
+    # nothing on the assess()/API path ever called it.
+    # `_safe_tests_for()` below intentionally does not raise on a missing
+    # template mid-assessment (a rule still fires; it just loses its
+    # attached safe-test recommendation), so a broken reference used to
+    # fail SILENTLY - assessing V-001 against an empty safe-test root
+    # returned a normal FAIL with safe_tests=[], no policy/configuration
+    # error at all. Fail closed the same way an empty rule catalogue does.
+    unresolved = unresolved_safe_test_references(catalogue.rules, safe_tests)
+    if unresolved:
+        raise PolicyStop(
+            stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "safe-test-catalogue",
+                f"{len(unresolved)} rule(s) reference a safe-test template that does "
+                f"not exist: {unresolved}",
             )
         )
 
