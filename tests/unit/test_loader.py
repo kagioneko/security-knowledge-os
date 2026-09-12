@@ -37,6 +37,39 @@ def test_revision_is_stable_and_content_sensitive(corpus_root: Path) -> None:
     assert a == b and len(a) == 64
 
 
+def test_revision_changes_when_metadata_changes_without_a_version_bump(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex#4 (round 10, 2026-09-13), reproduced exactly as
+    reported: compute_knowledge_revision() used to hash only `id`, `version`
+    and `body` - changing `title` (or `classification`, `category`,
+    `source_ref`, `provenance`) without also bumping `version` left the
+    revision unchanged, even though those fields can alter retrieval
+    eligibility, ranking, citations or the LLM's context, and the `/answers`
+    cache key is derived from this same revision."""
+    import shutil
+
+    copy_root = tmp_path / "corpus"
+    shutil.copytree(corpus_root, copy_root)
+    ku_path = copy_root / "public" / "prompt-security" / "KU-1001-instruction-data-boundary.md"
+    assert ku_path.is_file()
+
+    before = compute_knowledge_revision(load_corpus(copy_root).units)
+
+    text = ku_path.read_text(encoding="utf-8")
+    assert 'title: "Instruction / data boundary in the system prompt"' in text
+    ku_path.write_text(
+        text.replace(
+            'title: "Instruction / data boundary in the system prompt"',
+            'title: "Something else entirely"',
+        ),
+        encoding="utf-8",
+    )
+
+    after = compute_knowledge_revision(load_corpus(copy_root).units)
+    assert before != after
+
+
 def test_load_corpus_never_calls_validate_tree(
     corpus_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

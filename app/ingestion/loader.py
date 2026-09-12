@@ -149,11 +149,19 @@ def load_corpus(knowledge_root: Path) -> LoadReport:
 
 
 def compute_knowledge_revision(units: list[LoadedUnit]) -> str:
+    """Codex#4 (round 10, 2026-09-13), reproduced exactly as reported: this
+    used to hash only `id`, `version` and `body` - changing `classification`,
+    `title`, `category`, `source_ref` or `provenance` (any field that can
+    alter retrieval eligibility, ranking, citations or the LLM's context)
+    without also bumping `version` left the revision, and therefore the
+    `/answers` cache key (app/main.py's `_evaluation_fingerprint()`),
+    unchanged. Hashing the front matter's own canonical JSON dump instead of
+    hand-picked fields means every validated field is covered - including
+    any added to `KnowledgeUnitFrontMatter` in the future - not just the
+    ones this function happens to name."""
     digest = hashlib.sha256()
     for unit in sorted(units, key=lambda u: u.front_matter.id):
-        digest.update(unit.front_matter.id.encode("utf-8"))
-        digest.update(b"\x00")
-        digest.update(unit.front_matter.version.encode("utf-8"))
+        digest.update(unit.front_matter.model_dump_json().encode("utf-8"))
         digest.update(b"\x00")
         digest.update(hashlib.sha256(unit.body.encode("utf-8")).digest())
     return digest.hexdigest()
