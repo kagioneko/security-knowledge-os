@@ -81,6 +81,38 @@ def _parse_manifest_claims(text: str) -> tuple[int, int] | None:
     return int(claimed_files_match.group(1)), int(claimed_tests_match.group(1))
 
 
+def _parse_manifest_commit(text: str) -> str | None:
+    """Extract the short commit hash from PUBLICATION_MANIFEST.md's
+    "Commit: `<hash>`" line. Returns None if that line is missing."""
+    match = re.search(r"^-\s*Commit:\s*`([0-9a-f]{4,40})`", text, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def _commit_is_known_ancestor_of_head(root: Path, commit: str) -> bool:
+    """Codex#10 (round 6, 2026-09-12), reproduced exactly as reported: the
+    manifest named a commit that was neither HEAD nor found by
+    inspection - preflight validated only the file/test counts (Codex#9,
+    round 5), never that the referenced commit is even a real ancestor of
+    the current branch. `git merge-base --is-ancestor` also fails on a
+    hash that does not resolve to any commit at all (a typo, or one from
+    an unrelated line of work), not just a genuinely unrelated one.
+    Deliberately does NOT require an exact match with HEAD: the manifest
+    documents "the commit whose CODE was actually audited", and every
+    commit that updates the manifest's own numbers is, by construction,
+    one commit ahead of whatever it names - see PUBLICATION_MANIFEST.md's
+    own cross-AI-review section for why this is the accepted lifecycle,
+    not drift.
+    """
+    return (
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
+            cwd=root,
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
 def _actual_tracked_files_and_tests(root: Path) -> tuple[int, int]:
     actual_files = len(
         subprocess.run(
@@ -123,12 +155,24 @@ def _publication_manifest_matches_reality() -> bool:
         return False
     claimed_files, claimed_tests = claimed
     actual_files, actual_tests = _actual_tracked_files_and_tests(ROOT)
+    counts_ok = claimed_files == actual_files and claimed_tests == actual_tests
 
-    ok = claimed_files == actual_files and claimed_tests == actual_tests
+    manifest_commit = _parse_manifest_commit(manifest.read_text(encoding="utf-8"))
+    commit_ok = manifest_commit is not None and _commit_is_known_ancestor_of_head(
+        ROOT, manifest_commit
+    )
+
+    ok = counts_ok and commit_ok
     print(f"[{'ok ' if ok else 'FAIL'}] PUBLICATION_MANIFEST.md matches reality")
-    if not ok:
+    if not counts_ok:
         print(f"    tracked files: manifest says {claimed_files}, actual {actual_files}")
         print(f"    tests        : manifest says {claimed_tests}, actual {actual_tests}")
+    if not commit_ok:
+        print(
+            f"    commit: manifest says `{manifest_commit}`, which is not a known "
+            "ancestor of HEAD (missing, or from an unrelated line of work)"
+        )
+    if not ok:
         print("    regenerate PUBLICATION_MANIFEST.md before publishing")
     return ok
 
