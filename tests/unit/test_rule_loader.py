@@ -274,6 +274,24 @@ def test_unknown_key_under_conditions_is_rejected(tmp_path: Path) -> None:
         load_rules(root)
 
 
+def test_heterogeneous_unknown_condition_keys_do_not_raise_a_raw_typeerror(
+    tmp_path: Path,
+) -> None:
+    """Regression for Codex#12 (round 9, 2026-09-12), reproduced exactly as
+    reported: `conditions` is raw, pre-pydantic YAML at the point unknown
+    keys are checked - safe YAML can produce a mapping with heterogeneous
+    key types (here, an integer `1` and `null`), and `sorted()` on a set
+    mixing those types raises a raw TypeError instead of this loader's
+    typed RuleLoadError."""
+    root = _write_rule(
+        tmp_path,
+        "id: X-008\ntitle: t\ncategory: agent-security\nseverity: low\n"
+        "conditions:\n  1: true\n  null: true\n",
+    )
+    with pytest.raises(RuleLoadError, match="conditions"):
+        load_rules(root)
+
+
 def test_symlinked_rule_file_is_rejected(tmp_path: Path) -> None:
     """Codex cross-review finding #2 (2026-09-11): confinement must be
     consistent across knowledge/rule/safe-test loaders."""

@@ -105,8 +105,17 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
         )
     unknown_condition_keys = set(conditions) - _CONDITIONS_KEYS
     if unknown_condition_keys:
+        # Codex#12 (round 9, 2026-09-12), reproduced exactly as reported:
+        # `conditions` is raw, pre-pydantic YAML at this point - safe YAML
+        # can produce a mapping with heterogeneous key types (e.g. both an
+        # integer and `null`), and `sorted()` on a set of mixed types
+        # raises a raw TypeError ("'<' not supported between instances of
+        # ...") instead of this function's typed RuleLoadError. Sorting by
+        # each key's str() representation is always well-defined,
+        # regardless of the mix of types.
         raise RuleLoadError(
-            f"{source}: unknown key(s) under 'conditions': {sorted(unknown_condition_keys)}"
+            f"{source}: unknown key(s) under 'conditions': "
+            f"{sorted(unknown_condition_keys, key=str)}"
             f" (only {sorted(_CONDITIONS_KEYS)} are allowed)"
         )
     payload["conditions"] = {
