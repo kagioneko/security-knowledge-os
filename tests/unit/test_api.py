@@ -371,6 +371,29 @@ def test_reindex_fails_closed_returns_422(
     assert resp.json()["detail"]["decision"]["outcome"] == "POLICY_BLOCKED"
 
 
+def test_reindex_422_does_not_disclose_configured_filesystem_paths(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#11 (round 9, 2026-09-12), reproduced exactly as
+    reported: a nonexistent SKOS_KNOWLEDGE_ROOT's absolute path and raw OS
+    diagnostic were embedded in decision.reasons and returned verbatim in
+    the public 422 response - disclosing server configuration to any
+    local caller reaching this unauthenticated endpoint."""
+    missing_root = tmp_path / "definitely-does-not-exist"
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(missing_root))
+    monkeypatch.setenv("SKOS_DB_PATH", str(tmp_path / "idx.sqlite"))
+
+    resp = client.post("/v1/knowledge/reindex")
+
+    assert resp.status_code == 422
+    body_text = resp.text
+    assert str(missing_root) not in body_text
+    assert str(tmp_path) not in body_text
+    detail = resp.json()["detail"]
+    assert detail["decision"]["outcome"] == "POLICY_BLOCKED"
+    assert detail["decision"]["reasons"] == ["reindex failed; see server logs for details"]
+
+
 def test_reindex_endpoint_refuses_an_empty_knowledge_root(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

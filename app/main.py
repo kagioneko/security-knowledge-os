@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import ipaddress
+import logging
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -45,6 +46,7 @@ from app.reviewer.rule_loader import load_rules
 from app.storage.db import connect
 
 app = FastAPI(title="Security Knowledge OS", version="0.1.0")
+_logger = logging.getLogger(__name__)
 
 # Codex cross-review finding #4 (round 4, 2026-09-12), reproduced exactly as
 # reported: POSTing two million bytes of whitespace padding around a tiny
@@ -589,5 +591,21 @@ def reindex() -> ReindexReport:
     settings = _settings()
     report = reindex_atomic(settings.knowledge_root, settings.db_path)
     if not report.ok:
-        raise HTTPException(status_code=422, detail=report.model_dump(mode="json"))
+        # Codex#11 (round 9, 2026-09-12), reproduced exactly as reported:
+        # `decision.reasons` can embed configured filesystem paths and raw
+        # OS diagnostics (e.g. "knowledge root does not exist: /home/...")
+        # - returning them verbatim in a public HTTP response discloses
+        # server configuration to any local caller reaching this
+        # unauthenticated, localhost-only endpoint. The full detail is
+        # still logged server-side; the public response gets a stable,
+        # generic reason instead.
+        _logger.warning("reindex failed: %s", report.model_dump(mode="json"))
+        redacted = report.model_copy(
+            update={
+                "decision": report.decision.model_copy(
+                    update={"reasons": ["reindex failed; see server logs for details"]}
+                )
+            }
+        )
+        raise HTTPException(status_code=422, detail=redacted.model_dump(mode="json"))
     return report
