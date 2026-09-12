@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import errno
+import os
 import re
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -97,5 +100,40 @@ def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
     return data, match.group("body")
 
 
+def _read_text_no_follow(path: Path) -> str:
+    """Codex#5 (round 6, 2026-09-12), reproduced exactly as reported: the
+    symlink/containment check (`is_symlink()`/`resolve()`) and this file's
+    actual read used to be two separate filesystem operations on the same
+    PATHNAME, with a window between them - fault injection that validated
+    an ordinary in-root file, swapped it to an outside-root symlink right
+    before the read, then restored the original file before any later
+    check ran, made ``load_corpus()`` read straight through the outside
+    file. Opening with ``O_NOFOLLOW`` makes the read itself fail (ELOOP) if
+    ``path`` names a symlink at the moment of the open, regardless of what
+    an earlier or later check by the same pathname would have seen.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise FrontMatterError(
+                f"{path}: became a symlink between an earlier check and this read "
+                "(refusing - symlinked Knowledge Unit files are not allowed)"
+            ) from exc
+        raise
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise FrontMatterError(f"{path}: not a regular file")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8")
+    finally:
+        os.close(fd)
+
+
 def read_markdown(path: Path) -> tuple[dict[str, Any], str]:
-    return split_front_matter(path.read_text(encoding="utf-8"))
+    return split_front_matter(_read_text_no_follow(path))
