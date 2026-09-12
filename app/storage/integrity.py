@@ -82,6 +82,34 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                 "knowledge-index",
                 f"chunk_count mismatch: recorded {recorded_count}, actual {actual_count}",
             )
+
+        # Codex cross-review finding #5 (round 3, 2026-09-12): every check
+        # above reads the `chunks` table directly - none of them touch the
+        # `chunks_fts` virtual table that search() actually queries. A
+        # directly-emptied or partially-written FTS index (e.g. `INSERT INTO
+        # chunks_fts(chunks_fts) VALUES ('delete-all')` run against the file
+        # outside this app) left `chunks`/`meta` untouched and still passed
+        # every check above, so an index that would silently return zero
+        # search results was reported ALLOWED.
+        #
+        # FTS5's own 'integrity-check' special command would be the most
+        # thorough test, but it is implemented as an INSERT against the
+        # table's config interface, which SQLite's read-only-connection
+        # enforcement rejects with "attempt to write a readonly database"
+        # before FTS5 ever runs it - and every caller of this function passes
+        # a read-only connection. `SELECT count(*)` on a contentless FTS5
+        # table only touches its rowid index, which read-only connections can
+        # query, so a plain row-count comparison against `chunks` is the
+        # read-only-safe substitute: it directly detects the 'delete-all'
+        # wipe (and any partial write that drops rows) without requiring
+        # write access.
+        fts_count = conn.execute("SELECT count(*) AS n FROM chunks_fts").fetchone()["n"]
+        if fts_count != actual_count:
+            return stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "knowledge-index",
+                f"chunks_fts row count mismatch: fts has {fts_count}, chunks has {actual_count}",
+            )
     except sqlite3.DatabaseError as exc:
         # a missing/malformed table (meta or chunks) means the index file is
         # corrupt or partially written - that is exactly what this function

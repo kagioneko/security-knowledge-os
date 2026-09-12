@@ -127,6 +127,32 @@ def test_truncated_index_with_stale_chunk_count_fails_closed(
         conn.close()
 
 
+def test_fts_wipe_fails_closed_even_though_chunks_and_meta_agree(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex cross-review finding #5 (round 3, 2026-09-12),
+    reproduced exactly as reported: wiping only the `chunks_fts` virtual
+    table (`INSERT INTO chunks_fts(chunks_fts) VALUES ('delete-all')`) while
+    leaving `chunks`/`meta` untouched used to pass every existing check -
+    they only ever read `chunks` directly - so an index that would silently
+    return zero search results was reported ALLOWED."""
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        real_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        assert real_count > 0
+        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('delete-all')")
+        conn.commit()
+        # chunks and meta.chunk_count both still agree on real_count - only
+        # the FTS shadow table was emptied.
+        decision = verify_chunk_hashes(conn)
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        assert "chunks_fts" in " ".join(decision.reasons)
+    finally:
+        conn.close()
+
+
 def test_blob_row_type_fails_closed_not_a_raw_attributeerror(
     tmp_path: Path, corpus_root: Path
 ) -> None:
