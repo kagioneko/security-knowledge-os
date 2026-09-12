@@ -103,8 +103,21 @@ app.add_middleware(_MaxBodySizeMiddleware)
 # scope), but unbounded growth from repeated /v1/assessments or /answers calls
 # is still a resource-exhaustion vector on its own. Simple FIFO cap - not a
 # full LRU/expiry policy, but it turns "unbounded" into "bounded" cheaply.
+#
+# Codex#8 (round 8, 2026-09-12), reproduced exactly as reported: an
+# entry-COUNT cap alone bounds nothing meaningful about actual memory -
+# AssessmentInput's own total-size cap (_MAX_SERIALIZED_BYTES, 300_000)
+# means 5,000 entries near that limit retain ~1.5 GB from the inputs
+# alone, before the AssessmentReport half of each entry, the Pydantic
+# object overhead, and any LLM raw-result storage are even counted. A
+# byte-weighted budget bounds what actually matters (memory), with the
+# entry count as a secondary belt-and-suspenders cap for the common case
+# of many small entries.
 _MAX_STORE_ENTRIES = 5000
+_MAX_STORE_BYTES = 50_000_000  # ~50 MB
 _STORE: dict[str, tuple[AssessmentInput, AssessmentReport]] = {}
+_STORE_ENTRY_BYTES: dict[str, int] = {}
+_STORE_TOTAL_BYTES = 0
 
 # Codex cross-review finding #6, part 2 (round 2, 2026-09-11): resubmitting
 # the SAME (non-no-op) patch against the SAME parent repeatedly used to create
@@ -133,11 +146,27 @@ _STORE_GUARD = threading.Lock()
 _ANSWER_CACHE_GUARD = threading.Lock()
 
 
+def _entry_size(entry: tuple[AssessmentInput, AssessmentReport]) -> int:
+    inp, report = entry
+    return len(inp.model_dump_json().encode("utf-8")) + len(
+        report.model_dump_json().encode("utf-8")
+    )
+
+
 def _store_put(assessment_id: str, entry: tuple[AssessmentInput, AssessmentReport]) -> None:
+    global _STORE_TOTAL_BYTES
+    size = _entry_size(entry)
     with _STORE_GUARD:
+        _STORE_TOTAL_BYTES -= _STORE_ENTRY_BYTES.pop(assessment_id, 0)
         _STORE[assessment_id] = entry
-        while len(_STORE) > _MAX_STORE_ENTRIES:
-            _STORE.pop(next(iter(_STORE)))  # evict oldest (dict preserves insertion order)
+        _STORE_ENTRY_BYTES[assessment_id] = size
+        _STORE_TOTAL_BYTES += size
+        while _STORE and (
+            len(_STORE) > _MAX_STORE_ENTRIES or _STORE_TOTAL_BYTES > _MAX_STORE_BYTES
+        ):
+            oldest = next(iter(_STORE))  # evict oldest (dict preserves insertion order)
+            _STORE.pop(oldest)
+            _STORE_TOTAL_BYTES -= _STORE_ENTRY_BYTES.pop(oldest, 0)
 
 
 def _answer_cache_put(key: tuple[str, str], assessment_id: str) -> None:

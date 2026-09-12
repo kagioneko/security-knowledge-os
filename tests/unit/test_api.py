@@ -484,24 +484,79 @@ def test_reindex_rejects_a_forged_localhost_host_from_a_remote_peer(
     assert resp.status_code == 403
 
 
+class _FakeModel:
+    """A cheap stand-in for (AssessmentInput, AssessmentReport) that only
+    needs to support _entry_size()'s model_dump_json() call - these
+    eviction-mechanics tests care about the FIFO/threading behaviour of
+    _store_put(), not real assessment content."""
+
+    def model_dump_json(self) -> str:
+        return "{}"
+
+
 def test_store_is_bounded_and_evicts_oldest() -> None:
     """Regression for Codex cross-review finding #10 (2026-09-11): _STORE had
     no size bound at all."""
     import app.main as main_module
 
     original = dict(main_module._STORE)
+    original_bytes = dict(main_module._STORE_ENTRY_BYTES)
+    original_total = main_module._STORE_TOTAL_BYTES
     original_max = main_module._MAX_STORE_ENTRIES
     main_module._STORE.clear()
+    main_module._STORE_ENTRY_BYTES.clear()
+    main_module._STORE_TOTAL_BYTES = 0
     main_module._MAX_STORE_ENTRIES = 3
     try:
         for i in range(5):
-            main_module._store_put(f"id-{i}", (object(), object()))  # type: ignore[arg-type]
+            main_module._store_put(f"id-{i}", (_FakeModel(), _FakeModel()))  # type: ignore[arg-type]
         assert len(main_module._STORE) == 3
         assert set(main_module._STORE) == {"id-2", "id-3", "id-4"}  # oldest 2 evicted
     finally:
         main_module._MAX_STORE_ENTRIES = original_max
         main_module._STORE.clear()
         main_module._STORE.update(original)
+        main_module._STORE_ENTRY_BYTES.clear()
+        main_module._STORE_ENTRY_BYTES.update(original_bytes)
+        main_module._STORE_TOTAL_BYTES = original_total
+
+
+def test_store_evicts_on_total_byte_budget_not_just_entry_count() -> None:
+    """Regression for Codex#8 (round 8, 2026-09-12), reproduced exactly as
+    reported: an entry-COUNT cap alone bounds nothing about actual memory -
+    5,000 entries near AssessmentInput's own 300,000-byte total-size cap
+    retain ~1.5 GB from the inputs alone. A byte-weighted budget must evict
+    well before the entry-count cap when entries are large, even though
+    the count cap alone would have allowed many more of them."""
+    import app.main as main_module
+
+    class _BigModel:
+        def model_dump_json(self) -> str:
+            return "x" * 1_000_000  # 1 MB per (half-)entry
+
+    original = dict(main_module._STORE)
+    original_bytes = dict(main_module._STORE_ENTRY_BYTES)
+    original_total = main_module._STORE_TOTAL_BYTES
+    original_max = main_module._MAX_STORE_ENTRIES
+    original_max_bytes = main_module._MAX_STORE_BYTES
+    main_module._STORE.clear()
+    main_module._STORE_ENTRY_BYTES.clear()
+    main_module._STORE_TOTAL_BYTES = 0
+    main_module._MAX_STORE_ENTRIES = 5000  # count cap alone would allow all of these
+    main_module._MAX_STORE_BYTES = 5_000_000  # ~5 MB - only ~2 of these 2 MB entries fit
+    try:
+        for i in range(5):
+            main_module._store_put(f"id-{i}", (_BigModel(), _BigModel()))  # type: ignore[arg-type]
+        assert len(main_module._STORE) < 5, "byte budget must evict before the count cap does"
+        assert main_module._STORE_TOTAL_BYTES <= main_module._MAX_STORE_BYTES
+    finally:
+        main_module._MAX_STORE_ENTRIES = original_max
+        main_module._MAX_STORE_BYTES = original_max_bytes
+        main_module._STORE.clear()
+        main_module._STORE.update(original)
+        main_module._STORE_ENTRY_BYTES.clear()
+        main_module._STORE_ENTRY_BYTES.update(original_bytes)
+        main_module._STORE_TOTAL_BYTES = original_total
 
 
 def test_store_put_is_thread_safe_under_concurrent_eviction() -> None:
@@ -525,14 +580,18 @@ def test_store_put_is_thread_safe_under_concurrent_eviction() -> None:
             return super().pop(*args, **kwargs)
 
     original = main_module._STORE
+    original_bytes = dict(main_module._STORE_ENTRY_BYTES)
+    original_total = main_module._STORE_TOTAL_BYTES
     original_max = main_module._MAX_STORE_ENTRIES
     main_module._STORE = _SlowPopDict()  # type: ignore[assignment]
+    main_module._STORE_ENTRY_BYTES.clear()
+    main_module._STORE_TOTAL_BYTES = 0
     main_module._MAX_STORE_ENTRIES = 1
     errors: list[BaseException] = []
 
     def _worker(i: int) -> None:
         try:
-            main_module._store_put(f"id-{i}", (object(), object()))  # type: ignore[arg-type]
+            main_module._store_put(f"id-{i}", (_FakeModel(), _FakeModel()))  # type: ignore[arg-type]
         except BaseException as exc:  # noqa: BLE001 - capturing for the assertion below
             errors.append(exc)
 
@@ -547,6 +606,9 @@ def test_store_put_is_thread_safe_under_concurrent_eviction() -> None:
     finally:
         main_module._MAX_STORE_ENTRIES = original_max
         main_module._STORE = original
+        main_module._STORE_ENTRY_BYTES.clear()
+        main_module._STORE_ENTRY_BYTES.update(original_bytes)
+        main_module._STORE_TOTAL_BYTES = original_total
 
 
 def test_answer_cache_put_is_thread_safe_under_concurrent_eviction() -> None:
