@@ -27,7 +27,11 @@ from app.ingestion.validator import Level, iter_knowledge_files, validate_tree
 from app.llm.factory import get_client
 from app.models.assessment import AssessmentInput
 from app.models.report import AssessmentReport, ReportStatus
-from app.policy.safe_test import SafeTestLoadError, load_safe_test_templates
+from app.policy.safe_test import (
+    SafeTestLoadError,
+    load_safe_test_templates,
+    unresolved_safe_test_references,
+)
 from app.retrieval.index import reindex_atomic
 from app.reviewer.report import build_report, render_text
 from app.reviewer.rule_loader import RuleLoadError, load_rules
@@ -92,6 +96,32 @@ def _cmd_validate_safe_tests(args: argparse.Namespace, s: Settings) -> int:
         envs = "+".join(e.value for e in test.environment)
         print(f"  {test.id:14} {test.risk_id:10} [{envs}] approval={test.requires_human_approval}")
     print(f"\n{len(templates)} safe-test template(s), all valid")
+
+    # Codex#8 (round 5, 2026-09-12): a syntactically valid (even empty)
+    # template catalogue can still be USELESS if the configured rules
+    # reference safe_test_template ids it does not contain - a typo, or the
+    # whole catalogue silently emptied by a SKOS_SAFE_TESTS_ROOT
+    # misconfiguration. assess.py itself does not raise on that (a rule
+    # still fires; it just loses its attached safe-test recommendation), so
+    # this is the loud, load-time check operators get from running this
+    # command before deploying.
+    try:
+        catalogue = load_rules(s.rules_root)
+    except RuleLoadError as exc:
+        print(
+            f"INVALID: could not load {s.rules_root} to check safe-test coverage: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    unresolved = unresolved_safe_test_references(catalogue.rules, templates)
+    if unresolved:
+        print(
+            "\nINVALID: rule(s) reference a safe-test template that does not exist:",
+            file=sys.stderr,
+        )
+        for ref in unresolved:
+            print(f"  {ref}", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -24,6 +24,32 @@ def test_validate_safe_tests_ok(capsys: pytest.CaptureFixture[str]) -> None:
     assert "4 safe-test template(s), all valid" in capsys.readouterr().out
 
 
+def test_validate_safe_tests_catches_a_broken_rule_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Regression for Codex#8 (round 5, 2026-09-12): a syntactically valid
+    (even empty) safe-test catalogue can still be USELESS if a configured
+    rule references a safe_test_template id it does not contain.
+    assess.py's _safe_tests_for() does not raise on that (a rule still
+    fires, it just loses its safe-test recommendation) - this command must
+    catch it instead of reporting "N safe-test template(s), all valid"."""
+    rules_root = tmp_path / "rules"
+    rules_root.mkdir()
+    (rules_root / "bad.yaml").write_text(
+        "id: PI-901\ntitle: t\ncategory: prompt-security\nseverity: high\n"
+        "safe_test_template: ST-DOES-NOT-EXIST\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SKOS_RULES_ROOT", str(rules_root))
+
+    empty_safe_tests = tmp_path / "safe_tests"
+    empty_safe_tests.mkdir()
+
+    assert main(["validate-safe-tests", str(empty_safe_tests)]) == 1
+    err = capsys.readouterr().err
+    assert "PI-901 -> ST-DOES-NOT-EXIST" in err
+
+
 def test_validate_knowledge_on_fixtures_reports_errors() -> None:
     root = REPO / "tests" / "fixtures" / "knowledge"
     assert main(["validate-knowledge", str(root)]) == 1  # fixtures include bad units

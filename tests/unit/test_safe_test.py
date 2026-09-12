@@ -8,11 +8,14 @@ from pathlib import Path
 import pytest
 
 from app.models.assessment import SafeTest, SafeTestEnvironment, UntrustedSafeTestProposal
+from app.models.knowledge import KnowledgeCategory
 from app.models.policy_outcome import PolicyOutcome
+from app.models.risk import RiskRule, Severity
 from app.policy.safe_test import (
     SafeTestLoadError,
     load_safe_test_templates,
     promote_proposal,
+    unresolved_safe_test_references,
     validate_safe_test,
 )
 
@@ -108,3 +111,57 @@ def test_symlinked_safe_test_template_is_rejected(tmp_path: Path) -> None:
     (root / "linked.yaml").symlink_to(real)
     with pytest.raises(SafeTestLoadError, match="symlink"):
         load_safe_test_templates(root)
+
+
+def test_missing_safe_tests_root_is_rejected(tmp_path: Path) -> None:
+    """Regression for Codex#8 (round 5, 2026-09-12), reproduced exactly as
+    reported: `load_safe_test_templates("/typo'd/path")` used to silently
+    return `{}` - a "valid", empty catalogue - instead of a load error. A
+    misconfigured/missing SKOS_SAFE_TESTS_ROOT must fail loudly, the same
+    way a missing rules root already does (Codex cross-review finding #1,
+    2026-09-11)."""
+    with pytest.raises(SafeTestLoadError, match="does not exist"):
+        load_safe_test_templates(tmp_path / "no-such-dir")
+
+
+def test_safe_tests_root_that_is_a_file_is_rejected(tmp_path: Path) -> None:
+    """Regression for Codex#8 (round 5, 2026-09-12), reproduced exactly as
+    reported: `load_safe_test_templates("README.md")` (a file, not a
+    directory) also used to silently return `{}`."""
+    f = tmp_path / "README.md"
+    f.write_text("not a safe-test directory", encoding="utf-8")
+    with pytest.raises(SafeTestLoadError, match="not a directory"):
+        load_safe_test_templates(f)
+
+
+def _rule(**over: object) -> RiskRule:
+    data: dict[str, object] = {
+        "id": "PI-900",
+        "title": "t",
+        "category": KnowledgeCategory.PROMPT_SECURITY,
+        "severity": Severity.HIGH,
+    }
+    data.update(over)
+    return RiskRule.model_validate(data)
+
+
+def test_unresolved_safe_test_references_reports_a_broken_reference() -> None:
+    """Regression for Codex#8 (round 5, 2026-09-12): a rule's
+    safe_test_template that does not resolve in the loaded templates - a
+    typo, or the whole catalogue silently emptied by a misconfigured root -
+    used to fail SILENTLY (assess.py's _safe_tests_for() just skips a
+    missing template). This is the loud, load-time counterpart."""
+    rule = _rule(safe_test_template="ST-DOES-NOT-EXIST")
+    assert unresolved_safe_test_references([rule], {}) == ["PI-900 -> ST-DOES-NOT-EXIST"]
+
+
+def test_unresolved_safe_test_references_is_empty_when_everything_resolves(
+    safe_test_templates,
+) -> None:
+    rule = _rule(safe_test_template=next(iter(safe_test_templates)))
+    assert unresolved_safe_test_references([rule], safe_test_templates) == []
+
+
+def test_unresolved_safe_test_references_ignores_rules_with_no_template() -> None:
+    rule = _rule()  # safe_test_template defaults to None
+    assert unresolved_safe_test_references([rule], {}) == []

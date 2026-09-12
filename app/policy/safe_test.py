@@ -17,6 +17,7 @@ production target.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 import yaml
@@ -24,6 +25,7 @@ from pydantic import ValidationError
 
 from app.models.assessment import SafeTest, SafeTestEnvironment, UntrustedSafeTestProposal
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
+from app.models.risk import RiskRule
 
 _FORBIDDEN = [
     (re.compile(r"\bprod(uction)?\b", re.I), "references a production target"),
@@ -93,6 +95,17 @@ class SafeTestLoadError(Exception):
 
 def load_safe_test_templates(root: Path | str) -> dict[str, SafeTest]:
     root = Path(root)
+    # Codex#8 (round 5, 2026-09-12): Path.rglob() on a missing or
+    # non-directory root silently yields nothing - `load_safe_test_templates(
+    # "/typo'd/path")` and `load_safe_test_templates("README.md")` both
+    # returned `{}`, an empty-but-"valid" catalogue, exactly like the
+    # pre-fix load_rules() bug (Codex cross-review finding #1, 2026-09-11).
+    # A misconfigured/missing SKOS_SAFE_TESTS_ROOT must be a hard load
+    # error, not a silent "every safe-test recommendation just disappeared".
+    if not root.is_dir():
+        raise SafeTestLoadError(
+            f"safe-tests root does not exist or is not a directory: {root}"
+        )
     templates: dict[str, SafeTest] = {}
     for path in sorted(root.rglob("*.yaml")):
         if path.is_symlink():
@@ -111,3 +124,26 @@ def load_safe_test_templates(root: Path | str) -> dict[str, SafeTest]:
             raise SafeTestLoadError(f"duplicate safe-test id {test.id}")
         templates[test.id] = test
     return templates
+
+
+def unresolved_safe_test_references(
+    rules: Iterable[RiskRule], templates: dict[str, SafeTest]
+) -> list[str]:
+    """Codex#8 (round 5, 2026-09-12): every `RiskRule.safe_test_template`
+    that does not resolve in `templates` - a typo in a rule file, or a
+    `SKOS_SAFE_TESTS_ROOT` misconfiguration that emptied the whole
+    catalogue. `assess.py::_safe_tests_for()` intentionally does not raise on
+    a missing template mid-assessment (`test is None: continue` - a rule
+    still fires, it just has no safe-test recommendation attached), so a
+    broken reference previously failed SILENTLY with no error anywhere. This
+    is the loud, load-time counterpart: callers that load both catalogues
+    together (the CLI's `validate-safe-tests`, a startup check) can fail on
+    a non-empty result instead of only ever seeing recommendations quietly
+    vanish. Returns `"<rule_id> -> <safe_test_template>"` for each broken
+    reference, in rule order.
+    """
+    return [
+        f"{rule.id} -> {rule.safe_test_template}"
+        for rule in rules
+        if rule.safe_test_template and rule.safe_test_template not in templates
+    ]
