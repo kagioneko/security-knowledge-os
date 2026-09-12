@@ -71,6 +71,24 @@ def _license_files_present() -> bool:
     return ok
 
 
+def _constraints_file_present() -> bool:
+    """Codex#15 (round 8, 2026-09-12), reproduced exactly as reported:
+    pyproject.toml declares only lower bounds (>=), not a reviewed lock -
+    two clean installations can resolve different dependency graphs, and
+    nothing before this audited a specific, reviewed one.
+    constraints.txt (see its own header for how to regenerate it) is that
+    reviewed baseline; this only checks it exists and is non-empty, not
+    that it is currently up to date with what is installed - regenerating
+    it is a deliberate, reviewed action, not something to infer here."""
+    path = ROOT / "constraints.txt"
+    ok = path.exists() and any(
+        line.strip() and not line.lstrip().startswith("#")
+        for line in path.read_text(encoding="utf-8").splitlines()
+    )
+    print(f"[{'ok ' if ok else 'FAIL'}] constraints.txt present with pinned versions")
+    return ok
+
+
 def _parse_manifest_claims(text: str) -> tuple[int, int] | None:
     """Extract the `(tracked files, tests)` counts PUBLICATION_MANIFEST.md
     claims for itself, from its "Tracked files: **N**" / "Tests: **N**
@@ -241,6 +259,7 @@ def main() -> int:
         _tracked_knowledge_all_public(),
         _no_private_or_secret_tracked(),
         _license_files_present(),
+        _constraints_file_present(),
         _publication_manifest_matches_reality(),
     ]
 

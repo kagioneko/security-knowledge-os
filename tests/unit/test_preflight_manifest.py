@@ -69,6 +69,23 @@ def test_real_manifest_component_count_line_is_parseable() -> None:
     assert count is not None and count > 0
 
 
+def test_constraints_file_is_present_and_non_empty() -> None:
+    """Regression for Codex#15 (round 8, 2026-09-12), reproduced exactly as
+    reported: pyproject.toml declares only lower bounds - two clean
+    installations can resolve different dependency graphs, and nothing
+    audited a specific, reviewed one. constraints.txt is that reviewed
+    baseline; this checks preflight actually looks for it."""
+    assert preflight._constraints_file_present() is True
+
+
+def test_constraints_check_fails_when_the_file_is_only_comments(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "constraints.txt").write_text("# nothing pinned yet\n", encoding="utf-8")
+    monkeypatch.setattr(preflight, "ROOT", tmp_path)
+    assert preflight._constraints_file_present() is False
+
+
 def test_head_itself_is_a_known_ancestor_of_head() -> None:
     import subprocess
 
