@@ -113,6 +113,46 @@ def test_symlinked_safe_test_template_is_rejected(tmp_path: Path) -> None:
         load_safe_test_templates(root)
 
 
+def test_ancestor_directory_confinement_is_enforced(tmp_path: Path) -> None:
+    """Regression for Codex#5 (round 8, 2026-09-12), reproduced exactly as
+    reported: O_NOFOLLOW on the final read (Codex#2, round 7) protects only
+    the LAST pathname component - `rglob()`'s own directory walk and the
+    later open both re-resolve the full path from scratch, so a symlinked
+    ANCESTOR directory under `root` was silently followed straight through
+    to a file entirely outside it. load_safe_test_templates() now
+    snapshots `root` the same no-follow-at-every-level way
+    app/ingestion/snapshot.py already does for the knowledge corpus,
+    closing this the same way round 7 closed it there.
+
+    NOTE: this test is deliberately NOT named with "symlink" in it - see
+    the identical note on test_rule_loader.py's
+    test_ancestor_directory_confinement_is_enforced: pytest's `tmp_path`
+    fixture names the temp directory after the TEST FUNCTION itself, so a
+    test named e.g. "...symlinked..." would make a plain match="symlink"
+    trivially satisfiable by that path fragment alone, independent of
+    whether the fix actually works. Matching on load_safe_test_templates()'s
+    own wrapper message avoids that trap; here the pre-fix behaviour was
+    "DID NOT RAISE" at all (rglob() silently finding nothing through the
+    unfollowed symlinked directory), so it happens not to have been
+    vulnerable to that specific trap, but the same fix-specific match
+    string is used for consistency and to guard against a future pre-fix
+    message that DOES embed the tmp_path."""
+    root = tmp_path / "safe_tests"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "st.yaml").write_text(
+        "id: ST-X-901\ntitle: OUTSIDE\nrisk_id: PI-003\norigin: template\n"
+        "environment: [sandbox]\nscope: s\nsteps: [a]\nsuccess_criteria: c\n"
+        "requires_human_approval: true\n",
+        encoding="utf-8",
+    )
+    (root / "nested").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SafeTestLoadError, match="could not safely read the safe-tests directory"):
+        load_safe_test_templates(root)
+
+
 def test_deeply_nested_safe_test_yaml_fails_closed_not_a_raw_recursionerror(
     tmp_path: Path,
 ) -> None:

@@ -7,6 +7,7 @@ is a hard error - a broken security rule is never silently skipped (fail-closed)
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.ingestion.parser import FrontMatterError, _read_text_no_follow, safe_load_bounded
+from app.ingestion.snapshot import snapshot_tree
 from app.models.risk import LLM_OBS_PREFIX, RiskRule
 from app.models.rule_clause import Clause, Operator
 from app.reviewer.clause_eval import ClauseError, validate_clause
@@ -187,44 +189,56 @@ def load_rules(rules_root: Path | str) -> RuleCatalogue:
     if not rules_root.is_dir():
         raise RuleLoadError(f"rules root does not exist or is not a directory: {rules_root}")
 
-    catalogue = RuleCatalogue()
-    seen: dict[str, Path] = {}
+    # Codex#5 (round 8, 2026-09-12), reproduced exactly as reported: Codex#2
+    # (round 7)'s O_NOFOLLOW read protects only the FINAL pathname component
+    # - `rglob()`'s own directory walk and the later open both re-resolve
+    # the full path from scratch, so a symlinked ANCESTOR directory under
+    # rules_root (swapped in transiently, or simply present) was silently
+    # followed straight through to a file entirely outside it - the same
+    # class of gap app/ingestion/snapshot.py's directory-fd walk already
+    # closes for the knowledge corpus (round 7, Codex#2). Snapshotting
+    # rules_root the same way removes the live, externally-mutable tree
+    # from the read path entirely; snapshot_tree() also already rejects any
+    # symlink anywhere in the tree, which is why the old
+    # `if path.is_symlink()` check right before the read is gone below.
+    try:
+        snapshot_root = snapshot_tree(rules_root)
+    except OSError as exc:
+        raise RuleLoadError(f"{rules_root}: could not safely read the rules directory: {exc}") \
+            from exc
 
-    for path in sorted(rules_root.rglob("*.yaml")):
-        if path.is_symlink():
-            # Codex cross-review finding #2 (2026-09-11): consistent confinement
-            # across all three loaders (knowledge/rules/safe-tests) - a symlink
-            # could point outside rules_root at an arbitrary file.
-            raise RuleLoadError(f"{path}: symlinked rule files are not allowed")
-        try:
-            # Codex#2 (round 7, 2026-09-12): is_symlink() above and the read
-            # used to be two separate pathname-based operations - the same
-            # TOCTOU class fixed for the knowledge loader in round 6
-            # (Codex#5). _read_text_no_follow() makes the read itself fail
-            # (ELOOP) if the path names a symlink at the moment of the open,
-            # regardless of what the check above saw a moment earlier.
-            text = _read_text_no_follow(path)
-        except (OSError, FrontMatterError) as exc:
-            raise RuleLoadError(f"{path}: {exc}") from exc
-        try:
-            # Codex#5 (round 7, 2026-09-12): plain yaml.safe_load() had none
-            # of the merge-key ban / size cap / RecursionError handling the
-            # knowledge front-matter loader already had - ~1,500 nested YAML
-            # collections raised an uncaught RecursionError straight out of
-            # load_rules(). Reuses the exact same bounded loader.
-            raw = safe_load_bounded(text, max_bytes=_MAX_RULE_FILE_BYTES, what="rule file")
-        except FrontMatterError as exc:
-            raise RuleLoadError(f"{path}: {exc}") from exc
-        if not isinstance(raw, dict):
-            raise RuleLoadError(f"{path}: a rule file must contain one mapping")
+    try:
+        catalogue = RuleCatalogue()
+        seen: dict[str, Path] = {}
 
-        rule = _parse_rule(raw, path)
-        if rule.id in seen:
-            raise RuleLoadError(
-                f"duplicate rule id {rule.id} in {path} and {seen[rule.id]}"
-            )
-        seen[rule.id] = path
-        catalogue.rules.append(rule)
+        for snap_path in sorted(snapshot_root.rglob("*.yaml")):
+            path = rules_root / snap_path.relative_to(snapshot_root)  # for error messages only
+            try:
+                text = _read_text_no_follow(snap_path)
+            except (OSError, FrontMatterError) as exc:
+                raise RuleLoadError(f"{path}: {exc}") from exc
+            try:
+                # Codex#5 (round 7, 2026-09-12): plain yaml.safe_load() had
+                # none of the merge-key ban / size cap / RecursionError
+                # handling the knowledge front-matter loader already had -
+                # ~1,500 nested YAML collections raised an uncaught
+                # RecursionError straight out of load_rules(). Reuses the
+                # exact same bounded loader.
+                raw = safe_load_bounded(text, max_bytes=_MAX_RULE_FILE_BYTES, what="rule file")
+            except FrontMatterError as exc:
+                raise RuleLoadError(f"{path}: {exc}") from exc
+            if not isinstance(raw, dict):
+                raise RuleLoadError(f"{path}: a rule file must contain one mapping")
+
+            rule = _parse_rule(raw, path)
+            if rule.id in seen:
+                raise RuleLoadError(
+                    f"duplicate rule id {rule.id} in {path} and {seen[rule.id]}"
+                )
+            seen[rule.id] = path
+            catalogue.rules.append(rule)
+    finally:
+        shutil.rmtree(snapshot_root, ignore_errors=True)
 
     if not catalogue.rules:
         raise RuleLoadError(f"no rule files (*.yaml) found under {rules_root}")

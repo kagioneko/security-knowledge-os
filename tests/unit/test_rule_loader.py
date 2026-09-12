@@ -131,6 +131,42 @@ def test_a_manual_review_rule_with_no_checks_is_allowed(tmp_path: Path) -> None:
     assert catalogue.by_id("MANUAL-001").manual_review is True
 
 
+def test_ancestor_directory_confinement_is_enforced(tmp_path: Path) -> None:
+    """Regression for Codex#5 (round 8, 2026-09-12), reproduced exactly as
+    reported: O_NOFOLLOW on the final read (Codex#2, round 7) protects only
+    the LAST pathname component - `rglob()`'s own directory walk and the
+    later open both re-resolve the full path from scratch, so a symlinked
+    ANCESTOR directory under rules_root was silently followed straight
+    through to a file entirely outside it. load_rules() now snapshots
+    rules_root the same no-follow-at-every-level way
+    app/ingestion/snapshot.py already does for the knowledge corpus,
+    closing this the same way round 7 closed it there.
+
+    NOTE: this test is deliberately NOT named with "symlink" in it, and
+    matches on the wrapper message load_rules() adds around the underlying
+    SnapshotError rather than on the word "symlink" alone - pytest's
+    `tmp_path` fixture names the temp directory after the TEST FUNCTION
+    itself, so a test named e.g. "...symlinked..." would make
+    match="symlink" trivially satisfied by that path fragment showing up
+    in ANY error message, pre-fix included (the pre-fix message here is
+    "no rule files (*.yaml) found under <tmp_path>/rules", which says
+    nothing about symlinks - but a test named after the word "symlink"
+    would still spuriously pass without ever really exercising the fix)."""
+    root = tmp_path / "rules"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "r.yaml").write_text(
+        "id: X-901\ntitle: OUTSIDE\ncategory: governance\nseverity: high\n"
+        "manual_review: true\n",
+        encoding="utf-8",
+    )
+    (root / "nested").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuleLoadError, match="could not safely read the rules directory"):
+        load_rules(root)
+
+
 def test_a_rule_id_using_the_reserved_llm_obs_prefix_is_rejected(tmp_path: Path) -> None:
     """Regression for Codex#3 (round 7, 2026-09-12), reproduced exactly as
     reported: `id: LLM-OBS-00001` matches RiskRule's id pattern and loaded

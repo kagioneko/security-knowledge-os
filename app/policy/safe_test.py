@@ -17,12 +17,14 @@ production target.
 from __future__ import annotations
 
 import re
+import shutil
 from collections.abc import Iterable
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from app.ingestion.parser import FrontMatterError, _read_text_no_follow, safe_load_bounded
+from app.ingestion.snapshot import snapshot_tree
 from app.models.assessment import SafeTest, SafeTestEnvironment, UntrustedSafeTestProposal
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
 from app.models.risk import RiskRule
@@ -111,42 +113,56 @@ def load_safe_test_templates(root: Path | str) -> dict[str, SafeTest]:
         raise SafeTestLoadError(
             f"safe-tests root does not exist or is not a directory: {root}"
         )
+    # Codex#5 (round 8, 2026-09-12), reproduced exactly as reported: Codex#2
+    # (round 7)'s O_NOFOLLOW read protects only the FINAL pathname component
+    # - `rglob()`'s own directory walk and the later open both re-resolve
+    # the full path from scratch, so a symlinked ANCESTOR directory under
+    # `root` was silently followed straight through to a file entirely
+    # outside it - the same class of gap app/ingestion/snapshot.py's
+    # directory-fd walk already closes for the knowledge corpus (round 7,
+    # Codex#2). Snapshotting `root` the same way removes the live,
+    # externally-mutable tree from the read path entirely; snapshot_tree()
+    # also already rejects any symlink anywhere in the tree, which is why
+    # the old `if path.is_symlink()` check right before the read is gone
+    # below.
+    try:
+        snapshot_root = snapshot_tree(root)
+    except OSError as exc:
+        raise SafeTestLoadError(f"{root}: could not safely read the safe-tests directory: {exc}") \
+            from exc
+
     templates: dict[str, SafeTest] = {}
-    for path in sorted(root.rglob("*.yaml")):
-        if path.is_symlink():
-            # Codex cross-review finding #2 (2026-09-11): consistent confinement
-            # across all three loaders (knowledge/rules/safe-tests).
-            raise SafeTestLoadError(f"{path}: symlinked safe-test files are not allowed")
-        try:
-            # Codex#2 (round 7, 2026-09-12): is_symlink() above and the read
-            # used to be two separate pathname-based operations - the same
-            # TOCTOU class fixed for the knowledge loader in round 6
-            # (Codex#5). _read_text_no_follow() makes the read itself fail
-            # (ELOOP) if the path names a symlink at the moment of the open.
-            text = _read_text_no_follow(path)
-        except (OSError, FrontMatterError) as exc:
-            raise SafeTestLoadError(f"{path}: {exc}") from exc
-        try:
-            # Codex#5 (round 7, 2026-09-12): this yaml.safe_load() call used
-            # to run OUTSIDE any try/except at all - invalid YAML raised a
-            # bare yaml.YAMLError straight out of load_safe_test_templates().
-            # Also had none of the merge-key ban / size cap / RecursionError
-            # handling the knowledge front-matter loader already had.
-            raw = safe_load_bounded(
-                text, max_bytes=_MAX_SAFE_TEST_FILE_BYTES, what="safe-test file"
-            )
-        except FrontMatterError as exc:
-            raise SafeTestLoadError(f"{path}: {exc}") from exc
-        try:
-            test = SafeTest.model_validate(raw)
-        except ValidationError as exc:
-            raise SafeTestLoadError(f"{path}: {exc}") from exc
-        decision = validate_safe_test(test)
-        if not decision.is_allowed:
-            raise SafeTestLoadError(f"{path}: {decision.outcome.value}: {decision.reasons}")
-        if test.id in templates:
-            raise SafeTestLoadError(f"duplicate safe-test id {test.id}")
-        templates[test.id] = test
+    try:
+        for snap_path in sorted(snapshot_root.rglob("*.yaml")):
+            path = root / snap_path.relative_to(snapshot_root)  # for error messages only
+            try:
+                text = _read_text_no_follow(snap_path)
+            except (OSError, FrontMatterError) as exc:
+                raise SafeTestLoadError(f"{path}: {exc}") from exc
+            try:
+                # Codex#5 (round 7, 2026-09-12): this yaml.safe_load() call
+                # used to run OUTSIDE any try/except at all - invalid YAML
+                # raised a bare yaml.YAMLError straight out of
+                # load_safe_test_templates(). Also had none of the
+                # merge-key ban / size cap / RecursionError handling the
+                # knowledge front-matter loader already had.
+                raw = safe_load_bounded(
+                    text, max_bytes=_MAX_SAFE_TEST_FILE_BYTES, what="safe-test file"
+                )
+            except FrontMatterError as exc:
+                raise SafeTestLoadError(f"{path}: {exc}") from exc
+            try:
+                test = SafeTest.model_validate(raw)
+            except ValidationError as exc:
+                raise SafeTestLoadError(f"{path}: {exc}") from exc
+            decision = validate_safe_test(test)
+            if not decision.is_allowed:
+                raise SafeTestLoadError(f"{path}: {decision.outcome.value}: {decision.reasons}")
+            if test.id in templates:
+                raise SafeTestLoadError(f"duplicate safe-test id {test.id}")
+            templates[test.id] = test
+    finally:
+        shutil.rmtree(snapshot_root, ignore_errors=True)
     return templates
 
 
