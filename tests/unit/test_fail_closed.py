@@ -89,6 +89,38 @@ def test_tampered_index_fails_closed(
         conn.close()
 
 
+def test_classification_flip_fails_closed(
+    tmp_path: Path, corpus_root: Path, catalogue: RuleCatalogue, load_assessment
+) -> None:
+    """Regression for Codex#1 (round 6, 2026-09-12), reproduced exactly as
+    reported: verify_chunk_hashes() hashed only `text` - `UPDATE chunks SET
+    classification='public' WHERE ...` (flipping a confidential chunk to
+    public) left the stored hash matching and used to return ALLOWED, so a
+    PUBLIC-mode retrieval could return confidential content. The hash must
+    now cover classification (and every other security-relevant field) too."""
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+
+    conn = connect(db)
+    try:
+        before = conn.execute(
+            "SELECT classification FROM chunks WHERE rowid = 1"
+        ).fetchone()["classification"]
+        assert before != "public"
+        conn.execute("UPDATE chunks SET classification = 'public' WHERE rowid = 1")
+        conn.commit()
+        assert verify_chunk_hashes(conn).outcome is PolicyOutcome.POLICY_BLOCKED
+        with pytest.raises(PolicyStop):
+            assess(
+                load_assessment("S-001-prompt-only"),
+                catalogue,
+                settings=Settings(mode=Mode.PRIVATE),
+                index_conn=conn,
+            )
+    finally:
+        conn.close()
+
+
 def test_missing_revision_meta_fails_closed(tmp_path: Path, corpus_root: Path) -> None:
     db = tmp_path / "idx.sqlite"
     build_index(corpus_root, db)
@@ -194,6 +226,51 @@ def test_fts_content_replacement_fails_closed_even_with_matching_counts(
         decision = verify_chunk_hashes(conn)
         assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
         assert "chunks_fts content mismatch" in " ".join(decision.reasons)
+    finally:
+        conn.close()
+
+
+def test_fts_appended_token_fails_closed(tmp_path: Path, corpus_root: Path) -> None:
+    """Regression for Codex#2 (round 6, 2026-09-12), reproduced exactly as
+    reported: the exact-phrase MATCH probe (round 5) only proves the
+    canonical text is PRESENT as a contiguous phrase - it cannot prove
+    nothing else was ALSO indexed. Rebuilding chunks_fts with the canonical
+    search_text plus an extra appended token, on the same rowid/count,
+    still passed that probe while MATCH 'injected' returned real results.
+    The fts_shadow_digest recorded at build time must catch this too."""
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT rowid, title, section, text FROM chunks ORDER BY rowid"
+        ).fetchall()
+        assert len(rows) > 1
+        tampered_rowid = rows[0]["rowid"]
+
+        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('delete-all')")
+        for row in rows:
+            search_text = "\n".join(
+                part for part in (row["title"], row["section"], row["text"]) if part
+            ).strip()
+            if row["rowid"] == tampered_rowid:
+                search_text += " zzzinjectedtoken"
+            conn.execute(
+                "INSERT INTO chunks_fts(rowid, search_text) VALUES (?, ?)",
+                (row["rowid"], search_text),
+            )
+        conn.commit()
+
+        # the exact-phrase probe still passes: the canonical text is a
+        # genuine, unbroken prefix of what got indexed.
+        match = conn.execute(
+            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'zzzinjectedtoken'"
+        ).fetchall()
+        assert [r["rowid"] for r in match] == [tampered_rowid]
+
+        decision = verify_chunk_hashes(conn)
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        assert "shadow-table digest mismatch" in " ".join(decision.reasons)
     finally:
         conn.close()
 

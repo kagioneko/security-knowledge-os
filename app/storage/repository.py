@@ -7,6 +7,7 @@ from collections.abc import Iterable, Sequence
 
 from app.models.knowledge import Classification, KnowledgeCategory
 from app.models.retrieval import Chunk
+from app.storage.integrity import compute_fts_shadow_digest
 
 _COLUMNS = (
     "chunk_id",
@@ -86,6 +87,22 @@ class ChunkRepository:
         )
         cur.execute(
             "INSERT INTO meta(key, value) VALUES ('chunk_count', ?)", (str(count),)
+        )
+        self.conn.commit()
+
+        # Codex#2 (round 6, 2026-09-12): FTS5's on-disk shadow-table layout
+        # is only settled AFTER commit - computed on the SAME (uncommitted)
+        # transaction, the digest observably differs from what a fresh
+        # connection reads back afterward (an intermediate, not-yet-merged
+        # segment structure), which would make every verify_chunk_hashes()
+        # call fail on a perfectly good index. Computing it in its own
+        # transaction, after the commit above, matches what every later
+        # reader (including verify_chunk_hashes() itself) actually sees -
+        # see compute_fts_shadow_digest() for what this catches that the
+        # per-chunk MATCH probe cannot.
+        cur.execute(
+            "INSERT INTO meta(key, value) VALUES ('fts_shadow_digest', ?)",
+            (compute_fts_shadow_digest(self.conn),),
         )
         self.conn.commit()
         return count

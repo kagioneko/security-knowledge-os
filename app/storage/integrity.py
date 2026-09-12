@@ -7,9 +7,21 @@ import sqlite3
 
 from app.models.knowledge import Classification, KnowledgeCategory
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
+from app.models.retrieval import chunk_content_hash
 
 _VALID_CLASSIFICATIONS = {c.value for c in Classification}
 _VALID_CATEGORIES = {c.value for c in KnowledgeCategory}
+
+# Codex#2 (round 6, 2026-09-12): the tables FTS5 actually stores a
+# contentless table's postings in. Table names, not user input - safe to
+# interpolate into PRAGMA/SELECT statements (sqlite3 cannot parameterise
+# identifiers anyway).
+_FTS_SHADOW_TABLES = (
+    "chunks_fts_data",
+    "chunks_fts_idx",
+    "chunks_fts_docsize",
+    "chunks_fts_config",
+)
 
 
 def _fts_phrase(text: str) -> str:
@@ -19,6 +31,45 @@ def _fts_phrase(text: str) -> str:
     literal inside a quoted phrase, so this is safe for arbitrary chunk
     text, not just pre-sanitised user search terms."""
     return '"' + text.replace('"', '""') + '"'
+
+
+def compute_fts_shadow_digest(conn: sqlite3.Connection) -> str:
+    """A digest over FTS5's own on-disk representation of `chunks_fts`
+    (its four shadow tables), not just what a MATCH query can observe
+    through it.
+
+    Codex#2 (round 6, 2026-09-12), reproduced exactly as reported: the
+    exact-phrase MATCH probe in `verify_chunk_hashes()` (Codex#2, round 5)
+    only proves the canonical text is PRESENT as a contiguous phrase - it
+    cannot prove nothing else was ALSO indexed. Rebuilding `chunks_fts` with
+    the canonical `search_text` plus an extra appended token, on the same
+    rowid/count, still passed that probe while `MATCH 'appended token'`
+    returned real results. `ChunkRepository.rebuild()` computes and stores
+    this digest right after it finishes writing `chunks_fts` (called only
+    from the build/reindex path, on a writable connection dedicated to that
+    one rebuild - nothing else ever writes to these tables again);
+    `verify_chunk_hashes()` recomputes it from the same tables and compares.
+    Any change to what is actually indexed - replaced, appended, or
+    otherwise - changes this digest, regardless of whether it also happens
+    to still contain the canonical phrase.
+    """
+    digest = hashlib.sha256()
+    for table in _FTS_SHADOW_TABLES:
+        digest.update(table.encode("utf-8"))
+        digest.update(b"\x00")
+        columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+        select = f"SELECT {', '.join(columns)} FROM {table} ORDER BY {columns[0]}"  # noqa: S608
+        for row in conn.execute(select):
+            for value in row:
+                if isinstance(value, bytes):
+                    digest.update(value)
+                elif value is None:
+                    digest.update(b"\x00NULL\x00")
+                else:
+                    digest.update(str(value).encode("utf-8"))
+                digest.update(b"\x1f")
+            digest.update(b"\x1e")
+    return digest.hexdigest()
 
 
 def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
@@ -39,8 +90,8 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
         fts_content_mismatches: list[str] = []
         actual_count = 0
         for row in conn.execute(
-            "SELECT rowid, chunk_id, title, section, text, hash, classification, category "
-            "FROM chunks"
+            "SELECT rowid, chunk_id, knowledge_id, title, source_ref, version, section, "
+            "text, hash, classification, category FROM chunks"
         ):
             actual_count += 1
             # Codex cross-review finding #7, part 2 (round 2, 2026-09-11):
@@ -50,9 +101,13 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
             # skipped the caller's fail-closed handling instead of producing
             # the POLICY_BLOCKED this function exists to return.
             if (
-                not isinstance(row["text"], str)
+                not isinstance(row["chunk_id"], str)
+                or not isinstance(row["knowledge_id"], str)
+                or not isinstance(row["text"], str)
                 or not isinstance(row["hash"], str)
                 or not isinstance(row["title"], str)
+                or not isinstance(row["source_ref"], str)
+                or not isinstance(row["version"], str)
                 or not isinstance(row["section"], str)
             ):
                 malformed.append(row["chunk_id"])
@@ -72,7 +127,27 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
             ):
                 malformed.append(row["chunk_id"])
                 continue
-            expected = hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
+            # Codex#1 (round 6, 2026-09-12), reproduced exactly as reported:
+            # the hash used to cover ONLY `text` - `UPDATE chunks SET
+            # classification='public' WHERE knowledge_id='KU-1020'` (a
+            # confidential unit) passed as ALLOWED, and a PUBLIC-mode
+            # retrieval then returned the confidential content, because
+            # nothing bound `classification` (or `source_ref`/
+            # `knowledge_id`/`title`/`section`/`version`) to the hash at
+            # all. chunk_content_hash() covers every field a Chunk carries
+            # except the hash itself - the exact same function
+            # app/retrieval/index.py used to compute it when writing.
+            expected = chunk_content_hash(
+                chunk_id=row["chunk_id"],
+                knowledge_id=row["knowledge_id"],
+                title=row["title"],
+                source_ref=row["source_ref"],
+                classification=row["classification"],
+                category=row["category"],
+                version=row["version"],
+                section=row["section"],
+                text=row["text"],
+            )
             if expected != row["hash"]:
                 mismatches.append(row["chunk_id"])
                 continue
@@ -188,6 +263,27 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                 PolicyOutcome.POLICY_BLOCKED,
                 "knowledge-index",
                 f"chunks_fts row count mismatch: fts has {fts_count}, chunks has {actual_count}",
+            )
+
+        # Codex#2 (round 6, 2026-09-12): the exact-phrase MATCH probe above
+        # (per-chunk loop) proves the canonical text is present; it cannot
+        # prove nothing EXTRA was also indexed (an appended token on an
+        # otherwise-intact phrase still matches). This digest over FTS5's
+        # own shadow-table storage (`compute_fts_shadow_digest`) catches
+        # that: any change to what is actually indexed changes it.
+        digest_row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'fts_shadow_digest'"
+        ).fetchone()
+        if digest_row is None or not digest_row["value"]:
+            return stop(
+                PolicyOutcome.POLICY_BLOCKED, "knowledge-index", "no fts_shadow_digest recorded"
+            )
+        actual_digest = compute_fts_shadow_digest(conn)
+        if actual_digest != digest_row["value"]:
+            return stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "knowledge-index",
+                "chunks_fts shadow-table digest mismatch (indexed content changed after build)",
             )
     except sqlite3.DatabaseError as exc:
         # a missing/malformed table (meta or chunks) means the index file is

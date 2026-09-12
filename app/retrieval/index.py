@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
-import hashlib
 import os
 import shutil
 import sqlite3
@@ -20,8 +19,9 @@ from pydantic import BaseModel, computed_field
 
 from app.ingestion.loader import LoadedUnit, compute_knowledge_revision, load_corpus
 from app.ingestion.validator import Level, iter_knowledge_files, validate_tree
+from app.models.knowledge import KnowledgeUnitFrontMatter
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
-from app.models.retrieval import Chunk
+from app.models.retrieval import Chunk, chunk_content_hash
 from app.storage.db import connect
 from app.storage.integrity import verify_chunk_hashes
 from app.storage.repository import ChunkRepository
@@ -40,44 +40,46 @@ class IndexBuildReport:
     warnings: int = 0
 
 
-def _chunk_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def _chunk(
+    *,
+    chunk_id: str,
+    fm: KnowledgeUnitFrontMatter,
+    section: str,
+    text: str,
+) -> Chunk:
+    return Chunk(
+        chunk_id=chunk_id,
+        knowledge_id=fm.id,
+        title=fm.title,
+        source_ref=fm.source_ref,
+        classification=fm.classification,
+        category=fm.category,
+        version=fm.version,
+        section=section,
+        text=text,
+        hash=chunk_content_hash(
+            chunk_id=chunk_id,
+            knowledge_id=fm.id,
+            title=fm.title,
+            source_ref=fm.source_ref,
+            classification=fm.classification.value,
+            category=fm.category.value,
+            version=fm.version,
+            section=section,
+            text=text,
+        ),
+    )
 
 
 def chunks_for_unit(unit: LoadedUnit) -> list[Chunk]:
     fm = unit.front_matter
     sections = unit.sections or []
-    chunks: list[Chunk] = []
-    for ordinal, section in enumerate(sections):
-        chunks.append(
-            Chunk(
-                chunk_id=f"{fm.id}#{ordinal:03d}",
-                knowledge_id=fm.id,
-                title=fm.title,
-                source_ref=fm.source_ref,
-                classification=fm.classification,
-                category=fm.category,
-                version=fm.version,
-                section=section.heading,
-                text=section.text,
-                hash=_chunk_hash(section.text),
-            )
-        )
+    chunks: list[Chunk] = [
+        _chunk(chunk_id=f"{fm.id}#{ordinal:03d}", fm=fm, section=section.heading, text=section.text)
+        for ordinal, section in enumerate(sections)
+    ]
     if not chunks:
-        chunks.append(
-            Chunk(
-                chunk_id=f"{fm.id}#000",
-                knowledge_id=fm.id,
-                title=fm.title,
-                source_ref=fm.source_ref,
-                classification=fm.classification,
-                category=fm.category,
-                version=fm.version,
-                section="",
-                text=fm.title,
-                hash=_chunk_hash(fm.title),
-            )
-        )
+        chunks.append(_chunk(chunk_id=f"{fm.id}#000", fm=fm, section="", text=fm.title))
     return chunks
 
 
