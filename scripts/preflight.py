@@ -10,6 +10,7 @@ classification check, and a reminder of the manual gates that a script cannot do
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -79,6 +80,21 @@ def _parse_manifest_claims(text: str) -> tuple[int, int] | None:
     if claimed_files_match is None or claimed_tests_match is None:
         return None
     return int(claimed_files_match.group(1)), int(claimed_tests_match.group(1))
+
+
+def _parse_manifest_component_count(text: str) -> int | None:
+    """Extract the SBOM component count PUBLICATION_MANIFEST.md's own
+    "## Dependencies" section claims, from its "N components" line.
+    Returns None if that line is missing/unparseable.
+
+    Codex#9 (round 8, 2026-09-12), reproduced exactly as reported: the
+    tracked sbom.json had 62 components while the manifest's own
+    "Dependencies" section said 29 - the tracked-files/tests counts above
+    (Codex#9, round 5) were kept in sync, but nothing checked this third,
+    independently-drifting number the same way.
+    """
+    match = re.search(r"^(\d+)\s+components\b", text, re.MULTILINE)
+    return int(match.group(1)) if match else None
 
 
 def _parse_manifest_commit(text: str) -> str | None:
@@ -157,16 +173,35 @@ def _publication_manifest_matches_reality() -> bool:
     actual_files, actual_tests = _actual_tracked_files_and_tests(ROOT)
     counts_ok = claimed_files == actual_files and claimed_tests == actual_tests
 
-    manifest_commit = _parse_manifest_commit(manifest.read_text(encoding="utf-8"))
+    manifest_text = manifest.read_text(encoding="utf-8")
+    claimed_components = _parse_manifest_component_count(manifest_text)
+    sbom_path = ROOT / "sbom.json"
+    actual_components = (
+        len(json.loads(sbom_path.read_text(encoding="utf-8")).get("components", []))
+        if sbom_path.exists()
+        else None
+    )
+    components_ok = (
+        claimed_components is not None
+        and actual_components is not None
+        and claimed_components == actual_components
+    )
+
+    manifest_commit = _parse_manifest_commit(manifest_text)
     commit_ok = manifest_commit is not None and _commit_is_known_ancestor_of_head(
         ROOT, manifest_commit
     )
 
-    ok = counts_ok and commit_ok
+    ok = counts_ok and components_ok and commit_ok
     print(f"[{'ok ' if ok else 'FAIL'}] PUBLICATION_MANIFEST.md matches reality")
     if not counts_ok:
         print(f"    tracked files: manifest says {claimed_files}, actual {actual_files}")
         print(f"    tests        : manifest says {claimed_tests}, actual {actual_tests}")
+    if not components_ok:
+        print(
+            f"    sbom components: manifest says {claimed_components}, "
+            f"actual {actual_components}"
+        )
     if not commit_ok:
         print(
             f"    commit: manifest says `{manifest_commit}`, which is not a known "

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import json
 import os
@@ -134,6 +135,31 @@ def _dependency_closure(roots: set[str]) -> set[str]:
     return seen
 
 
+def _closure_by_group(declared: dict[str, str]) -> dict[str, set[str]]:
+    """For every package reachable from ANY declared root, which
+    declared group(s) it is reachable FROM (not just whether it is
+    itself directly declared).
+
+    Codex#9 (round 8, 2026-09-12), reproduced exactly as reported: a
+    transitive-only package (never itself in pyproject.toml, e.g.
+    pydantic_core, only reachable via pydantic) got `group = None` from
+    `declared.get(norm)` and was therefore always marked CycloneDX scope
+    "optional" - including one required at runtime through a "runtime"
+    root. Walking the closure separately per declared group and taking
+    the union of "which roots' closures reach this name" is what actually
+    determines whether a package is required, not merely whether it
+    happens to also be a *direct* pyproject.toml entry.
+    """
+    roots_by_group: dict[str, set[str]] = {}
+    for name, group in declared.items():
+        roots_by_group.setdefault(group, set()).add(name)
+    reachable_from: dict[str, set[str]] = {}
+    for group, roots in roots_by_group.items():
+        for name in _dependency_closure(roots):
+            reachable_from.setdefault(name, set()).add(group)
+    return reachable_from
+
+
 def build_sbom() -> dict[str, object]:
     # Codex cross-review finding #12 (2026-09-11): a hand-maintained allowlist
     # of "root" package names omitted every installed TRANSITIVE dependency
@@ -143,7 +169,8 @@ def build_sbom() -> dict[str, object]:
     # installed in this (dedicated project) environment instead, deduped by
     # name in case of duplicate metadata entries.
     declared = declared_dependencies()
-    closure = _dependency_closure(set(declared))
+    reachable_from = _closure_by_group(declared)
+    closure = set(reachable_from)
     seen: set[str] = set()
     installed_normalized: set[str] = set()
     components = []
@@ -159,7 +186,16 @@ def build_sbom() -> dict[str, object]:
             continue
         norm = _normalize(name)
         installed_normalized.add(norm)
-        group = declared.get(norm)
+        # Codex#9 (round 8, 2026-09-12): a package's effective group is
+        # the union of its own direct pyproject.toml declaration (if any)
+        # and every group whose closure reaches it transitively - "runtime"
+        # wins if present in that union, since that is what actually makes
+        # a package required, regardless of it also being e.g. a direct
+        # dev-only entry.
+        groups = set(reachable_from.get(norm, set()))
+        if norm in declared:
+            groups.add(declared[norm])
+        group = "runtime" if "runtime" in groups else (min(groups) if groups else None)
         component: dict[str, object] = {
             "type": "library",
             "name": name,
@@ -264,9 +300,25 @@ def main(argv: list[str] | None = None) -> int:
         # Codex#8 (round 7, 2026-09-12): write atomically (temp file + one
         # os.replace) so a crash or a concurrent reader never observes a
         # half-written sbom.json.
+        #
+        # Codex#10 (round 8, 2026-09-12), reproduced exactly as reported:
+        # `Path.write_text()` opens its target the normal way, following a
+        # symlink there - precreating this predictable `sbom.json.tmp.<pid>`
+        # path as a symlink to an unrelated file caused this write to
+        # silently overwrite that unrelated TARGET before the os.replace()
+        # below ever ran. O_CREAT|O_EXCL|O_NOFOLLOW makes the open itself
+        # fail (FileExistsError/ELOOP) instead of writing through anything
+        # already there, symlink or otherwise.
         tmp = args.out.with_suffix(args.out.suffix + f".tmp.{os.getpid()}")
-        tmp.write_text(json.dumps(sbom, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, args.out)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(sbom, indent=2) + "\n")
+            os.replace(tmp, args.out)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
         print(f"wrote {args.out}")
     return 0
 

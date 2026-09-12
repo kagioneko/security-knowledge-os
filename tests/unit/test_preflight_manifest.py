@@ -50,6 +50,25 @@ def test_returns_none_when_the_commit_line_is_missing() -> None:
     assert preflight._parse_manifest_commit("- Tracked files: **199**\n") is None
 
 
+def test_parses_the_claimed_component_count() -> None:
+    """Regression for Codex#9 (round 8, 2026-09-12), reproduced exactly as
+    reported: the tracked sbom.json had 62 components while the manifest's
+    own "Dependencies" section said 29 - only the tracked-files/tests
+    counts were kept in sync by an automated check, not this one."""
+    text = "## Dependencies (`sbom.json`)\n\n29 components — every distribution actually\n"
+    assert preflight._parse_manifest_component_count(text) == 29
+
+
+def test_returns_none_when_the_component_count_line_is_missing() -> None:
+    assert preflight._parse_manifest_component_count("- Tracked files: **199**\n") is None
+
+
+def test_real_manifest_component_count_line_is_parseable() -> None:
+    manifest = preflight.ROOT / "PUBLICATION_MANIFEST.md"
+    count = preflight._parse_manifest_component_count(manifest.read_text(encoding="utf-8"))
+    assert count is not None and count > 0
+
+
 def test_head_itself_is_a_known_ancestor_of_head() -> None:
     import subprocess
 

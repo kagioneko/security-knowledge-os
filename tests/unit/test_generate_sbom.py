@@ -12,6 +12,8 @@ import sys
 from importlib import metadata
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from generate_sbom import build_sbom, declared_dependencies, main  # noqa: E402
 
@@ -121,6 +123,21 @@ def test_sbom_flags_a_declared_dependency_missing_from_this_environment() -> Non
         assert "uvicorn" in coverage
 
 
+def test_a_transitive_only_package_required_at_runtime_is_marked_required() -> None:
+    """Regression for Codex#9 (round 8, 2026-09-12), reproduced exactly as
+    reported: a transitive-only package (never itself a direct
+    pyproject.toml entry, e.g. pydantic_core - only reachable via
+    pydantic) got `group = declared.get(norm)` = None and was therefore
+    always marked CycloneDX scope "optional", even though it is required
+    at runtime through pydantic (a "runtime" root)."""
+    by_name = {c["name"].lower(): c for c in build_sbom()["components"]}
+    assert "pydantic_core" in by_name, "test assumption: still an installed dependency"
+    assert by_name["pydantic_core"]["scope"] == "required"
+    assert by_name["pydantic_core"]["properties"] == [
+        {"name": "skos:dependency-group", "value": "runtime"}
+    ]
+
+
 def test_sbom_components_are_tagged_with_their_declared_scope_and_group() -> None:
     by_name = {c["name"].lower(): c for c in build_sbom()["components"]}
     assert by_name["pydantic"]["scope"] == "required"
@@ -180,6 +197,27 @@ def test_require_complete_never_overwrites_a_previously_valid_sbom(
     assert exit_code == 1
     assert out.read_text(encoding="utf-8") == '{"victim": true}'  # untouched
     assert list(tmp_path.glob("sbom.json.tmp.*")) == []  # no stray temp file left behind
+
+
+def test_main_rejects_a_precreated_symlinked_temp_path(tmp_path) -> None:
+    """Regression for Codex#10 (round 8, 2026-09-12), reproduced exactly as
+    reported: `Path.write_text()` on the temp path follows a symlink
+    planted there - precreating the predictable `sbom.json.tmp.<pid>` path
+    as a symlink to an unrelated file caused the write to silently
+    overwrite that unrelated TARGET before the atomic os.replace() ran."""
+    import os
+
+    out = tmp_path / "sbom.json"
+    unrelated = tmp_path / "unrelated.txt"
+    unrelated.write_text("not an sbom", encoding="utf-8")
+    tmp_for_pid = out.with_suffix(out.suffix + f".tmp.{os.getpid()}")
+    tmp_for_pid.symlink_to(unrelated)
+
+    with pytest.raises(OSError):
+        main(["--out", str(out)])
+
+    assert unrelated.read_text(encoding="utf-8") == "not an sbom", "symlink TARGET must be intact"
+    assert not out.exists()
 
 
 def test_check_mode_does_not_write_the_output_file(tmp_path) -> None:
