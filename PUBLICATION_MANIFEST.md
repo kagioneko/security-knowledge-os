@@ -105,15 +105,20 @@ Safe-test templates (4): `ST-IPI-001`, `ST-MEM-001`, `ST-TOOL-001`, `ST-CRED-001
 silently omitted transitive dependencies). Core install = `pydantic` +
 `pyyaml`; the rest are `[api]`/`[llm]` extras or dev/test-only. Zero
 `UNKNOWN` licences. Licences present: MIT, BSD (2/3-Clause), Apache-2.0,
-PSF-2.0 — permissive — plus **`pathspec` under MPL-2.0** (Codex finding #10,
-round 2, 2026-09-11: an earlier draft of this doc said "all permissive",
-which was inaccurate). MPL-2.0 is file-level (weak) copyleft, not permissive,
-but it does not require this Apache-2.0 project to relicense anything — its
-copyleft obligations attach only to `pathspec`'s own source files, and
-`pathspec` is a transitive dependency of `ruff` (a **dev-only** tool; it is
-never imported by, bundled with, or distributed as part of `app/`). None of
-the 29 components conflict with Apache-2.0 distribution of this project.
-Full list in `sbom.json`.
+PSF-2.0 — permissive — plus **`pathspec` and `certifi`, both under MPL-2.0**
+(Codex finding #10, round 2, 2026-09-11, corrected round 3, 2026-09-12: an
+earlier draft said "all permissive"; the first correction still missed
+`certifi` and misattributed `pathspec`'s dependency chain). MPL-2.0 is
+file-level (weak) copyleft, not permissive, but it does not require this
+Apache-2.0 project to relicense anything — its copyleft obligations attach
+only to each package's own source files. `certifi` is a transitive
+dependency of `httpx`/`httpcore` (the `[llm]` extra's HTTP client);
+`pathspec` is a transitive dependency of `mypy` (**not** `ruff`, which
+declares no dependencies of its own per installed-environment metadata) —
+both dev/test-only or extras, never imported by, bundled with, or
+distributed as part of `app/`'s core install. None of the 29 components
+conflict with Apache-2.0 distribution of this project. Full list in
+`sbom.json`.
 
 ## §24 evaluation (internal fixtures — not real-world performance)
 
