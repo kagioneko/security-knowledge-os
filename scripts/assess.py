@@ -13,16 +13,23 @@ import argparse
 import sys
 from pathlib import Path
 
-import yaml
+from pydantic import ValidationError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings  # noqa: E402
+from app.ingestion.parser import FrontMatterError, safe_load_bounded  # noqa: E402
 from app.llm.factory import get_client  # noqa: E402
 from app.models.assessment import AssessmentInput  # noqa: E402
 from app.reviewer.assess import assess  # noqa: E402
 from app.reviewer.rule_loader import load_rules  # noqa: E402
 from app.storage.db import connect  # noqa: E402
+
+# Codex#8 (round 11, 2026-09-13): see cli.py's own comment on the identical
+# fix there - a hand-authored assessment YAML file is at most a few KB in
+# real use (AssessmentInput's own post-parse total-size validator caps the
+# parsed result at 300,000 bytes).
+_MAX_ASSESSMENT_YAML_BYTES = 500_000
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,7 +44,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"input not found: {args.input}", file=sys.stderr)
         return 2
 
-    inp = AssessmentInput.model_validate(yaml.safe_load(args.input.read_text(encoding="utf-8")))
+    # Codex#8 (round 11, 2026-09-13), reproduced exactly as reported: a bare
+    # `yaml.safe_load()` here read the complete file before AssessmentInput's
+    # own post-parse total-size validator ever ran, and nothing caught
+    # yaml.YAMLError/RecursionError/ValidationError - a malformed or
+    # hostile file escaped as a raw traceback.
+    try:
+        raw = safe_load_bounded(
+            args.input.read_text(encoding="utf-8"),
+            max_bytes=_MAX_ASSESSMENT_YAML_BYTES,
+            what="assessment file",
+        )
+        if not isinstance(raw, dict):
+            raise FrontMatterError(f"assessment file must be a mapping, got {type(raw).__name__}")
+        inp = AssessmentInput.model_validate(raw)
+    except (FrontMatterError, ValidationError) as exc:
+        print(f"invalid assessment file: {exc}", file=sys.stderr)
+        return 2
     catalogue = load_rules(args.rules)
     client = get_client(settings)
 

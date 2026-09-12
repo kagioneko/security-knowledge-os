@@ -20,9 +20,10 @@ import json
 import sys
 from pathlib import Path
 
-import yaml
+from pydantic import ValidationError
 
 from app.config import Settings
+from app.ingestion.parser import FrontMatterError, safe_load_bounded
 from app.ingestion.validator import Level, iter_knowledge_files, validate_tree
 from app.llm.factory import get_client
 from app.models.assessment import AssessmentInput
@@ -36,6 +37,12 @@ from app.retrieval.index import reindex_atomic
 from app.reviewer.report import build_report, render_text
 from app.reviewer.rule_loader import RuleLoadError, load_rules
 from app.storage.db import connect
+
+# Codex#8 (round 11, 2026-09-13): a hand-authored assessment YAML file is at
+# most a few KB in real use (AssessmentInput's own post-parse total-size
+# validator caps the parsed result at 300,000 bytes); bounds the raw text
+# handed to the YAML parser regardless of how it would blow up.
+_MAX_ASSESSMENT_YAML_BYTES = 500_000
 
 _FIXTURES = [
     "V-001-indirect-injection-auto-email",
@@ -54,7 +61,25 @@ _FIXTURES = [
 
 
 def _load_input(path: Path) -> AssessmentInput:
-    return AssessmentInput.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+    # Codex#8 (round 11, 2026-09-13), reproduced exactly as reported: a bare
+    # `yaml.safe_load()` here read the complete file before
+    # AssessmentInput's own post-parse total-size validator ever ran -
+    # SafeLoader prevents Python object construction but not parser
+    # resource exhaustion (deeply nested flow collections, a large merge/
+    # alias expansion), and nothing here caught yaml.YAMLError/
+    # RecursionError/pydantic ValidationError, so a malformed or hostile
+    # file escaped as a raw traceback instead of a clean exit code.
+    # safe_load_bounded() (already used for rule/safe-test/knowledge front
+    # matter) converts every way PyYAML can blow up into FrontMatterError;
+    # main() below converts that and ValidationError into exit code 2.
+    raw = safe_load_bounded(
+        path.read_text(encoding="utf-8"),
+        max_bytes=_MAX_ASSESSMENT_YAML_BYTES,
+        what="assessment file",
+    )
+    if not isinstance(raw, dict):
+        raise FrontMatterError(f"assessment file must be a mapping, got {type(raw).__name__}")
+    return AssessmentInput.model_validate(raw)
 
 
 def _cmd_validate_knowledge(args: argparse.Namespace, s: Settings) -> int:
@@ -273,6 +298,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except json.JSONDecodeError as exc:
         print(f"invalid JSON: {exc}", file=sys.stderr)
+        return 2
+    # Codex#8 (round 11, 2026-09-13): a malformed/hostile assessment YAML
+    # file (via _load_input()) used to escape as a raw traceback instead of
+    # this CLI's normal exit-code-2 usage-error path.
+    except (FrontMatterError, ValidationError) as exc:
+        print(f"invalid assessment file: {exc}", file=sys.stderr)
         return 2
 
 

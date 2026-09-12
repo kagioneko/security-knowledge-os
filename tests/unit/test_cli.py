@@ -82,6 +82,41 @@ def test_assess_json_output(capsys: pytest.CaptureFixture[str]) -> None:
     assert "human_review_required" in payload["result"]
 
 
+def test_assess_deeply_nested_yaml_exits_cleanly_instead_of_raising(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Regression for Codex#8 (round 11, 2026-09-13), reproduced exactly as
+    reported: `skos assess` parsed the input file with a bare
+    `yaml.safe_load()` and caught neither yaml.YAMLError, RecursionError,
+    nor pydantic ValidationError - hundreds of nested flow-style brackets
+    drove PyYAML's composer past Python's recursion limit and raised an
+    uncaught RecursionError straight out of the CLI instead of the normal
+    exit-code-2 usage-error path."""
+    nested = "name: " + "[" * 2000 + "]" * 2000
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(nested, encoding="utf-8")
+
+    code = main(["assess", str(bad)])
+
+    assert code == 2
+    assert "invalid assessment file" in capsys.readouterr().err
+
+
+def test_assess_oversized_yaml_exits_cleanly_instead_of_raising(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Same protection as above, for the size dimension: a file well over
+    AssessmentInput's own 300,000-byte post-parse total-size limit must be
+    rejected before the YAML parser ever runs on it, not after."""
+    huge = tmp_path / "huge.yaml"
+    huge.write_text("name: " + "x" * 600_000, encoding="utf-8")
+
+    code = main(["assess", str(huge)])
+
+    assert code == 2
+    assert "invalid assessment file" in capsys.readouterr().err
+
+
 def test_assess_policy_blocked_exit_three(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

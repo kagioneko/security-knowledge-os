@@ -13,12 +13,13 @@ import argparse
 import sys
 from pathlib import Path
 
-import yaml
+from pydantic import ValidationError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings  # noqa: E402
 from app.eval.metrics import LabelledResult, compute_metrics  # noqa: E402
+from app.ingestion.parser import FrontMatterError, safe_load_bounded  # noqa: E402
 from app.models.assessment import AssessmentInput  # noqa: E402
 from app.policy.safe_test import load_safe_test_templates  # noqa: E402
 from app.reviewer.assess import assess  # noqa: E402
@@ -26,6 +27,12 @@ from app.reviewer.rule_loader import load_rules  # noqa: E402
 from app.storage.db import connect  # noqa: E402
 
 _LABELS = {"vulnerable", "safe", "unknown"}
+
+# Codex#8 (round 11, 2026-09-13): see cli.py's own comment on the identical
+# fix there - a hand-authored assessment YAML file is at most a few KB in
+# real use (AssessmentInput's own post-parse total-size validator caps the
+# parsed result at 300,000 bytes).
+_MAX_ASSESSMENT_YAML_BYTES = 500_000
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,9 +56,23 @@ def main(argv: list[str] | None = None) -> int:
             label = path.parent.name
             if label not in _LABELS:
                 continue
-            inp = AssessmentInput.model_validate(
-                yaml.safe_load(path.read_text(encoding="utf-8"))
-            )
+            # Codex#8 (round 11, 2026-09-13), reproduced exactly as reported:
+            # a bare yaml.safe_load() here had none of the bounds/error
+            # handling rule/safe-test/knowledge YAML already gets.
+            try:
+                raw = safe_load_bounded(
+                    path.read_text(encoding="utf-8"),
+                    max_bytes=_MAX_ASSESSMENT_YAML_BYTES,
+                    what="assessment fixture",
+                )
+                if not isinstance(raw, dict):
+                    raise FrontMatterError(
+                        f"{path}: must be a mapping, got {type(raw).__name__}"
+                    )
+                inp = AssessmentInput.model_validate(raw)
+            except (FrontMatterError, ValidationError) as exc:
+                print(f"skipping invalid fixture {path}: {exc}", file=sys.stderr)
+                continue
             result = assess(
                 inp, catalogue, settings=settings, index_conn=conn, safe_tests=safe_tests
             )
