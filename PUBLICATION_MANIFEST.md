@@ -3,15 +3,15 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `bccbf6d` (round-7 cross-review findings addressed, **not yet pushed**)
+- Commit: `e8be3a0` (round-8 cross-review findings addressed, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **206**
-- Tests: **468** items (467 pass, 1 skip = JA-R02)
-- `scripts/preflight.py`: **PASS** (now also runs `pip-audit`, round 7
-  Codex#13, and enforces the SBOM's dependency-closure/license fixes,
-  round 7 Codex#9)
+- Tracked files: **207**
+- Tests: **496** items (495 pass, 1 skip = JA-R02)
+- `scripts/preflight.py`: **PASS** (now also checks the manifest's own SBOM
+  component count against `sbom.json`, round 8 Codex#9, and that
+  `constraints.txt` is present with pinned versions, round 8 Codex#15)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **seven rounds**, 2026-09-11 -- 2026-09-12. Rounds 1-2
+  audit), **eight rounds**, 2026-09-11 -- 2026-09-12. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -42,8 +42,32 @@ review; regenerate with `git ls-files` after any change.
   a regression test confirmed to fail against the pre-fix code (or, for
   the two pure dependency-management items, verified directly) — see
   `git log` commit messages ("fix round-7 Codex#…") for the itemized
-  mapping. An eighth round re-reviewing these round-7 fixes is the next
-  step before push.
+  mapping. Round 8 (2026-09-12, audited commit `46e3a00`): Codex
+  **CHANGES-REQUIRED** again (15 findings independent of round 7's: 2 HIGH —
+  a rule with a trigger `conditions` block but empty `checks` and
+  `manual_review=False` still loaded and, once triggered with full
+  evidence, produced zero findings and a silent PASS (two real shipped
+  rules had this exact shape), and the round-7 snapshot copy was still not
+  atomic against a write landing (and even being reverted) during the
+  read itself, nor against directory entries changing mid-walk; 9 MEDIUM —
+  cross-port localhost Origins passed the CSRF gate, DB/lock setup
+  followed symlinks and chmod'd shared directories, rule/safe-test
+  loaders retained the round-7 snapshot fix's ancestor-directory
+  protection gap themselves, `knowledge_revision`/`fts_shadow_digest`
+  were checked for presence but not shape, README overstated the "no raw
+  secret" guarantee beyond what the schema provides, store eviction was
+  entry-count- not byte-based (~1.5 GB worst case), SBOM scope/group
+  didn't account for a package reachable only transitively through a
+  required root, the SBOM's own atomic-write temp path followed a
+  symlink, secret-scan's suffix allowlist and decode-failure handling
+  both failed open; 4 LOW — per-key answer-lock eviction could serve a
+  fresh, uncontended lock for a key still held elsewhere, request-size
+  enforcement was bypassed on a bodyless route, several serialized report
+  models lacked `extra="forbid"`, dependency resolution had no reviewed
+  lock) — **all 15 fixed**, each with a regression test confirmed to fail
+  against the pre-fix code via `git stash` — see `git log` commit messages
+  ("fix round-8 Codex#…") for the itemized mapping. A ninth round
+  re-reviewing these round-8 fixes is the next step before push.
 
 ## Tracked files by area
 
@@ -134,11 +158,15 @@ Safe-test templates (4): `ST-IPI-001`, `ST-MEM-001`, `ST-TOOL-001`, `ST-CRED-001
 
 ## Dependencies (`sbom.json`)
 
-29 components — every distribution actually installed in the project `.venv`
-(Codex finding #12 fixed the previous hand-maintained allowlist, which
-silently omitted transitive dependencies). Core install = `pydantic` +
-`pyyaml`; the rest are `[api]`/`[llm]` extras or dev/test-only. Zero
-`UNKNOWN` licences. Licences present: MIT, BSD (2/3-Clause), Apache-2.0,
+62 components — the project's actual dependency closure (Codex#9, round 7:
+walked outward from every declared root rather than listing every
+installed distribution, which also included `pip` and unrelated
+environment packages; Codex#9, round 8: a package reachable only
+transitively through a required "runtime" root, such as `pydantic_core`
+via `pydantic`, is now also marked CycloneDX scope "required", not just
+one that is itself a *direct* pyproject.toml entry). Core install =
+`pydantic` + `pyyaml`; the rest are `[api]`/`[llm]` extras or dev/test-only.
+Zero `UNKNOWN` licences. Licences present: MIT, BSD (2/3-Clause), Apache-2.0,
 PSF-2.0 — permissive — plus **`pathspec` and `certifi`, both under MPL-2.0**
 (Codex finding #10, round 2, 2026-09-11, corrected round 3, 2026-09-12: an
 earlier draft said "all permissive"; the first correction still missed

@@ -3,7 +3,7 @@
   "specVersion": "1.5",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-09-12T11:57:43.945430+00:00",
+    "timestamp": "2026-09-12T16:08:32.528868+00:00",
     "component": {
       "type": "application",
       "name": "security-knowledge-os",
@@ -41,7 +41,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "api"
+        }
+      ]
     },
     {
       "type": "library",
@@ -55,7 +61,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "required",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "runtime"
+        }
+      ]
     },
     {
       "type": "library",
@@ -89,7 +101,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "api"
+        }
+      ]
     },
     {
       "type": "library",
@@ -103,7 +121,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -117,7 +141,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -131,7 +161,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -145,7 +181,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -159,7 +201,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -173,7 +221,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "api"
+        }
+      ]
     },
     {
       "type": "library",
@@ -187,7 +241,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -201,7 +261,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -215,7 +281,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "llm"
+        }
+      ]
     },
     {
       "type": "library",
@@ -249,7 +321,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "api"
+        }
+      ]
     },
     {
       "type": "library",
@@ -283,7 +361,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -297,7 +381,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "llm"
+        }
+      ]
     },
     {
       "type": "library",
@@ -331,7 +421,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "llm"
+        }
+      ]
     },
     {
       "type": "library",
@@ -345,7 +441,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "api"
+        }
+      ]
     },
     {
       "type": "library",
@@ -359,7 +461,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -373,7 +481,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "llm"
+        }
+      ]
     },
     {
       "type": "library",
@@ -387,7 +501,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -401,7 +521,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -415,7 +541,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -429,7 +561,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -443,7 +581,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -477,7 +621,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -491,7 +641,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -505,7 +661,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "build"
+        }
+      ]
     },
     {
       "type": "library",
@@ -519,7 +681,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "build"
+        }
+      ]
     },
     {
       "type": "library",
@@ -533,7 +701,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -547,7 +721,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -561,7 +741,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -595,7 +781,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -609,7 +801,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "build"
+        }
+      ]
     },
     {
       "type": "library",
@@ -623,7 +821,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -657,7 +861,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "required",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "runtime"
+        }
+      ]
     },
     {
       "type": "library",
@@ -671,7 +881,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -685,7 +901,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -739,7 +961,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -753,7 +981,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -787,7 +1021,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "llm"
+        }
+      ]
     },
     {
       "type": "library",
@@ -801,7 +1041,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -815,7 +1061,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "api"
+        }
+      ]
     },
     {
       "type": "library",
@@ -829,7 +1081,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "build"
+        }
+      ]
     },
     {
       "type": "library",
@@ -843,7 +1101,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
@@ -857,7 +1121,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "build"
+        }
+      ]
     },
     {
       "type": "library",
@@ -871,7 +1141,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "build"
+        }
+      ]
     },
     {
       "type": "library",
@@ -885,7 +1161,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "llm"
+        }
+      ]
     },
     {
       "type": "library",
@@ -919,7 +1201,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "required",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "runtime"
+        }
+      ]
     },
     {
       "type": "library",
@@ -933,7 +1221,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "required",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "runtime"
+        }
+      ]
     },
     {
       "type": "library",
@@ -947,7 +1241,13 @@
           }
         }
       ],
-      "scope": "optional"
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
+        }
+      ]
     },
     {
       "type": "library",
