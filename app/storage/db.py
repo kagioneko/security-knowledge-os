@@ -168,10 +168,38 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
         # is not a symlink (and is regular-file-safe to chmod) BEFORE
         # sqlite3 ever opens it - `open_no_follow` raises OSError (ELOOP)
         # rather than silently creating/opening through a planted symlink.
-        os.close(open_no_follow(db_path, 0o600))
+        #
+        # Codex#3 (round 9, 2026-09-12), reproduced exactly as reported:
+        # this descriptor was immediately closed, and `sqlite3.connect()`
+        # below re-opens the same PATHNAME from scratch - a parent
+        # directory an attacker can write to could substitute a symlink
+        # or a different regular file for db_path in that window, and
+        # Python's stdlib `sqlite3` module has no API to connect through
+        # an already-open, already-verified file descriptor the way
+        # `open_no_follow`'s own no-follow check can. Recording the
+        # verified (st_dev, st_ino) here and comparing it against what
+        # SQLite actually ended up opening (below, once connected) cannot
+        # eliminate the race - no fd-based API is available to do that -
+        # but it detects a substitution that happened in this window
+        # instead of silently trusting whatever sqlite3.connect() found.
+        pre_fd = open_no_follow(db_path, 0o600)
+        pre_stat = os.fstat(pre_fd)
+        pre_identity = (pre_stat.st_dev, pre_stat.st_ino)
+        os.close(pre_fd)
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+
+    if str(db_path) != ":memory:":
+        opened_path = conn.execute("PRAGMA database_list").fetchone()[2]
+        post_stat = os.stat(opened_path)
+        post_identity = (post_stat.st_dev, post_stat.st_ino)
+        if pre_identity != post_identity:
+            conn.close()
+            raise ForeignDatabaseError(
+                f"{db_path}: opened a different file than the one just verified "
+                "(possible symlink/file substitution between check and use)"
+            )
     if not _has_fts5(conn):
         conn.close()
         raise FTS5Unavailable(

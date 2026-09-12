@@ -103,6 +103,44 @@ def test_connect_rejects_a_symlinked_db_path(tmp_path: Path) -> None:
     assert stat.S_IMODE(target.stat().st_mode) == 0o644, "the symlink TARGET must be untouched"
 
 
+def test_connect_detects_a_file_swapped_between_verification_and_sqlite_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#3 (round 9, 2026-09-12), reproduced exactly as
+    reported: connect() opens db_path with O_NOFOLLOW, immediately closes
+    that descriptor, and then reopens the same PATHNAME through
+    sqlite3.connect() - a parent directory an attacker can write to could
+    substitute a different file for db_path in that window; nothing
+    detected it. Monkeypatching sqlite3.connect (called immediately after
+    the verified descriptor is closed) to swap the file first simulates
+    exactly that."""
+    import sqlite3 as sqlite3_module
+
+    import app.storage.db as db_module
+
+    db_path = tmp_path / "idx.sqlite"
+    connect(db_path).close()  # a real, pre-existing SKOS index
+
+    # a DIFFERENT file that is ALSO a legitimate SKOS index (correct
+    # application_id) - the substitution must be caught by identity
+    # (st_dev, st_ino) alone, not by the pre-existing application_id
+    # check (Codex#4, round 6), which this file would satisfy too.
+    other = tmp_path / "other.sqlite"
+    connect(other).close()
+
+    real_connect = sqlite3_module.connect
+
+    def swap_then_connect(path: str, *a: object, **kw: object) -> sqlite3_module.Connection:
+        if path == str(db_path):
+            os.replace(other, db_path)
+        return real_connect(path, *a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(db_module.sqlite3, "connect", swap_then_connect)
+
+    with pytest.raises(ForeignDatabaseError, match="different file"):
+        connect(db_path)
+
+
 def test_connect_does_not_chmod_a_foreign_database_before_rejecting_it(
     tmp_path: Path,
 ) -> None:
