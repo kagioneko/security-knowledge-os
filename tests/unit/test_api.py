@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -162,6 +163,34 @@ def test_answers_repeated_identical_patch_against_same_parent_is_idempotent(
     assert len(ids) == 1  # all three calls returned the SAME assessment
     history = client.get(f"/v1/assessments/{next(iter(ids))}/history").json()
     assert [h["revision"] for h in history] == [1, 2]  # only one new revision, not three
+
+
+def test_concurrent_assessment_admission_is_bounded() -> None:
+    """Regression for Codex#6 (round 9, 2026-09-12), reproduced exactly as
+    reported: the loopback checks stop remote/CSRF callers, but nothing
+    bounded how many assessments (each a real rule-load, and a real
+    provider call when an LLM is configured) could run concurrently -
+    a burst of local requests could occupy the whole worker pool or drive
+    unbounded concurrent provider spend."""
+    import app.main as main_module
+
+    original_max = main_module._MAX_CONCURRENT_ASSESSMENTS
+    main_module._MAX_CONCURRENT_ASSESSMENTS = 1
+    main_module._ASSESSMENT_SEMAPHORE = main_module.threading.Semaphore(1)
+    try:
+        acquired_first = main_module._ASSESSMENT_SEMAPHORE.acquire(blocking=False)
+        assert acquired_first
+        try:
+            with pytest.raises(HTTPException) as excinfo:
+                main_module._run(
+                    main_module.AssessmentInput(name="t"), main_module._settings()
+                )
+            assert excinfo.value.status_code == 429
+        finally:
+            main_module._ASSESSMENT_SEMAPHORE.release()
+    finally:
+        main_module._MAX_CONCURRENT_ASSESSMENTS = original_max
+        main_module._ASSESSMENT_SEMAPHORE = main_module.threading.Semaphore(original_max)
 
 
 def test_answers_cache_invalidated_when_rules_change(

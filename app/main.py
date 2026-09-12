@@ -202,6 +202,22 @@ _STORE_TOTAL_BYTES = 0
 _MAX_ANSWER_CACHE_ENTRIES = 5000
 _ANSWER_CACHE: dict[tuple[object, ...], str] = {}
 
+# Codex#6 (round 9, 2026-09-12), reproduced exactly as reported: the loopback
+# checks stop remote and browser-CSRF callers, but any local OS user/process
+# could still issue unlimited unique assessments (each a real rule-load, and
+# a real provider call when an LLM is configured) or oscillating answer
+# chains with nothing bounding total concurrent work - store size caps and
+# identical-request dedup do not limit request RATE or CONCURRENCY. A full
+# auth + token-budget system (Codex's own suggested fix) is a real feature,
+# not a bug fix, and is out of scope here - this is the narrower, concrete
+# control available without one: a hard cap on how many assessments can be
+# IN FLIGHT at once, rejecting immediately (429) rather than queuing, so a
+# burst of concurrent requests cannot occupy the whole worker pool or drive
+# unbounded concurrent provider spend. It does not bound total request RATE
+# over time or per-request cost - only concurrency.
+_MAX_CONCURRENT_ASSESSMENTS = 10
+_ASSESSMENT_SEMAPHORE = threading.Semaphore(_MAX_CONCURRENT_ASSESSMENTS)
+
 # Codex#5 (round 5, 2026-09-12), reproduced exactly as reported: with
 # `_MAX_STORE_ENTRIES = 1`, 32 threads calling `_store_put` concurrently (each
 # FastAPI sync endpoint runs in its own worker thread) produced
@@ -431,18 +447,36 @@ def _settings() -> Settings:
 
 
 def _run(inp: AssessmentInput, settings: Settings) -> AssessmentReport:
-    catalogue = load_rules(settings.rules_root)
-    safe_tests = load_safe_test_templates(settings.safe_tests_root)
-    client = get_client(settings)
-    db_path = Path(settings.db_path)
-    conn = connect(db_path, read_only=True) if db_path.exists() else None
-    try:
-        return build_report(
-            inp, catalogue, settings=settings, client=client, index_conn=conn, safe_tests=safe_tests
+    # Codex#6 (round 9, 2026-09-12): bound how many assessments (each a real
+    # rule-load, and a real provider call when an LLM is configured) can run
+    # concurrently - see _ASSESSMENT_SEMAPHORE above for what this does and
+    # does not cover.
+    if not _ASSESSMENT_SEMAPHORE.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many assessments in flight (max {_MAX_CONCURRENT_ASSESSMENTS}); "
+            "retry shortly",
         )
+    try:
+        catalogue = load_rules(settings.rules_root)
+        safe_tests = load_safe_test_templates(settings.safe_tests_root)
+        client = get_client(settings)
+        db_path = Path(settings.db_path)
+        conn = connect(db_path, read_only=True) if db_path.exists() else None
+        try:
+            return build_report(
+                inp,
+                catalogue,
+                settings=settings,
+                client=client,
+                index_conn=conn,
+                safe_tests=safe_tests,
+            )
+        finally:
+            if conn is not None:
+                conn.close()
     finally:
-        if conn is not None:
-            conn.close()
+        _ASSESSMENT_SEMAPHORE.release()
 
 
 def _knowledge_revision(settings: Settings) -> str | None:
