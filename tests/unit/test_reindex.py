@@ -7,6 +7,7 @@ fail-closed choice, so these tests use clean corpora for the success path.
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 import pytest
@@ -545,6 +546,28 @@ def test_build_index_rejects_a_file_as_root(tmp_path: Path) -> None:
     a_file.write_text("not a knowledge root", encoding="utf-8")
     with pytest.raises(IndexBuildError, match="not a directory"):
         build_index(a_file, tmp_path / "idx.sqlite")
+
+
+def test_reindex_creates_the_index_directory_and_file_non_world_readable(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#4 (round 7, 2026-09-12), reproduced exactly as
+    reported: a local build produced a world-readable (0o644) db and
+    (0o664) lock file inside a default-mode directory - the index can hold
+    every non-secret classification, including confidential, even when
+    runtime retrieval never returns confidential results. Another local
+    user reading the SQLite file directly bypasses the classification
+    filter entirely."""
+    db = tmp_path / "sub" / "idx.sqlite"
+    report = reindex_atomic(corpus_alt_root, db)
+    assert report.ok
+
+    dir_mode = stat.S_IMODE(db.parent.stat().st_mode)
+    db_mode = stat.S_IMODE(db.stat().st_mode)
+    lock_mode = stat.S_IMODE(db.with_suffix(db.suffix + ".lock").stat().st_mode)
+    assert dir_mode == 0o700, oct(dir_mode)
+    assert db_mode == 0o600, oct(db_mode)
+    assert lock_mode == 0o600, oct(lock_mode)
 
 
 def test_reindex_snapshot_is_immune_to_source_mutation_after_it_is_taken(

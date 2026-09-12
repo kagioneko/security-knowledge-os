@@ -198,7 +198,11 @@ def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexRe
     # get a ReindexReport back, not an arbitrary exception type.
     try:
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            os.chmod(db_path.parent, 0o700)
         lock_file = open(lock_path, "a", encoding="utf-8")  # noqa: SIM115 - `with` below
+        with contextlib.suppress(OSError):
+            os.chmod(lock_path, 0o600)
     except OSError as exc:
         return ReindexReport(
             decision=stop(

@@ -6,6 +6,8 @@ from scratch on every ingest, so the FTS table is contentless.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import sqlite3
 from pathlib import Path
 
@@ -114,9 +116,21 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
         return conn
 
     if str(db_path) != ":memory:":
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        # Codex#4 (round 7, 2026-09-12), reproduced exactly as reported: the
+        # index can hold every non-secret classification, including
+        # `confidential`, even when runtime retrieval never returns
+        # confidential results - a local build produced a world-readable
+        # (0o644) db and directory. Another local user reading the SQLite
+        # file directly bypasses the classification filter entirely.
+        parent = Path(db_path).parent
+        parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):  # best-effort on filesystems without POSIX perms
+            os.chmod(parent, 0o700)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    if str(db_path) != ":memory:":
+        with contextlib.suppress(OSError):
+            os.chmod(db_path, 0o600)
     if not _has_fts5(conn):
         conn.close()
         raise FTS5Unavailable(
