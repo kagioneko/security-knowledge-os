@@ -44,6 +44,7 @@ from app.reviewer.answers import AnswerValidationError, apply_patch
 from app.reviewer.report import build_report, render_text
 from app.reviewer.rule_loader import load_rules
 from app.storage.db import connect
+from app.storage.repository import ChunkRepository
 
 app = FastAPI(title="Security Knowledge OS", version="0.1.0")
 _logger = logging.getLogger(__name__)
@@ -199,7 +200,7 @@ _STORE_TOTAL_BYTES = 0
 # _STORE; a cache miss (evicted or never seen) just re-runs, same as before -
 # this is a cost/dedup optimization, not a correctness requirement.
 _MAX_ANSWER_CACHE_ENTRIES = 5000
-_ANSWER_CACHE: dict[tuple[str, str], str] = {}
+_ANSWER_CACHE: dict[tuple[object, ...], str] = {}
 
 # Codex#5 (round 5, 2026-09-12), reproduced exactly as reported: with
 # `_MAX_STORE_ENTRIES = 1`, 32 threads calling `_store_put` concurrently (each
@@ -238,7 +239,7 @@ def _store_put(assessment_id: str, entry: tuple[AssessmentInput, AssessmentRepor
             _STORE_TOTAL_BYTES -= _STORE_ENTRY_BYTES.pop(oldest, 0)
 
 
-def _answer_cache_put(key: tuple[str, str], assessment_id: str) -> None:
+def _answer_cache_put(key: tuple[object, ...], assessment_id: str) -> None:
     with _ANSWER_CACHE_GUARD:
         _ANSWER_CACHE[key] = assessment_id
         while len(_ANSWER_CACHE) > _MAX_ANSWER_CACHE_ENTRIES:
@@ -281,7 +282,7 @@ class _RefCountedLock:
         self.refcount = 0
 
 
-_ANSWER_LOCKS: dict[tuple[str, str], _RefCountedLock] = {}
+_ANSWER_LOCKS: dict[tuple[object, ...], _RefCountedLock] = {}
 
 
 def _evict_unused_answer_locks_locked() -> None:
@@ -301,7 +302,7 @@ def _evict_unused_answer_locks_locked() -> None:
 
 
 @contextlib.contextmanager
-def _answer_lock_for(key: tuple[str, str]) -> Iterator[None]:
+def _answer_lock_for(key: tuple[object, ...]) -> Iterator[None]:
     with _ANSWER_LOCKS_GUARD:
         entry = _ANSWER_LOCKS.get(key)
         if entry is None:
@@ -444,6 +445,62 @@ def _run(inp: AssessmentInput, settings: Settings) -> AssessmentReport:
             conn.close()
 
 
+def _knowledge_revision(settings: Settings) -> str | None:
+    db_path = Path(settings.db_path)
+    if not db_path.exists():
+        return None
+    try:
+        conn = connect(db_path, read_only=True)
+    except OSError:
+        return None
+    try:
+        return ChunkRepository(conn).knowledge_revision()
+    finally:
+        conn.close()
+
+
+def _rules_and_safe_tests_fingerprint(settings: Settings) -> str:
+    """Codex#5 (round 9, 2026-09-12): a content hash over every rule/
+    safe-test YAML file, so an edit to either catalogue (without touching
+    settings.rules_root/safe_tests_root themselves) is detectable too, not
+    just a path change."""
+    digest = hashlib.sha256()
+    for root in (Path(settings.rules_root), Path(settings.safe_tests_root)):
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.yaml")):
+            digest.update(str(path).encode("utf-8"))
+            digest.update(b"\x00")
+            with contextlib.suppress(OSError):
+                digest.update(path.read_bytes())
+            digest.update(b"\x1e")
+    return digest.hexdigest()
+
+
+def _evaluation_fingerprint(settings: Settings) -> tuple[object, ...]:
+    """Codex#5 (round 9, 2026-09-12), reproduced exactly as reported: the
+    /answers cache key was only (parent assessment ID, merged input hash)
+    - it omitted rule/safe-test content, the knowledge index revision,
+    mode, and provider/model settings. After legitimate rule or knowledge
+    maintenance (edit a rule, reindex), resubmitting the same patch
+    against the same parent returned the OLD cached assessment instead of
+    running the full reassessment the API advertises. Every input this
+    function's own result actually depends on (app/reviewer/assess.py's
+    build_report signature: catalogue, settings, client, index, safe_tests)
+    is now part of the cache key, so a change to any of them is a cache
+    miss instead of a stale hit.
+    """
+    return (
+        settings.mode.value,
+        settings.allow_confidential,
+        settings.llm_provider.value,
+        settings.llm_model,
+        settings.top_k,
+        _knowledge_revision(settings),
+        _rules_and_safe_tests_fingerprint(settings),
+    )
+
+
 def _respond(report: AssessmentReport) -> AssessmentReport:
     if report.status is ReportStatus.POLICY_BLOCKED:
         raise HTTPException(status_code=422, detail=report.model_dump(mode="json"))
@@ -509,9 +566,17 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
     # copy of every distinct merged input it had ever seen (bounded in COUNT
     # by _MAX_ANSWER_CACHE_ENTRIES, not in per-entry size). Hashing it first
     # gives a fixed-size key with the same dedup property.
+    settings = _settings()
+    # Codex#5 (round 9, 2026-09-12), reproduced exactly as reported: the key
+    # below used to be only (assessment_id, merged-input hash) - it omitted
+    # everything else build_report() actually depends on (rule/safe-test
+    # content, the knowledge index revision, mode, provider/model), so a
+    # cache hit could return a result computed against rules/knowledge that
+    # have since changed. _evaluation_fingerprint() covers those inputs too.
     cache_key = (
         assessment_id,
         hashlib.sha256(new_input.model_dump_json().encode("utf-8")).hexdigest(),
+        *_evaluation_fingerprint(settings),
     )
 
     # Codex cross-review finding #6 (round 4, 2026-09-12): the cache lookup
@@ -528,7 +593,7 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
             if cached_entry is not None:
                 return _respond(cached_entry[1])
 
-        report = _run(new_input, _settings())
+        report = _run(new_input, settings)
         if report.result is not None:
             prev_revision = (
                 original_report.result.revision if original_report.result is not None else 1

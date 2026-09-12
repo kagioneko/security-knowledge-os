@@ -164,6 +164,49 @@ def test_answers_repeated_identical_patch_against_same_parent_is_idempotent(
     assert [h["revision"] for h in history] == [1, 2]  # only one new revision, not three
 
 
+def test_answers_cache_invalidated_when_rules_change(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#5 (round 9, 2026-09-12), reproduced exactly as
+    reported: the /answers cache key was only (parent assessment ID,
+    merged input hash) - it omitted rule/safe-test content, the knowledge
+    index revision, mode, and provider/model settings. After legitimate
+    rule maintenance (edit a rule file), resubmitting the SAME patch
+    against the SAME parent returned the OLD cached assessment instead of
+    running the full reassessment the API advertises."""
+    import shutil
+
+    rules_copy = tmp_path / "rules"
+    shutil.copytree(REPO / "rules", rules_copy)
+    monkeypatch.setenv("SKOS_RULES_ROOT", str(rules_copy))
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(REPO / "tests" / "fixtures" / "corpus_alt"))
+    monkeypatch.setenv("SKOS_DB_PATH", str(tmp_path / "idx.sqlite"))
+    assert client.post("/v1/knowledge/reindex").status_code == 200
+
+    created = client.post(
+        "/v1/assessments", json=_input("U-002-memory-persistence-unspecified")
+    ).json()
+    aid = created["result"]["assessment_id"]
+
+    first = client.post(f"/v1/assessments/{aid}/answers", json={"memory_persistent": True})
+    assert first.status_code == 200
+    first_id = first.json()["result"]["assessment_id"]
+
+    # simulate a rule-catalogue maintenance edit between the two calls
+    mem_rule = rules_copy / "memory" / "MEM-001.yaml"
+    mem_rule.write_text(
+        mem_rule.read_text(encoding="utf-8") + "\n# maintenance edit\n", encoding="utf-8"
+    )
+
+    second = client.post(f"/v1/assessments/{aid}/answers", json={"memory_persistent": True})
+    assert second.status_code == 200
+    second_id = second.json()["result"]["assessment_id"]
+
+    assert second_id != first_id, (
+        "a rule-catalogue change must invalidate the answer cache, not reuse a stale hit"
+    )
+
+
 def test_assessment_input_rejects_an_oversized_prompt(client: TestClient) -> None:
     """Regression for Codex cross-review finding #6 (round 2, 2026-09-11),
     reproduced close to the reviewer's own repro: an assessment containing a
