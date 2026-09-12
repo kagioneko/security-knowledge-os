@@ -303,6 +303,125 @@ def test_reindex_never_falsely_claims_restoration_when_restore_itself_fails(
     assert not db.exists()  # fail closed: the bad/unverified content is not left live
 
 
+def test_reindex_fails_closed_when_the_existing_index_is_corrupt(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#4 sub-point 1 (round 5, 2026-09-12), reproduced
+    exactly as reported: _current_revision() and the initial validation walk
+    used to run outside any try/except in _reindex_atomic_locked() - a
+    corrupt EXISTING index (its `meta` table dropped) made
+    _current_revision() raise sqlite3.OperationalError straight out of
+    reindex_atomic(), instead of the POLICY_BLOCKED ReindexReport every
+    other failure path in this function returns."""
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    assert good.ok
+
+    conn = connect(db)
+    conn.execute("DROP TABLE meta")
+    conn.commit()
+    conn.close()
+
+    report = reindex_atomic(corpus_alt_root, db)  # must not raise
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+
+
+def test_reindex_converts_an_unexpected_ingestion_valueerror_to_policy_blocked(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#4 sub-point 2 (round 5, 2026-09-12): an
+    unexpected ingestion-content failure from build_index()/load_corpus() -
+    a pydantic ValidationError, a FrontMatterError, or any other bare
+    ValueError - must become a POLICY_BLOCKED ReindexReport, not an
+    exception escaping reindex_atomic(). load_corpus() itself now converts
+    per-file parse/schema failures into a `skipped` entry rather than
+    raising (Codex#3 above); this is the defensive backstop for anything
+    that still reaches build_index() as a raised ValueError."""
+    import app.retrieval.index as index_module
+
+    db = tmp_path / "idx.sqlite"
+
+    def _boom(knowledge_root, staging_db_path):  # type: ignore[no-untyped-def]
+        raise ValueError("simulated unexpected ingestion failure")
+
+    original_build_index = index_module.build_index
+    index_module.build_index = _boom  # type: ignore[assignment]
+    try:
+        report = reindex_atomic(corpus_alt_root, db)  # must not raise
+    finally:
+        index_module.build_index = original_build_index  # type: ignore[assignment]
+
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert not db.exists()
+
+
+def test_reindex_restore_note_never_claims_removal_when_unlink_also_fails(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#4 sub-point 3 (round 5, 2026-09-12), reproduced
+    exactly as reported: if BOTH the backup restore (os.replace) and the
+    fallback db_path.unlink() fail, the report used to unconditionally claim
+    the bad index was "removed from service" - db_path can still exist with
+    unverified content in that double-failure case."""
+    import shutil
+
+    import app.retrieval.index as index_module
+
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    assert good.ok
+
+    corpus2 = tmp_path / "corpus2"
+    shutil.copytree(corpus_alt_root, corpus2)
+    ku = next(corpus2.glob("public/**/*.md"))
+    ku.write_text(ku.read_text(encoding="utf-8").replace("0.1", "0.2"), encoding="utf-8")
+
+    class _FakeStop:
+        is_allowed = False
+        reasons = ["simulated post-swap corruption"]
+
+    original_verify = index_module.verify_chunk_hashes
+    calls = {"n": 0}
+
+    def _flaky_verify(conn):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 2:  # 1st call = staging check (let it pass); 2nd = post-swap
+            return _FakeStop()
+        return original_verify(conn)
+
+    original_replace = index_module.os.replace
+
+    def _flaky_replace(src, dst):  # type: ignore[no-untyped-def]
+        if ".bak." in str(src):  # this is the RESTORE call (backup -> db_path); fail it
+            raise PermissionError("simulated restore failure")
+        return original_replace(src, dst)
+
+    original_unlink = index_module.Path.unlink
+
+    def _flaky_unlink(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if self == db:  # the fallback removal _restore_or_remove falls back to; fail it too
+            raise PermissionError("simulated unlink failure")
+        return original_unlink(self, *args, **kwargs)
+
+    index_module.verify_chunk_hashes = _flaky_verify  # type: ignore[assignment]
+    index_module.os.replace = _flaky_replace  # type: ignore[assignment]
+    index_module.Path.unlink = _flaky_unlink  # type: ignore[assignment]
+    try:
+        bad = reindex_atomic(corpus2, db)
+    finally:
+        index_module.verify_chunk_hashes = original_verify  # type: ignore[assignment]
+        index_module.os.replace = original_replace  # type: ignore[assignment]
+        index_module.Path.unlink = original_unlink  # type: ignore[assignment]
+
+    assert not bad.ok
+    reason = " ".join(bad.decision.reasons)
+    assert "STILL CONTAINS" in reason
+    assert "removed from service" not in reason
+    assert db.exists()  # the double failure really did leave it in place
+
+
 def test_reindex_publish_never_leaves_db_path_missing(
     tmp_path: Path, corpus_alt_root: Path
 ) -> None:

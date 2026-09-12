@@ -7,17 +7,17 @@ skipped by defence in depth even if validation somehow passed.
 from __future__ import annotations
 
 import hashlib
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.ingestion.chunker import Section, split_sections
-from app.ingestion.parser import read_markdown
+from app.ingestion.parser import FrontMatterError, read_markdown
 from app.ingestion.validator import (
     Level,
     ValidationIssue,
+    check_containment,
     iter_knowledge_files,
-    validate_tree,
+    validate_content,
 )
 from app.models.knowledge import KnowledgeUnitFrontMatter
 from app.policy.classification import PolicyBlocked, assert_indexable
@@ -43,22 +43,51 @@ class LoadReport:
 
 
 def load_corpus(knowledge_root: Path) -> LoadReport:
-    report = LoadReport(issues=validate_tree(knowledge_root))
-
-    errors_by_path: dict[str, list[str]] = defaultdict(list)
-    for issue in report.issues:
-        if issue.level is Level.ERROR:
-            errors_by_path[issue.path].append(f"{issue.code}: {issue.message}")
-
+    """Codex#3 (round 5, 2026-09-12), reproduced exactly as reported: this
+    used to call ``validate_tree()`` - a full separate read+validate pass
+    over every file - purely to decide which paths to skip, then read each
+    surviving path AGAIN below to actually build it. A file replaced between
+    those two reads (same path, same total file count, itself a valid
+    public KU) passed the first read's validation and was indexed from the
+    SECOND read's different, attacker-controlled content - this function had
+    no way to know the two reads disagreed. Reading and validating each file
+    exactly once removes that window entirely: there is no earlier read left
+    to diverge from.
+    """
+    report = LoadReport()
     seen_ids: set[str] = set()
+
     for md_path in iter_knowledge_files(knowledge_root):
         location = str(md_path)
-        if location in errors_by_path:
-            report.skipped.append((location, "; ".join(errors_by_path[location])))
+
+        contain_issue = check_containment(md_path, knowledge_root)
+        if contain_issue is not None:
+            report.issues.append(contain_issue)
+            report.skipped.append(
+                (location, f"{contain_issue.code}: {contain_issue.message}")
+            )
             continue
 
-        front_matter_dict, body = read_markdown(md_path)
-        front_matter = KnowledgeUnitFrontMatter.model_validate(front_matter_dict)
+        try:
+            front_matter_dict, body = read_markdown(md_path)
+        except FrontMatterError as exc:
+            # Codex#3 / finding #4 sub-point 2 (round 5, 2026-09-12): a file
+            # that validated cleanly earlier but was changed to something
+            # unparseable by the time this read runs (TOCTOU) used to raise
+            # here uncaught instead of the same skip-and-continue treatment
+            # every other per-file problem gets.
+            report.issues.append(ValidationIssue(Level.ERROR, "front-matter", str(exc), location))
+            report.skipped.append((location, f"front-matter: {exc}"))
+            continue
+
+        issues, front_matter = validate_content(md_path, knowledge_root, front_matter_dict, body)
+        report.issues.extend(issues)
+        errors = [i for i in issues if i.level is Level.ERROR]
+        if front_matter is None or errors:
+            report.skipped.append(
+                (location, "; ".join(f"{i.code}: {i.message}" for i in errors))
+            )
+            continue
 
         try:
             assert_indexable(front_matter.classification)

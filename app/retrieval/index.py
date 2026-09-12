@@ -221,11 +221,28 @@ def _restore_or_remove(db_path: Path, backup: Path, had_existing: bool) -> bool:
         return False
 
 
-def _restore_note(restored: bool, had_existing: bool, backup: Path) -> str:
+def _restore_note(restored: bool, had_existing: bool, backup: Path, db_path: Path) -> str:
     """A truthful, human-readable suffix for the POLICY_BLOCKED reason - never
-    claims "restored" unless the restore actually succeeded."""
+    claims "restored" unless the restore actually succeeded, and never
+    claims the bad index was "removed from service" unless it actually is
+    gone.
+
+    Codex#4 sub-point 3 (round 5, 2026-09-12): `_restore_or_remove` can
+    itself fail to remove `db_path` (its own `unlink()` suppressed an
+    OSError) - this used to unconditionally say "removed from service" in
+    that case even though `db_path` could still hold the unverified/bad
+    content. Checking `db_path.exists()` here (called immediately after
+    `_restore_or_remove` returns, so the state is still current) reports
+    which one actually happened.
+    """
     if restored:
         return "; previous index restored" if had_existing else "; no previous index existed"
+    if db_path.exists():
+        return (
+            "; RESTORE ALSO FAILED - db_path STILL CONTAINS the unverified/bad "
+            f"index (removal also failed); manual recovery required from backup "
+            f"at {backup}"
+        )
     return (
         "; RESTORE ALSO FAILED - unverified/bad index removed from service; "
         f"manual recovery required from backup at {backup}"
@@ -233,14 +250,30 @@ def _restore_note(restored: bool, had_existing: bool, backup: Path) -> str:
 
 
 def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport:
-    old_revision = _current_revision(db_path)
+    # Codex#4 sub-point 1 (round 5, 2026-09-12): reading the OLD index's
+    # revision and the initial validation walk used to run outside any
+    # try/except in this function - a corrupt EXISTING index (e.g. missing
+    # `meta`) made _current_revision() raise sqlite3.OperationalError
+    # straight out of reindex_atomic() instead of the POLICY_BLOCKED
+    # ReindexReport every other failure path in this function returns.
+    try:
+        old_revision = _current_revision(db_path)
+        expected_file_count = len(iter_knowledge_files(knowledge_root))
+        issues = validate_tree(knowledge_root)
+    except (OSError, sqlite3.Error) as exc:
+        return ReindexReport(
+            decision=stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "reindex",
+                f"could not read the existing index or validate the knowledge "
+                f"root: {exc}",
+            )
+        )
 
     # 1. knowledge must validate clean (no ERROR-level issues)
     # Codex#2 / Antigravity SKOS-ADV-11 (round 4, 2026-09-12): the file count
     # seen here is recorded so it can be cross-checked against what
     # build_index() -> load_corpus() sees below - see that check for why.
-    expected_file_count = len(iter_knowledge_files(knowledge_root))
-    issues = validate_tree(knowledge_root)
     errors = [i for i in issues if i.level is Level.ERROR]
     if errors:
         return ReindexReport(
@@ -313,9 +346,16 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
             conn.close()
         if not integrity.is_allowed:
             raise _ReindexAbort(f"staging integrity check failed: {integrity.reasons}")
-    except (_ReindexAbort, IndexBuildError, OSError, sqlite3.Error) as abort:
+    except (_ReindexAbort, IndexBuildError, OSError, sqlite3.Error, ValueError) as abort:
         # any failure before the swap - including an unexpected OSError while
         # building, not just our own _ReindexAbort - leaves db_path untouched.
+        # Codex#4 sub-point 2 (round 5, 2026-09-12): ValueError is included as
+        # defense-in-depth for any ingestion-content failure (pydantic
+        # ValidationError subclasses ValueError; so does FrontMatterError)
+        # that reaches this far - load_corpus() itself now converts per-file
+        # parse/schema failures into a `skipped` entry rather than raising
+        # (see Codex#3 above), which the `build.skipped` check already turns
+        # into a `_ReindexAbort`, but this remains a defensive backstop.
         _cleanup(staging)
         return ReindexReport(
             decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", str(abort)),
@@ -364,7 +404,9 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
         if published:
             restored = _restore_or_remove(db_path, backup, had_existing)
             _cleanup(staging)
-            reason = f"publication failed: {exc}" + _restore_note(restored, had_existing, backup)
+            reason = f"publication failed: {exc}" + _restore_note(
+                restored, had_existing, backup, db_path
+            )
         else:
             _cleanup(staging, backup)
             reason = f"publication failed: {exc}"
@@ -378,7 +420,7 @@ def _reindex_atomic_locked(knowledge_root: Path, db_path: Path) -> ReindexReport
         restored = _restore_or_remove(db_path, backup, had_existing)
         reason = (
             f"post-swap integrity check failed: {post.reasons}"
-            + _restore_note(restored, had_existing, backup)
+            + _restore_note(restored, had_existing, backup, db_path)
         )
         return ReindexReport(
             decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", reason),

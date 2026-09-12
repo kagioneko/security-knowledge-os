@@ -130,43 +130,55 @@ def validate_markdown(text: str, *, source: str = "<input>") -> list[ValidationI
     return issues
 
 
-def validate_file(path: Path, knowledge_root: Path) -> list[ValidationIssue]:
+def check_containment(path: Path, knowledge_root: Path) -> ValidationIssue | None:
+    """The symlink / outside-root check (decision A1 / Codex cross-review
+    finding #2, 2026-09-11), split out from ``validate_file`` so a caller
+    that reads file content exactly once (``load_corpus``, Codex#3 round 5,
+    2026-09-12) can run this pre-read check itself instead of going through
+    ``validate_file``'s own separate ``read_markdown`` call. Checked BEFORE
+    reading any content. A symlinked file is rejected outright regardless of
+    where it points (it could resolve to an in-root file with a DIFFERENT
+    declared classification, which the directory check below cannot catch
+    since it trusts the resolved target's own front matter). A file whose
+    real (resolved) location is outside the root is rejected too."""
+    if path.is_symlink():
+        return ValidationIssue(
+            Level.ERROR,
+            "symlink-not-allowed",
+            "Knowledge Unit files must be plain files, not symlinks (a symlink "
+            "can point outside the knowledge root or at a differently "
+            "classified file)",
+            str(path),
+        )
+    if _relative_posix(path, knowledge_root) is None:
+        return ValidationIssue(
+            Level.ERROR,
+            "outside-root",
+            f"file is not under the knowledge root {knowledge_root}",
+            str(path),
+        )
+    return None
+
+
+def validate_content(
+    path: Path,
+    knowledge_root: Path,
+    front_matter: dict[str, object],
+    body: str,
+) -> tuple[list[ValidationIssue], KnowledgeUnitFrontMatter | None]:
+    """Validate ALREADY-READ front matter/body for one file at ``path``.
+
+    Split out of ``validate_file`` (Codex#3, round 5, 2026-09-12) so
+    ``load_corpus`` can validate the exact same read it uses to build the
+    ``LoadedUnit`` from, instead of ``validate_file``'s own separate
+    ``read_markdown`` call - closing the TOCTOU window between "the file
+    that was validated" and "the file that was indexed". Returns the
+    validated model too, so a caller does not need to parse it a second
+    time; a schema failure returns ``(issues, None)``. Assumes
+    ``check_containment`` has already passed for ``path``.
+    """
     issues: list[ValidationIssue] = []
     location = str(path)
-
-    # --- containment (decision A1 / Codex cross-review finding #2, 2026-09-11) #
-    # Checked BEFORE reading any content. A symlinked file is rejected outright
-    # regardless of where it points (it could resolve to an in-root file with a
-    # DIFFERENT declared classification, which the directory check below cannot
-    # catch since it trusts the resolved target's own front matter). A file
-    # whose real (resolved) location is outside the root is rejected too. Both
-    # used to be only a WARNING and the file was still loaded into the corpus -
-    # a classification/confinement bypass.
-    if path.is_symlink():
-        return [
-            ValidationIssue(
-                Level.ERROR,
-                "symlink-not-allowed",
-                "Knowledge Unit files must be plain files, not symlinks (a symlink "
-                "can point outside the knowledge root or at a differently "
-                "classified file)",
-                location,
-            )
-        ]
-    if _relative_posix(path, knowledge_root) is None:
-        return [
-            ValidationIssue(
-                Level.ERROR,
-                "outside-root",
-                f"file is not under the knowledge root {knowledge_root}",
-                location,
-            )
-        ]
-
-    try:
-        front_matter, body = read_markdown(path)
-    except FrontMatterError as exc:
-        return [ValidationIssue(Level.ERROR, "front-matter", str(exc), location)]
 
     try:
         model = KnowledgeUnitFrontMatter.model_validate(front_matter)
@@ -176,7 +188,7 @@ def validate_file(path: Path, knowledge_root: Path) -> list[ValidationIssue]:
             issues.append(
                 ValidationIssue(Level.ERROR, "schema", f"{loc}: {err['msg']}", location)
             )
-        return issues
+        return issues, None
 
     # --- classification / location (decision A1) --------------------------- #
     if model.classification is Classification.SECRET:
@@ -189,10 +201,10 @@ def validate_file(path: Path, knowledge_root: Path) -> list[ValidationIssue]:
                 location,
             )
         )
-        return issues
+        return issues, None
 
-    # containment was already enforced above (hard error, before any read); rel
-    # is guaranteed non-None here.
+    # containment was already enforced by the caller (hard error, before any
+    # read); rel is guaranteed non-None here.
     rel = _relative_posix(path, knowledge_root)
     assert rel is not None
     expected = expected_relative_dir(model.classification)
@@ -244,6 +256,20 @@ def validate_file(path: Path, knowledge_root: Path) -> list[ValidationIssue]:
                 )
             )
 
+    return issues, model
+
+
+def validate_file(path: Path, knowledge_root: Path) -> list[ValidationIssue]:
+    contain_issue = check_containment(path, knowledge_root)
+    if contain_issue is not None:
+        return [contain_issue]
+
+    try:
+        front_matter, body = read_markdown(path)
+    except FrontMatterError as exc:
+        return [ValidationIssue(Level.ERROR, "front-matter", str(exc), str(path))]
+
+    issues, _ = validate_content(path, knowledge_root, front_matter, body)
     return issues
 
 
