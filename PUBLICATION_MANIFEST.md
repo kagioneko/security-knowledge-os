@@ -174,13 +174,16 @@ earlier draft said "all permissive"; the first correction still missed
 file-level (weak) copyleft, not permissive, but it does not require this
 Apache-2.0 project to relicense anything — its copyleft obligations attach
 only to each package's own source files. `certifi` is a transitive
-dependency of `httpx`/`httpcore` (the `[llm]` extra's HTTP client);
-`pathspec` is a transitive dependency of `mypy` (**not** `ruff`, which
-declares no dependencies of its own per installed-environment metadata) —
-both dev/test-only or extras, never imported by, bundled with, or
-distributed as part of `app/`'s core install. None of the 29 components
-conflict with Apache-2.0 distribution of this project. Full list in
-`sbom.json`.
+dependency of `httpx`/`httpcore` (Codex#13, round 9, 2026-09-12,
+correcting the previous attribution: this project's own **`dev`** extra
+declares `httpx` directly, for FastAPI's `TestClient` in tests - the
+pinned Anthropic SDK's actual runtime HTTP client is `httpx2`/`httpcore2`,
+which use Python's native `truststore` instead of `certifi`); `pathspec`
+is a transitive dependency of `mypy` (**not** `ruff`, which declares no
+dependencies of its own per installed-environment metadata) — both
+dev/test-only or extras, never imported by, bundled with, or distributed
+as part of `app/`'s core install. None of the 62 components conflict with
+Apache-2.0 distribution of this project. Full list in `sbom.json`.
 
 ## §24 evaluation (internal fixtures — not real-world performance)
 

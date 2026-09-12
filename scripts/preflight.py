@@ -102,17 +102,28 @@ def _parse_manifest_claims(text: str) -> tuple[int, int] | None:
 
 def _parse_manifest_component_count(text: str) -> int | None:
     """Extract the SBOM component count PUBLICATION_MANIFEST.md's own
-    "## Dependencies" section claims, from its "N components" line.
-    Returns None if that line is missing/unparseable.
+    "## Dependencies" section claims. Returns None if no "N components"
+    statement is present, OR if more than one such statement is present
+    and they disagree with each other.
 
     Codex#9 (round 8, 2026-09-12), reproduced exactly as reported: the
     tracked sbom.json had 62 components while the manifest's own
     "Dependencies" section said 29 - the tracked-files/tests counts above
     (Codex#9, round 5) were kept in sync, but nothing checked this third,
     independently-drifting number the same way.
+
+    Codex#13 (round 9, 2026-09-12), reproduced exactly as reported: the
+    manifest states the component count TWICE ("62 components — ..." and,
+    later, "None of the 29 components conflict with ...") - the first fix
+    above only matched the FIRST occurrence, at the start of a line, so it
+    missed that the second one had drifted independently. Every "N
+    components" occurrence anywhere in the text is now checked for
+    agreement, not only the first one found.
     """
-    match = re.search(r"^(\d+)\s+components\b", text, re.MULTILINE)
-    return int(match.group(1)) if match else None
+    matches = [int(m.group(1)) for m in re.finditer(r"(\d+)\s+components\b", text)]
+    if not matches or len(set(matches)) > 1:
+        return None
+    return matches[0]
 
 
 def _parse_manifest_commit(text: str) -> str | None:

@@ -59,6 +59,20 @@ def test_parses_the_claimed_component_count() -> None:
     assert preflight._parse_manifest_component_count(text) == 29
 
 
+def test_disagreeing_component_count_statements_are_treated_as_unparseable() -> None:
+    """Regression for Codex#13 (round 9, 2026-09-12), reproduced exactly as
+    reported: the manifest states the component count TWICE ("62
+    components — ..." and, later, "None of the 29 components conflict
+    with ...") - matching only the FIRST occurrence missed that the
+    second one had drifted independently. Every occurrence must agree."""
+    text = (
+        "62 components — the project's actual dependency closure.\n"
+        "...\n"
+        "None of the 29 components conflict with Apache-2.0.\n"
+    )
+    assert preflight._parse_manifest_component_count(text) is None
+
+
 def test_returns_none_when_the_component_count_line_is_missing() -> None:
     assert preflight._parse_manifest_component_count("- Tracked files: **199**\n") is None
 
