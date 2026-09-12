@@ -3,15 +3,16 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `3e886af` (round-5 cross-review findings addressed, **not yet pushed**)
+- Commit: `3ab3bf6` (round-6 cross-review findings addressed, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **203**
-- Tests: **427** items (426 pass, 1 skip = JA-R02)
-- `scripts/preflight.py`: **PASS** (includes the new
-  `PUBLICATION_MANIFEST.md`-vs-reality consistency check added in round 5 —
-  Codex#9 — so these two numbers cannot silently go stale again)
+- Tests: **443** items (442 pass, 1 skip = JA-R02)
+- `scripts/preflight.py`: **PASS** (the `PUBLICATION_MANIFEST.md`-vs-reality
+  check added in round 5 — Codex#9 — now also verifies the commit hash
+  above is a real ancestor of HEAD, round 6 Codex#10; the SBOM check now
+  requires complete dependency-group coverage, round 6 Codex#8)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **five rounds**, 2026-09-11 -- 2026-09-12. Rounds 1-2 (2026-09-11):
+  audit), **six rounds**, 2026-09-11 -- 2026-09-12. Rounds 1-2 (2026-09-11):
   CHANGES-REQUIRED both times, 19 then 13 findings, all fixed — see
   `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-4 (2026-09-12, commits
   `a548b6d`/`ecb410e` before round-5 fixes): CHANGES-REQUIRED each time,
@@ -23,10 +24,24 @@ review; regenerate with `git ls-files` after any change.
   failure-coverage gaps, raw provider-exception leakage, unguarded store
   eviction, unsafe direct index-build script, unvalidated safe-test root,
   this manifest/`.gitignore` drift, SBOM coverage, unbounded LLM output) —
-  **all 11 fixed**, see `git log` commit messages ("fix round-5 Codex#…")
-  for the itemized fixes; Antigravity **PASS-with-nits** on the same commit
-  (two low-severity nits, not blocking). A sixth round re-reviewing these
-  round-5 fixes is the next step before push.
+  **all 11 fixed**; Antigravity **PASS-with-nits** on the same commit (two
+  low-severity nits, not blocking). Round 6 (2026-09-12, audited commit
+  `823c5e4`): Codex **CHANGES-REQUIRED** again (10 findings independent of
+  round 5's, mostly deeper versions of the same areas: the chunk hash
+  covered only `text` — a classification flip passed integrity as ALLOWED;
+  the round-5 FTS exact-phrase probe missed an appended-token tamper; the
+  empty-knowledge-root guard was only at the CLI layer, not in
+  `reindex_atomic()`/the API itself; an unrelated SQLite file with a
+  compatible `meta` table could be silently adopted and clobbered; the
+  symlink containment check was still TOCTOU-racy at the read itself;
+  `str(ValidationError)` leaked pydantic's rejected input value into a
+  public finding; an oversized rejected response was still forwarded intact
+  during LLM repair; preflight accepted and rewrote a partial SBOM; reindex
+  lock/setup failures raised raw exceptions instead of a typed result; this
+  manifest's own commit line was never checked against git history) — **all
+  10 fixed**, see `git log` commit messages ("fix round-6 Codex#…") for the
+  itemized mapping. A seventh round re-reviewing these round-6 fixes is the
+  next step before push.
 
 ## Tracked files by area
 
@@ -171,7 +186,7 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
 | CLI uses argparse, not Typer (spec §5) | accepted, documented |
 | Pack Manager (M9-M10) not in repo | out of scope; ZIP-import attack surface is future work |
 
-## Cross-AI review — five rounds so far, round 6 pending
+## Cross-AI review — six rounds so far, round 7 pending
 
 1. **Round 1** (Codex code audit + Antigravity adversarial design audit) per
    `AI_RULES.md`, 2026-09-11, recorded in `HANDOFF.md`. Both verdicts:
@@ -207,11 +222,29 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
    messages ("fix round-5 Codex#…") for the itemized mapping. Antigravity's
    independent adversarial design audit on the same commit: **PASS-with-
    nits** (two low-severity nits, not blocking; `NIT-ADV-01`/`NIT-ADV-02`).
-5. `scripts/preflight.py`: **PASS** after all five rounds' fixes (427 tests,
-   ruff + mypy --strict clean, commit `3e886af`), including the new
-   manifest-consistency check added as part of round 5's Codex#9 fix.
-6. A sixth re-review round is queued to confirm the round-5 fixes before
+5. **Round 6** (2026-09-12, audited commit `823c5e4`): Codex
+   **CHANGES-REQUIRED** — 10 findings independent of round 5's, mostly
+   deeper versions of the same areas round 5 touched (1 HIGH: the chunk
+   hash covered only `text`, so a classification flip passed integrity as
+   ALLOWED; 7 MEDIUM: the round-5 FTS exact-phrase probe missed an
+   appended-token tamper, the empty-knowledge-root guard was only at the
+   CLI layer not in `reindex_atomic()`/the API, an unrelated SQLite file
+   with a compatible `meta` table could be silently adopted and clobbered,
+   the symlink containment check was still TOCTOU-racy at the read itself,
+   `str(ValidationError)` leaked pydantic's rejected input value into a
+   public finding, an oversized rejected response was still forwarded
+   intact during LLM repair, preflight accepted and rewrote a partial SBOM;
+   2 LOW: reindex lock/setup failures raised raw exceptions instead of a
+   typed result, this manifest's own commit line was never checked against
+   git history). **All 10 fixed**, each with a regression test confirmed to
+   fail against the pre-fix code — see `git log` commit messages ("fix
+   round-6 Codex#…") for the itemized mapping.
+6. `scripts/preflight.py`: **PASS** after all six rounds' fixes (443 tests,
+   ruff + mypy --strict clean, commit `3ab3bf6`), including the manifest
+   commit-identity check added as part of round 6's Codex#10 fix and the
+   SBOM completeness requirement added as part of round 6's Codex#8 fix.
+7. A seventh re-review round is queued to confirm the round-6 fixes before
    push, per the same AI_RULES requirement ("修正した上で再レビューを受ける
    こと") applied again.
-7. Human confirmation: no real customer / private material in any commit —
+8. Human confirmation: no real customer / private material in any commit —
    still to confirm before push.
