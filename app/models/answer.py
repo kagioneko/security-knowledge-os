@@ -14,6 +14,18 @@ look like a credential - nothing in this schema detects or redacts one. The
 narrower, accurate claim is the one above: no field is *dedicated* to holding a
 credential value.
 
+Codex#2 (round 9, 2026-09-12): the above became "does not satisfy the stated
+boundary" once a credential-shaped free-text value was traced flowing into
+AttackSurface and the ReviewPayload sent to an external LLM provider. Every
+free-text field here now rejects the concrete, unambiguous credential SHAPES
+``app/models/_credential_shapes.py`` recognizes (the same ones
+``scripts/secret_scan.py`` / ``app/policy/safe_test.py`` already treat as
+unambiguously secret-shaped). This still cannot catch every possible secret -
+an arbitrary opaque string is indistinguishable from ordinary free text - so
+storing a real secret anywhere in an assessment remains against this
+project's Vault-only credential policy regardless of what this schema
+happens to accept.
+
 Unknown fields are rejected by the schema (``extra="forbid"``); unknown tool or
 action names and type mismatches are rejected when the patch is applied.
 """
@@ -22,7 +34,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+
+from app.models._credential_shapes import reject_credential_shapes
 
 ToolPerm = Literal["read", "write", "delete", "send", "shell"]
 MemoryScope = Literal["session", "user", "global"]
@@ -35,22 +49,28 @@ CredentialStorageKind = Literal["env", "vault", "proxy", "none"]
 # the merged AssessmentInput - see the try/except around that call below for
 # why that used to be an HTTP 500. Mirroring AssessmentInput's bounds here
 # rejects an oversized patch immediately, with FastAPI's normal 422.
-_Short = Field(default=None, max_length=500)
-_Text = Field(default=None, max_length=50_000)
+#
+# Codex#2 (round 9, 2026-09-12): every free-text field here accepted
+# arbitrary text, including a value shaped like a real credential, which
+# then flowed unchanged into AttackSurface and the ReviewPayload sent to
+# an external LLM provider. reject_credential_shapes rejects the same
+# concrete, unambiguous secret SHAPES secret_scan.py / safe_test.py
+# already recognize - see app/models/_credential_shapes.py.
+_Text = Annotated[str, Field(max_length=50_000), AfterValidator(reject_credential_shapes)]
 # Codex#12 (round 7, 2026-09-12): the two scalar bounds above were never
 # applied to LIST ELEMENTS or MAPPING KEYS - rag_sources/outbound_destinations
 # capped the number of entries (200) but not each entry's length, and
 # tool_permissions/human_approval capped the number of keys but not each key's
 # length. Mirrors AssessmentInput's identical `_Short = Annotated[str,
 # Field(max_length=500)]` convention (app/models/assessment.py).
-_ShortItem = Annotated[str, Field(max_length=500)]
+_ShortItem = Annotated[str, Field(max_length=500), AfterValidator(reject_credential_shapes)]
 
 
 class AnswerPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    system_prompt: str | None = _Text
-    developer_prompt: str | None = _Text
+    system_prompt: _Text | None = None
+    developer_prompt: _Text | None = None
 
     rag_enabled: bool | None = None
     rag_sources: list[_ShortItem] | None = Field(default=None, max_length=200)

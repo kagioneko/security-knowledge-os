@@ -45,14 +45,17 @@ def test_no_dedicated_raw_secret_field_exists() -> None:
         assert not any(b in name for b in banned), name
 
 
-def test_free_text_fields_accept_a_raw_secret_this_is_a_known_limitation() -> None:
+def test_free_text_fields_accept_an_opaque_non_credential_shaped_value() -> None:
     """Regression for Codex#12 (round 7, 2026-09-12), reproduced exactly as
     reported: `test_no_dedicated_raw_secret_field_exists` above checks only
     field names - that is a stronger claim than the schema provides.
-    Every free-text field here accepts arbitrary text, including a value
-    that happens to look like a credential; nothing in this schema detects
-    or redacts one. This test documents that limitation explicitly rather
-    than leaving it implicit."""
+
+    Codex#2 (round 9, 2026-09-12) narrowed the remaining gap further:
+    every free-text field here now rejects a value matching a KNOWN
+    credential shape (see test below) - but an arbitrary OPAQUE string
+    with no recognizable shape is still indistinguishable from ordinary
+    free text and is accepted. This test documents that narrower,
+    residual limitation explicitly rather than leaving it implicit."""
     patch = AnswerPatch.model_validate(
         {
             "system_prompt": "arbitrary-free-text-value-12345",
@@ -63,6 +66,22 @@ def test_free_text_fields_accept_a_raw_secret_this_is_a_known_limitation() -> No
     assert patch.system_prompt == "arbitrary-free-text-value-12345"
     assert patch.rag_sources == ["arbitrary-free-text-value-12345"]
     assert patch.tool_permissions == {"arbitrary-free-text-value-12345": "read"}
+
+
+def test_free_text_fields_reject_a_known_credential_shape() -> None:
+    """Regression for Codex#2 (round 9, 2026-09-12), reproduced exactly as
+    reported: a credential-shaped value (e.g. an AWS-access-key-shaped
+    string) in system_prompt, a RAG source, or a tool name validated and
+    flowed unchanged into AttackSurface / the ReviewPayload sent to an
+    external LLM provider - the stated "AnswerPatch never takes a raw
+    secret" boundary did not actually hold for free-text fields."""
+    fake_key = "AKIA" + "IOSFODNN7EXAMPLE"
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"system_prompt": fake_key})
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"rag_sources": [fake_key]})
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"tool_permissions": {fake_key: "read"}})
 
 
 def test_list_elements_and_mapping_keys_are_length_bounded() -> None:
@@ -88,6 +107,20 @@ def test_assessment_input_rejects_an_oversized_total_payload() -> None:
     total request size, only on each field in isolation."""
     with pytest.raises(ValidationError):
         AssessmentInput(name="size", user_prompts=["x" * 50_000] * 200)
+
+
+def test_assessment_input_rejects_a_known_credential_shape() -> None:
+    """Regression for Codex#2 (round 9, 2026-09-12), reproduced exactly as
+    reported: a credential-shaped value in system_prompt, a RAG source, or
+    a tool name validated and flowed unchanged into AttackSurface / the
+    ReviewPayload sent to an external LLM provider."""
+    fake_key = "AKIA" + "IOSFODNN7EXAMPLE"
+    with pytest.raises(ValidationError):
+        AssessmentInput(name="t", system_prompt=fake_key)
+    with pytest.raises(ValidationError):
+        AssessmentInput(name="t", rag={"sources": [fake_key]})
+    with pytest.raises(ValidationError):
+        AssessmentInput(name="t", tools=[{"name": fake_key}])
 
 
 def test_allow_list_of_fields() -> None:

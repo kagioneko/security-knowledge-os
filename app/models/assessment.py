@@ -6,8 +6,9 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
+from app.models._credential_shapes import reject_credential_shapes
 from app.models.risk import Finding, Severity
 
 # Codex cross-review finding #6 (round 2, 2026-09-11): AssessmentInput had no
@@ -17,8 +18,16 @@ from app.models.risk import Finding, Severity
 # many assessments are kept, not how large any ONE of them is; a store full of
 # maximum-size entries can still be multi-gigabyte. These are generous-but-
 # finite bounds on free text / list sizes, not a tuned production limit.
-_Short = Annotated[str, Field(max_length=500)]
-_Text = Annotated[str, Field(max_length=50_000)]
+#
+# Codex#2 (round 9, 2026-09-12): every free-text field here (and on
+# AnswerPatch) accepted arbitrary text, including a value shaped like a
+# real credential, which then flowed unchanged into AttackSurface and the
+# ReviewPayload sent to an external LLM provider. reject_credential_shapes
+# rejects the same concrete, unambiguous secret SHAPES secret_scan.py /
+# safe_test.py already recognize - it cannot catch every possible secret,
+# but every free-text field is now covered, not left unfiltered.
+_Short = Annotated[str, Field(max_length=500), AfterValidator(reject_credential_shapes)]
+_Text = Annotated[str, Field(max_length=50_000), AfterValidator(reject_credential_shapes)]
 
 # Codex cross-review finding #3 (round 3, 2026-09-12): the per-field bounds
 # above cap any ONE field, but nothing capped the serialized size of the
@@ -45,7 +54,7 @@ class MemoryInput(BaseModel):
 
 class ToolInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    name: str = Field(max_length=200)
+    name: Annotated[str, Field(max_length=200), AfterValidator(reject_credential_shapes)]
     permissions: str | None = Field(default=None, max_length=100)
     requires_approval: bool | None = None
 
@@ -66,8 +75,12 @@ class AssessmentInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(max_length=500)
-    system_prompt: str | None = Field(default=None, max_length=50_000)
-    developer_prompt: str | None = Field(default=None, max_length=50_000)
+    system_prompt: (
+        Annotated[str, Field(max_length=50_000), AfterValidator(reject_credential_shapes)] | None
+    ) = None
+    developer_prompt: (
+        Annotated[str, Field(max_length=50_000), AfterValidator(reject_credential_shapes)] | None
+    ) = None
     user_prompts: list[_Text] = Field(default_factory=list, max_length=200)
     rag: RagInput = Field(default_factory=RagInput)
     memory: MemoryInput = Field(default_factory=MemoryInput)
