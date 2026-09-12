@@ -25,6 +25,17 @@ _CREDENTIAL_SHAPE_PATTERNS = (
     re.compile(r"xox[baprs]-[0-9A-Za-z-]{12,}"),
     re.compile(r"gh[pousr]_[0-9A-Za-z]{30,}"),
     re.compile(r"sk-ant-[0-9A-Za-z_-]{20,}"),
+    # Codex#1 (round 11, 2026-09-13), reproduced exactly as reported:
+    # `sk_live_` + 32 chars (a Stripe secret key shape) passed every
+    # existing pattern and reached the LLM payload unfiltered. Stripe
+    # secret/publishable/restricted keys are an equally concrete,
+    # unambiguous shape as the ones already listed above.
+    re.compile(r"(?:sk|pk|rk)_(?:live|test)_[0-9A-Za-z]{16,}"),
+    # A JWT: three base64url segments separated by dots, the first always
+    # decoding to a `{"alg":...,"typ":"JWT"}`-shaped header - `eyJ` is the
+    # base64url encoding of `{"` at the start of any JSON object, so this
+    # is as unambiguous a shape as the others above, not a guess.
+    re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
 )
 
 

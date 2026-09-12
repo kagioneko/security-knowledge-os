@@ -123,6 +123,33 @@ def test_assessment_input_rejects_a_known_credential_shape() -> None:
         AssessmentInput(name="t", tools=[{"name": fake_key}])
 
 
+def test_free_text_fields_reject_a_stripe_shaped_key() -> None:
+    """Regression for Codex#1 (round 11, 2026-09-13), reproduced exactly as
+    reported: `"sk_live_" + "A" * 32` (a Stripe secret-key shape) passed
+    every existing credential-shape pattern and reached AttackSurface /
+    the ReviewPayload sent to an external LLM provider unfiltered."""
+    fake_key = "sk_live_" + "A" * 32
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"system_prompt": fake_key})
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"rag_sources": [fake_key]})
+    with pytest.raises(ValidationError):
+        AssessmentInput(name="t", system_prompt=fake_key)
+
+
+def test_free_text_fields_reject_a_jwt_shaped_value() -> None:
+    """A JWT (three base64url segments separated by dots) is an equally
+    concrete, unambiguous credential shape - see Codex#1 (round 11,
+    2026-09-13)'s repro, which also named JWTs as an uncaught shape."""
+    fake_jwt = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        ".eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+        ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+    )
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"system_prompt": fake_jwt})
+
+
 def test_allow_list_of_fields() -> None:
     assert set(AnswerPatch.model_fields) == {
         "system_prompt",
