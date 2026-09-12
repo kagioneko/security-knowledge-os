@@ -15,15 +15,23 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+# Codex cross-review finding #5 (round 4, 2026-09-12): the declared floor
+# (previously >=0.110) permits releases predating FastAPI's strict
+# content-type checking (introduced 0.132.0), one factor in a
+# browser-request repro reaching /v1/assessments. The `_local_origin_gate`
+# middleware (app/main.py) is the primary fix and does not depend on this,
+# but the floor should match what is actually installed/tested (0.141.1) and
+# not silently regress on a future `pip install -e . --upgrade-strategy
+# eager` against an older resolver constraint.
 [project.optional-dependencies]
-api = ["fastapi>=0.110", "uvicorn>=0.29"]
+api = ["fastapi>=0.132", "uvicorn>=0.29"]
 llm = ["anthropic>=0.40"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",
     "mypy>=1.10",
     "types-PyYAML",
-    "fastapi>=0.110",
+    "fastapi>=0.132",
     "httpx>=0.27",
 ]
 

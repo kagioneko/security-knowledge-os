@@ -19,11 +19,13 @@ only re-derives the FTS index from the already-verified read-only knowledge root
 from __future__ import annotations
 
 import hashlib
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import Settings
@@ -40,6 +42,60 @@ from app.reviewer.rule_loader import load_rules
 from app.storage.db import connect
 
 app = FastAPI(title="Security Knowledge OS", version="0.1.0")
+
+# Codex cross-review finding #4 (round 4, 2026-09-12), reproduced exactly as
+# reported: POSTing two million bytes of whitespace padding around a tiny
+# valid AssessmentInput returned 200 - pydantic's canonical serialization
+# drops insignificant JSON whitespace, so AssessmentInput's total-size
+# model_validator (round 3) only ever sees the small PARSED object, never the
+# actual wire size the server had to receive and parse. Counting bytes as
+# they stream in (rather than trusting a Content-Length header, which
+# chunked transfer-encoding omits) bounds memory/CPU spent on the request
+# body regardless of what it deserializes to.
+_MAX_BODY_BYTES = 1_000_000
+
+
+class _MaxBodySizeMiddleware:
+    """Raw ASGI middleware: reject a request body over `_MAX_BODY_BYTES`
+    before FastAPI/pydantic ever parses it. Added via `app.add_middleware()`
+    (not `@app.middleware("http")`, which would need to fully buffer the body
+    itself via `Request.body()` to inspect it - defeating the point). Counts
+    bytes on the raw `receive()` channel and aborts as soon as the cap is
+    crossed, rather than trusting a Content-Length header (absent under
+    chunked transfer-encoding) or waiting for the full body to buffer.
+
+    Raises an ``HTTPException`` (not a plain exception) because FastAPI's own
+    body-reading (``fastapi/routing.py``'s ``request_body_to_args``) wraps
+    ``await request.json()`` in `except HTTPException: raise` / `except
+    Exception: raise HTTPException(400, "There was an error parsing the
+    body")` - a plain exception raised from inside `receive()` while that
+    runs is caught by the second branch and reported as a generic 400,
+    masking this as a body-parsing error rather than the deliberate 413 it
+    actually is."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        seen = 0
+
+        async def _limited_receive() -> Any:
+            nonlocal seen
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body") or b"")
+                if seen > _MAX_BODY_BYTES:
+                    raise HTTPException(status_code=413, detail="request body too large")
+            return message
+
+        await self.app(scope, _limited_receive, send)
+
+
+app.add_middleware(_MaxBodySizeMiddleware)
 
 # Codex cross-review finding #10 (2026-09-11): the in-memory store had no size
 # bound at all. Accepted as in-memory for the MVP (spec Section 18, localhost
@@ -75,6 +131,31 @@ def _answer_cache_put(key: tuple[str, str], assessment_id: str) -> None:
         _ANSWER_CACHE.pop(next(iter(_ANSWER_CACHE)))
 
 
+# Codex cross-review finding #6 (round 4, 2026-09-12), reproduced exactly as
+# reported: two threads submitting the SAME patch against the SAME parent,
+# synchronized so both miss the cache before either writes to it, each ran a
+# full re-assessment and produced two distinct child assessments - the cache
+# above only dedupes SEQUENTIAL repeats. A lock per cache key serializes the
+# "check cache, else run and store" critical section (double-checked: the
+# second thread through re-checks the cache once it has the lock, so it gets
+# the first thread's result instead of also recomputing). Bounded the same
+# FIFO way as the caches it guards.
+_MAX_ANSWER_LOCKS = 5000
+_ANSWER_LOCKS_GUARD = threading.Lock()
+_ANSWER_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+
+
+def _answer_lock_for(key: tuple[str, str]) -> threading.Lock:
+    with _ANSWER_LOCKS_GUARD:
+        lock = _ANSWER_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _ANSWER_LOCKS[key] = lock
+            while len(_ANSWER_LOCKS) > _MAX_ANSWER_LOCKS:
+                _ANSWER_LOCKS.pop(next(iter(_ANSWER_LOCKS)))
+        return lock
+
+
 # Codex cross-review finding #11 (2026-09-11): /v1/knowledge/reindex accepted
 # requests regardless of Host/Origin - a form-encoded POST from any page could
 # trigger it. The service is documented as loopback/localhost-only (spec
@@ -95,7 +176,7 @@ def _hostname_only(value: str) -> str:
     return head if sep and tail.isdigit() else value
 
 
-def _require_local_origin(request: Request) -> None:
+def _is_local_origin(request: Request) -> bool:
     """ADV-09 / Codex#3 (round 2, 2026-09-11): the original check inspected
     only the Host header. Host names the DESTINATION the client is connecting
     to - for a request routed to this loopback service, Host is always
@@ -111,14 +192,28 @@ def _require_local_origin(request: Request) -> None:
         value = request.headers.get(header)
         if value:
             authority = urlsplit(value).netloc
-            if _hostname_only(authority) not in _ALLOWED_HOSTS:
-                raise HTTPException(
-                    status_code=403, detail="this endpoint only serves local clients"
-                )
-            return
+            return _hostname_only(authority) in _ALLOWED_HOSTS
     host = _hostname_only(request.headers.get("host") or "")
-    if host not in _ALLOWED_HOSTS:
-        raise HTTPException(status_code=403, detail="this endpoint only serves local clients")
+    return host in _ALLOWED_HOSTS
+
+
+# Codex#5 / Antigravity SKOS-ADV-13 (round 4, 2026-09-12): only
+# /v1/knowledge/reindex called _require_local_origin() (as it then was) - the
+# assessment endpoints (create/get/answers/history/report), which can trigger
+# LLM-provider spend and return excerpts of internal/confidential Knowledge
+# Units, had no Host/Origin check at all. A DNS-rebinding attacker (a domain
+# with a low-TTL record that rebinds to 127.0.0.1) or a same-machine page
+# could hit them directly. This is a single choke point in front of every
+# route (except /health, which returns nothing sensitive and takes no
+# provider action) rather than a per-endpoint call that is easy to forget to
+# add to the next new route.
+@app.middleware("http")
+async def _local_origin_gate(request: Request, call_next):  # type: ignore[no-untyped-def]
+    if request.url.path != "/health" and not _is_local_origin(request):
+        return JSONResponse(
+            {"detail": "this endpoint only serves local clients"}, status_code=403
+        )
+    return await call_next(request)
 
 
 def _settings() -> Settings:
@@ -209,21 +304,30 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
         assessment_id,
         hashlib.sha256(new_input.model_dump_json().encode("utf-8")).hexdigest(),
     )
-    cached_id = _ANSWER_CACHE.get(cache_key)
-    if cached_id is not None:
-        cached_entry = _STORE.get(cached_id)
-        if cached_entry is not None:
-            return _respond(cached_entry[1])
 
-    report = _run(new_input, _settings())
-    if report.result is not None:
-        prev_revision = (
-            original_report.result.revision if original_report.result is not None else 1
-        )
-        report.result.supersedes = assessment_id
-        report.result.revision = prev_revision + 1
-        _store_put(report.result.assessment_id, (new_input, report))
-        _answer_cache_put(cache_key, report.result.assessment_id)
+    # Codex cross-review finding #6 (round 4, 2026-09-12): the cache lookup
+    # and the run-and-store below used to have no synchronization between
+    # them, so two concurrent requests for the same (assessment_id,
+    # new_input) could both miss the cache and both re-run the assessment.
+    # A lock per cache key serializes this section; the second thread to
+    # acquire it re-checks the cache (now populated by the first) before
+    # deciding to run anything itself.
+    with _answer_lock_for(cache_key):
+        cached_id = _ANSWER_CACHE.get(cache_key)
+        if cached_id is not None:
+            cached_entry = _STORE.get(cached_id)
+            if cached_entry is not None:
+                return _respond(cached_entry[1])
+
+        report = _run(new_input, _settings())
+        if report.result is not None:
+            prev_revision = (
+                original_report.result.revision if original_report.result is not None else 1
+            )
+            report.result.supersedes = assessment_id
+            report.result.revision = prev_revision + 1
+            _store_put(report.result.assessment_id, (new_input, report))
+            _answer_cache_put(cache_key, report.result.assessment_id)
     return _respond(report)
 
 
@@ -271,7 +375,13 @@ class KnowledgeDoc(BaseModel):
     # request body too is a cheap, independent second layer. Real Knowledge
     # Unit files are a few KB; this leaves generous headroom.
     content: str = Field(max_length=200_000)
-    source: str = "<api>"
+    # Codex cross-review finding #4, part 2 (round 4, 2026-09-12), reproduced
+    # exactly as reported: `source` is echoed back verbatim in EVERY returned
+    # validation issue (see validate_knowledge_doc() below), so an unbounded
+    # `source` turns one request into a response amplified by the number of
+    # issues found - a one-million-character `source` produced a ~12 MB
+    # response from a tiny request.
+    source: str = Field(default="<api>", max_length=500)
 
 
 @app.post("/v1/knowledge/validate")
@@ -288,12 +398,13 @@ def validate_knowledge_doc(doc: KnowledgeDoc) -> dict[str, Any]:
 
 
 @app.post("/v1/knowledge/reindex", response_model=ReindexReport)
-def reindex(request: Request) -> ReindexReport:
+def reindex() -> ReindexReport:
     """Re-derive the FTS index from the existing verified read-only knowledge root.
 
     This does not accept or change knowledge content. classification + integrity
-    are verified before the atomic swap; on failure the existing index is kept."""
-    _require_local_origin(request)
+    are verified before the atomic swap; on failure the existing index is kept.
+    The Host/Origin check is now the global `_local_origin_gate` middleware
+    (round 4, 2026-09-12), not a per-endpoint call - see its definition."""
     settings = _settings()
     report = reindex_atomic(settings.knowledge_root, settings.db_path)
     if not report.ok:
