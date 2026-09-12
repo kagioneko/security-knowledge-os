@@ -192,6 +192,12 @@ def _hostname_only(value: str) -> str:
     return head if sep and tail.isdigit() else value
 
 
+def _effective_port(scheme: str, port: int | None) -> int:
+    if port is not None:
+        return port
+    return 443 if scheme == "https" else 80
+
+
 def _is_local_origin(request: Request) -> bool:
     """ADV-09 / Codex#3 (round 2, 2026-09-11): the original check inspected
     only the Host header. Host names the DESTINATION the client is connecting
@@ -203,12 +209,29 @@ def _is_local_origin(request: Request) -> bool:
     here" - the real CSRF vector. Only a client that sends neither header
     (curl, httpx, this app's own scripts - never a browser navigation/fetch
     doing a real cross-origin request) falls back to the Host check.
+
+    Codex#3 (round 8, 2026-09-12), reproduced exactly as reported:
+    comparing only the HOSTNAME discarded scheme and port, so
+    `Origin: http://localhost:9999` passed against a service actually
+    running on `http://localhost:8000` - `_hostname_only` reduces both to
+    "localhost". A hostile page on ANY other localhost port (a common
+    situation: several dev servers bound to loopback at once) could
+    therefore trigger this service. The browser's own same-origin policy
+    already treats a different port as a different origin; this check must
+    match that and compare the full (scheme, hostname, effective port)
+    tuple against the ACTUAL port this request arrived on
+    (`request.url`), not just a static hostname allowlist.
     """
     for header in ("origin", "referer"):
         value = request.headers.get(header)
         if value:
-            authority = urlsplit(value).netloc
-            return _hostname_only(authority) in _ALLOWED_HOSTS
+            parts = urlsplit(value)
+            hostname = (parts.hostname or "").lower()
+            if hostname not in _ALLOWED_HOSTS:
+                return False
+            return parts.scheme == request.url.scheme and _effective_port(
+                parts.scheme, parts.port
+            ) == _effective_port(request.url.scheme, request.url.port)
     host = _hostname_only(request.headers.get("host") or "")
     return host in _ALLOWED_HOSTS
 

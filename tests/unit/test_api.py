@@ -446,6 +446,25 @@ def test_reindex_allows_a_legitimate_same_origin_request(
     assert resp.status_code == 200
 
 
+def test_reindex_rejects_a_cross_port_localhost_origin(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#3 (round 8, 2026-09-12), reproduced exactly as
+    reported: `_is_local_origin` compared only the HOSTNAME
+    (`_hostname_only` strips the port), so `Origin: http://testserver:9999`
+    passed against this service actually serving on the default port -
+    both reduce to the hostname "testserver". A hostile page on any OTHER
+    localhost port could trigger this endpoint; a browser's own
+    same-origin policy already treats a different port as a different
+    origin, and this check must match that."""
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(REPO / "tests" / "fixtures" / "corpus_alt"))
+    monkeypatch.setenv("SKOS_DB_PATH", str(tmp_path / "idx.sqlite"))
+    resp = client.post(
+        "/v1/knowledge/reindex", headers={"Origin": "http://testserver:9999"}
+    )
+    assert resp.status_code == 403
+
+
 def test_reindex_rejects_a_forged_localhost_host_from_a_remote_peer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
