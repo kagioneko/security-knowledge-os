@@ -3,15 +3,15 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `e8be3a0` (round-8 cross-review findings addressed, **not yet pushed**)
+- Commit: `cb77022` (round-9 cross-review findings addressed, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **207**
-- Tests: **496** items (495 pass, 1 skip = JA-R02)
-- `scripts/preflight.py`: **PASS** (now also checks the manifest's own SBOM
-  component count against `sbom.json`, round 8 Codex#9, and that
-  `constraints.txt` is present with pinned versions, round 8 Codex#15)
+- Tracked files: **208**
+- Tests: **513** items (512 pass, 1 skip = JA-R02)
+- `scripts/preflight.py`: **PASS** (now also verifies `constraints.txt`'s
+  pins actually match the installed environment, round 9 Codex#8, not just
+  that the file is present)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **eight rounds**, 2026-09-11 -- 2026-09-12. Rounds 1-2
+  audit), **nine rounds**, 2026-09-11 -- 2026-09-12. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -66,8 +66,30 @@ review; regenerate with `git ls-files` after any change.
   models lacked `extra="forbid"`, dependency resolution had no reviewed
   lock) — **all 15 fixed**, each with a regression test confirmed to fail
   against the pre-fix code via `git stash` — see `git log` commit messages
-  ("fix round-8 Codex#…") for the itemized mapping. A ninth round
-  re-reviewing these round-8 fixes is the next step before push.
+  ("fix round-8 Codex#…") for the itemized mapping. Round 9 (2026-09-13,
+  audited commit `d20b714`): Codex **CHANGES-REQUIRED** again (13 findings
+  independent of round 8's: 2 HIGH — the round-8/9 snapshot's per-file
+  identity check still had a scan-to-open window where a regular file
+  could be swapped for a different one of the same name, and
+  AnswerPatch/AssessmentInput free-text fields accepted a credential-shaped
+  value that flowed into the LLM payload; 7 MEDIUM — connect()'s O_NOFOLLOW
+  check-then-sqlite3.connect() sequence still had a check-to-use race,
+  saved reports could claim a contradictory overall_status/
+  human_review_required, the /answers cache key omitted rule/safe-test/
+  knowledge-revision/settings context, the API had no concurrency
+  admission control, four more nested report models still lacked
+  `extra="forbid"`, constraints.txt was never actually compared against
+  the installed environment, and the SBOM ignored non-extras PEP 508
+  markers while missing an applicable-but-absent transitive dependency
+  case; 4 LOW — chunked (Content-Length-less) oversized bodies still
+  bypassed the bodyless-route limit, reindex error responses disclosed
+  configured filesystem paths, heterogeneous YAML mapping keys raised a
+  raw TypeError, and the manifest's own component-count statement drifted
+  a second time uncaught) — **all 13 fixed**, each with a regression test
+  confirmed to fail against the pre-fix code via `git stash` — see
+  `git log` commit messages ("fix round-9 Codex#…") for the itemized
+  mapping. A tenth round re-reviewing these round-9 fixes is the next
+  step before push.
 
 ## Tracked files by area
 
