@@ -146,7 +146,14 @@ failure with `--strict`, `2` usage/input error, `3` `POLICY_BLOCKED`.
 `/answers` takes a **typed `AnswerPatch`** - an allow-list of fields a follow-up
 question can fill (`memory_persistent`, `memory_scope`, `outbound_enabled`,
 `credential_storage`, `tool_permissions`, `human_approval`, …). There is no
-generic deep-merge and no field carries a raw secret. **Rejected (HTTP 422):**
+generic deep-merge and no field is *named* for a raw secret value - but this
+is a naming/schema guarantee only, not content detection: a free-text field
+(`system_prompt`, `rag_sources`, `tool_permissions` keys, …) still accepts and
+retains arbitrary text, including a value that happens to look like a real
+credential (Codex#12, round 7 / #7, round 8, 2026-09-12 - see
+`tests/unit/test_answers.py`). Given this project's Vault-only credential
+policy, never place a real secret in any assessment field. **Rejected (HTTP
+422):**
 an unknown patch field, a permission value outside the closed enum, a type
 mismatch. Tool names are *not* a fixed vocabulary - a diagnosed system can have
 any tool name - so `tool_permissions[<new name>]` **adds** that tool to the
