@@ -9,13 +9,15 @@ intended). '?' and '%' in the path have similar misparsing risks.
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import url2pathname
 
 import pytest
 
-from app.storage.db import FTS5Unavailable, _read_only_uri, connect
+from app.storage.db import ForeignDatabaseError, FTS5Unavailable, _read_only_uri, connect
 
 
 @pytest.mark.parametrize(
@@ -64,3 +66,62 @@ def test_missing_fts5_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     monkeypatch.setattr(db_module, "_has_fts5", lambda conn: False)
     with pytest.raises(FTS5Unavailable):
         connect(tmp_path / "no-fts5.sqlite")
+
+
+def test_connect_does_not_chmod_a_preexisting_parent_directory(tmp_path: Path) -> None:
+    """Regression for Codex#4 (round 8, 2026-09-12), reproduced exactly as
+    reported: `connect()` chmod'd `db_path.parent` to 0o700 unconditionally,
+    even when that directory already existed and was not this call's to
+    re-permission - a database placed inside an existing, deliberately
+    0o755 shared directory silently had that directory's permissions
+    changed."""
+    parent = tmp_path / "shared"
+    parent.mkdir(mode=0o755)
+    os.chmod(parent, 0o755)  # mkdir's mode is umask-adjusted; force the exact value
+
+    connect(parent / "idx.sqlite").close()
+
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o755
+
+
+def test_connect_rejects_a_symlinked_db_path(tmp_path: Path) -> None:
+    """Regression for Codex#4 (round 8, 2026-09-12), reproduced exactly as
+    reported: `os.chmod(db_path, ...)` follows a symlink at that exact
+    path - precreating db_path as a symlink to an unrelated file caused
+    the chmod to silently re-permission that unrelated TARGET. connect()
+    must refuse a symlinked db_path outright rather than open or chmod
+    through it."""
+    target = tmp_path / "unrelated.txt"
+    target.write_text("not a database", encoding="utf-8")
+    os.chmod(target, 0o644)
+    db_path = tmp_path / "idx.sqlite"
+    db_path.symlink_to(target)
+
+    with pytest.raises(OSError):
+        connect(db_path)
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644, "the symlink TARGET must be untouched"
+
+
+def test_connect_does_not_chmod_a_foreign_database_before_rejecting_it(
+    tmp_path: Path,
+) -> None:
+    """Regression for Codex#4 (round 8, 2026-09-12), reproduced exactly as
+    reported: the chmod used to run immediately after sqlite3.connect()
+    opened the file - BEFORE the foreign-database (application_id) check
+    had a chance to refuse it - so a database this call was about to
+    reject as "not ours" had already had its permissions silently
+    changed."""
+    import sqlite3
+
+    db_path = tmp_path / "foreign.sqlite"
+    foreign = sqlite3.connect(str(db_path))
+    foreign.execute("CREATE TABLE unrelated (x INTEGER)")
+    foreign.commit()
+    foreign.close()
+    os.chmod(db_path, 0o644)
+
+    with pytest.raises(ForeignDatabaseError):
+        connect(db_path)
+
+    assert stat.S_IMODE(db_path.stat().st_mode) == 0o644, "a rejected foreign db must be untouched"

@@ -7,6 +7,7 @@ fail-closed choice, so these tests use clean corpora for the success path.
 
 from __future__ import annotations
 
+import os
 import stat
 from pathlib import Path
 
@@ -591,6 +592,46 @@ def test_reindex_creates_the_index_directory_and_file_non_world_readable(
     assert dir_mode == 0o700, oct(dir_mode)
     assert db_mode == 0o600, oct(db_mode)
     assert lock_mode == 0o600, oct(lock_mode)
+
+
+def test_reindex_does_not_chmod_a_preexisting_index_directory(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#4 (round 8, 2026-09-12), reproduced exactly as
+    reported: reindexing to a database inside an EXISTING 0o755 directory
+    changed that directory to 0o700 - a relative db_path like
+    "index.sqlite" makes this the current working directory itself."""
+    existing = tmp_path / "existing"
+    existing.mkdir(mode=0o755)
+    os.chmod(existing, 0o755)  # mkdir's mode is umask-adjusted; force the exact value
+    db = existing / "idx.sqlite"
+
+    report = reindex_atomic(corpus_alt_root, db)
+
+    assert report.ok
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o755
+
+
+def test_reindex_rejects_a_lock_path_symlinked_to_an_unrelated_file(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#4 (round 8, 2026-09-12), reproduced exactly as
+    reported: precreating `idx.sqlite.lock` as a symlink to an unrelated
+    0o644 file caused reindexing to chmod that unrelated TARGET to 0o600 -
+    plain `open(lock_path, "a")` and `os.chmod(lock_path, ...)` both
+    follow a symlink at that exact path."""
+    db = tmp_path / "idx.sqlite"
+    lock_path = db.with_suffix(db.suffix + ".lock")
+    unrelated = tmp_path / "unrelated.txt"
+    unrelated.write_text("not a lock file", encoding="utf-8")
+    os.chmod(unrelated, 0o644)
+    lock_path.symlink_to(unrelated)
+
+    report = reindex_atomic(corpus_alt_root, db)
+
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert stat.S_IMODE(unrelated.stat().st_mode) == 0o644, "the symlink TARGET must be untouched"
 
 
 def test_reindex_snapshot_is_immune_to_source_mutation_after_it_is_taken(

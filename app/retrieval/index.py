@@ -23,7 +23,7 @@ from app.ingestion.validator import Level, iter_knowledge_files, validate_tree
 from app.models.knowledge import KnowledgeUnitFrontMatter
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
 from app.models.retrieval import Chunk, chunk_content_hash
-from app.storage.db import ForeignDatabaseError, connect, verify_application_id
+from app.storage.db import ForeignDatabaseError, connect, open_no_follow, verify_application_id
 from app.storage.integrity import verify_chunk_hashes
 from app.storage.repository import ChunkRepository
 
@@ -197,12 +197,29 @@ def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexRe
     # a fail-open one, but every caller of this function is entitled to
     # get a ReindexReport back, not an arbitrary exception type.
     try:
+        # Codex#4 (round 8, 2026-09-12), reproduced exactly as reported:
+        # this chmod ran unconditionally, even when the parent directory
+        # already existed and was not ours to re-permission (e.g. a
+        # relative db_path like "index.sqlite" made `db_path.parent`
+        # resolve to the current working directory, which always
+        # "exists" - reindexing chmod'd the caller's cwd to 0700). Only
+        # chmod a directory this call actually created.
+        parent_already_existed = db_path.parent.exists()
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        if not parent_already_existed:
+            with contextlib.suppress(OSError):
+                os.chmod(db_path.parent, 0o700)
+        # Codex#4 (round 8, 2026-09-12), reproduced exactly as reported:
+        # plain `open(lock_path, "a")` + `os.chmod(lock_path, ...)` both
+        # follow a symlink at `lock_path` - precreating it as a symlink to
+        # an unrelated file caused the chmod to silently re-permission
+        # that unrelated TARGET. `open_no_follow` (app.storage.db) opens
+        # with O_NOFOLLOW, so a symlink here raises OSError (ELOOP)
+        # instead, and fchmod on the resulting fd can never be redirected.
+        lock_fd = open_no_follow(lock_path, 0o600)
         with contextlib.suppress(OSError):
-            os.chmod(db_path.parent, 0o700)
-        lock_file = open(lock_path, "a", encoding="utf-8")  # noqa: SIM115 - `with` below
-        with contextlib.suppress(OSError):
-            os.chmod(lock_path, 0o600)
+            os.fchmod(lock_fd, 0o600)
+        lock_file = os.fdopen(lock_fd, "a", encoding="utf-8")
     except OSError as exc:
         return ReindexReport(
             decision=stop(

@@ -62,6 +62,34 @@ class ForeignDatabaseError(RuntimeError):
     Knowledge OS index - refusing to write into an unrelated database."""
 
 
+# Codex#4 (round 8, 2026-09-12), reproduced exactly as reported: `os.chmod`
+# resolves its path argument the normal way, following a symlink at that
+# exact path - precreating a state file (the db path or the reindex lock
+# file) as a symlink to an unrelated file caused chmod() to silently
+# re-permission that unrelated TARGET (e.g. to 0600), not the state file
+# itself. `open(path, mode)` has the same problem when creating the file:
+# it happily creates/writes through a pre-existing symlink. Opening with
+# O_NOFOLLOW instead makes the open itself fail (ELOOP) if the final path
+# component is a symlink, and fchmod() on that verified descriptor can
+# never be redirected by a later swap of the path.
+def open_no_follow(path: str | Path, mode: int) -> int:
+    """Open (creating if missing) with O_NOFOLLOW; the returned fd is both
+    verified-not-a-symlink and safe to fchmod()."""
+    return os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, mode)
+
+
+def chmod_no_follow(path: str | Path, mode: int) -> None:
+    """Set `mode` on `path` without ever following a symlink planted there -
+    see `open_no_follow` above. Raises OSError (including ELOOP for a
+    symlink) rather than silently chmod'ing whatever the symlink points to;
+    callers that consider a chmod failure non-fatal wrap this themselves."""
+    fd = open_no_follow(path, mode)
+    try:
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
 def verify_application_id(conn: sqlite3.Connection, db_path: str | Path) -> None:
     """Raise ForeignDatabaseError unless `conn` is either a brand new/empty
     database or already carries this app's `application_id`. Shared by
@@ -122,15 +150,28 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
         # confidential results - a local build produced a world-readable
         # (0o644) db and directory. Another local user reading the SQLite
         # file directly bypasses the classification filter entirely.
+        #
+        # Codex#4 (round 8, 2026-09-12), reproduced exactly as reported:
+        # this chmod ran unconditionally, even when `parent` already
+        # existed and was not ours to re-permission (a shared directory
+        # the caller passed in, or - for a bare relative db_path like
+        # "index.sqlite" - the current working directory itself, since
+        # `Path("index.sqlite").parent == Path(".")`, which always
+        # "exists"). Only chmod a directory this call actually created.
         parent = Path(db_path).parent
+        parent_already_existed = parent.exists()
         parent.mkdir(parents=True, exist_ok=True)
-        with contextlib.suppress(OSError):  # best-effort on filesystems without POSIX perms
-            os.chmod(parent, 0o700)
+        if not parent_already_existed:
+            with contextlib.suppress(OSError):  # best-effort: no POSIX perms on this fs
+                os.chmod(parent, 0o700)
+        # Codex#4 (round 8, 2026-09-12): verify db_path's final component
+        # is not a symlink (and is regular-file-safe to chmod) BEFORE
+        # sqlite3 ever opens it - `open_no_follow` raises OSError (ELOOP)
+        # rather than silently creating/opening through a planted symlink.
+        os.close(open_no_follow(db_path, 0o600))
+
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    if str(db_path) != ":memory:":
-        with contextlib.suppress(OSError):
-            os.chmod(db_path, 0o600)
     if not _has_fts5(conn):
         conn.close()
         raise FTS5Unavailable(
@@ -152,6 +193,16 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
     else:
         # a genuinely fresh file (or an existing empty one) - safe to claim.
         conn.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
+
+    # Codex#4 (round 8, 2026-09-12), reproduced exactly as reported: the
+    # chmod used to run right after sqlite3.connect() opened the file -
+    # BEFORE the foreign-database check above had a chance to refuse it -
+    # so a database this call was about to reject as "not ours" had
+    # already had its permissions silently changed. Only touch permissions
+    # once we know this file is either freshly ours or already verified.
+    if str(db_path) != ":memory:":
+        with contextlib.suppress(OSError):
+            chmod_no_follow(db_path, 0o600)
 
     conn.executescript(SCHEMA)
     return conn
