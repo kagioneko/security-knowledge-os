@@ -3,15 +3,16 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `cb77022` (round-9 cross-review findings addressed, **not yet pushed**)
+- Commit: `37e3c56` (round-10 cross-review findings addressed, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **208**
-- Tests: **513** items (512 pass, 1 skip = JA-R02)
-- `scripts/preflight.py`: **PASS** (now also verifies `constraints.txt`'s
-  pins actually match the installed environment, round 9 Codex#8, not just
-  that the file is present)
+- Tests: **529** items (528 pass, 1 skip = JA-R02)
+- `scripts/preflight.py`: **PASS** (now also verifies `constraints.txt` pins
+  every installed dependency-closure package, round 10 Codex#9, not just
+  that present pins match; and that the "Tracked files by area" table and
+  the licence status stay consistent with reality, round 10 Codex#10)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **nine rounds**, 2026-09-11 -- 2026-09-12. Rounds 1-2
+  audit), **ten rounds**, 2026-09-11 -- 2026-09-13. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -88,8 +89,34 @@ review; regenerate with `git ls-files` after any change.
   a second time uncaught) — **all 13 fixed**, each with a regression test
   confirmed to fail against the pre-fix code via `git stash` — see
   `git log` commit messages ("fix round-9 Codex#…") for the itemized
-  mapping. A tenth round re-reviewing these round-9 fixes is the next
-  step before push.
+  mapping. Round 10 (2026-09-13, audited commit `f1acfb5`): Codex
+  **CHANGES-REQUIRED** again (10 findings independent of round 9's: 2 HIGH —
+  reindex_atomic()'s backup copy used a predictable path and `shutil.copy2`,
+  so a pre-created symlink at that path let an attacker overwrite an
+  arbitrary file with SQLite bytes, and the verified staging database could
+  be substituted with a symlink to an attacker-built database between
+  verification and the final `os.replace()`; 4 MEDIUM — direct (non-reindex)
+  corpus loading via `load_corpus()` was still vulnerable to an ancestor
+  directory being swapped to a symlink after containment checks passed, the
+  knowledge revision hash omitted `classification`/`title`/`category`/
+  `source_ref`/`provenance` so changing them without bumping `version` left
+  the `/answers` cache key unchanged, that same cache key was computed from
+  a separate, independent read of rules/safe-tests/the index taken before
+  the actual evaluation reloaded them (a race, not just a staleness gap),
+  and unauthenticated `POST /v1/knowledge/reindex` had no nonblocking
+  admission control despite entering a blocking `flock()`; 4 LOW — a
+  clause-level `sorted()` on heterogeneous YAML keys raised a raw
+  `TypeError` (the sibling condition-level case was fixed in round 9), a
+  corrupt/foreign SQLite database made `/answers` return an untyped 500
+  instead of failing closed, `constraints.txt` completeness (every
+  installed dependency having a pin) was never checked, only pin
+  consistency, and this manifest's own "Tracked files by area" table plus
+  a residual-risk doc still contradicted reality) — **all 10 fixed**, each
+  with a regression test confirmed to fail against the pre-fix code via
+  `git stash`/`git checkout` — see `git log` commit messages ("fix
+  round-10 Codex#…" and the finding-specific commits above them) for the
+  itemized mapping. An eleventh round re-reviewing these round-10 fixes is
+  the next step before push.
 
 ## Tracked files by area
 
