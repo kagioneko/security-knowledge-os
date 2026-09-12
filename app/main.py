@@ -62,21 +62,24 @@ _MAX_BODY_BYTES = 1_000_000
 
 class _MaxBodySizeMiddleware:
     """Raw ASGI middleware: reject a request body over `_MAX_BODY_BYTES`
-    before FastAPI/pydantic ever parses it. Added via `app.add_middleware()`
-    (not `@app.middleware("http")`, which would need to fully buffer the body
-    itself via `Request.body()` to inspect it - defeating the point). Counts
-    bytes on the raw `receive()` channel and aborts as soon as the cap is
-    crossed, rather than trusting a Content-Length header (absent under
-    chunked transfer-encoding) or waiting for the full body to buffer.
+    before FastAPI/pydantic - or any handler - ever sees it. Added via
+    `app.add_middleware()` (not `@app.middleware("http")`, which would need
+    to fully buffer the body itself via `Request.body()` to inspect it -
+    defeating the point).
 
-    Raises an ``HTTPException`` (not a plain exception) because FastAPI's own
-    body-reading (``fastapi/routing.py``'s ``request_body_to_args``) wraps
-    ``await request.json()`` in `except HTTPException: raise` / `except
-    Exception: raise HTTPException(400, "There was an error parsing the
-    body")` - a plain exception raised from inside `receive()` while that
-    runs is caught by the second branch and reported as a generic 400,
-    masking this as a body-parsing error rather than the deliberate 413 it
-    actually is."""
+    Codex#13 (round 8, 2026-09-12) added a Content-Length precheck for a
+    BODYLESS endpoint (one whose handler takes no Request/body parameter
+    and so never calls `receive()` at all) - fixed the ordinary case, but
+    Codex#10 (round 9, 2026-09-12), reproduced exactly as reported: a
+    CHUNKED request (which omits Content-Length entirely) to that same
+    bodyless endpoint was still never counted by anything, since nothing
+    downstream ever called `receive()` to trigger a per-chunk count.
+    Eagerly draining and counting the FULL body itself, for every request,
+    before the app ever runs, closes this regardless of Content-Length
+    vs. chunked encoding and regardless of whether the handler underneath
+    ever reads the body - the drained messages are buffered and replayed
+    through a substitute `receive()` so a handler that DOES read the body
+    still sees it normally."""
 
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -109,34 +112,57 @@ class _MaxBodySizeMiddleware:
                 except ValueError:
                     declared = None
                 if declared is not None and declared > _MAX_BODY_BYTES:
-                    await send(
-                        {
-                            "type": "http.response.start",
-                            "status": 413,
-                            "headers": [(b"content-type", b"application/json")],
-                        }
-                    )
-                    await send(
-                        {
-                            "type": "http.response.body",
-                            "body": b'{"detail":"request body too large"}',
-                        }
-                    )
+                    await self._reject_413(send)
                     return
                 break
 
+        # Codex#10 (round 9, 2026-09-12), reproduced exactly as reported:
+        # the Content-Length precheck above fixed the ordinary case, but a
+        # CHUNKED request (which omits Content-Length entirely) to a
+        # bodyless endpoint - one whose handler takes no Request/body
+        # parameter and so never calls receive() at all - was never
+        # counted by anything: the old `_limited_receive` wrapper only
+        # counted bytes on receive() calls the downstream app actually
+        # made. Eagerly draining and counting the FULL body ourselves,
+        # for every request, before the app ever runs, removes that
+        # dependency entirely - it works the same whether the client used
+        # Content-Length or chunked encoding, and whether or not the
+        # handler underneath ever reads the body. The drained messages are
+        # buffered and replayed through a substitute `receive()` so a
+        # handler that DOES read the body still sees it normally.
+        buffered: list[Any] = []
         seen = 0
-
-        async def _limited_receive() -> Any:
-            nonlocal seen
+        while True:
             message = await receive()
-            if message["type"] == "http.request":
-                seen += len(message.get("body") or b"")
-                if seen > _MAX_BODY_BYTES:
-                    raise HTTPException(status_code=413, detail="request body too large")
-            return message
+            buffered.append(message)
+            if message["type"] != "http.request":
+                break
+            seen += len(message.get("body") or b"")
+            if seen > _MAX_BODY_BYTES:
+                await self._reject_413(send)
+                return
+            if not message.get("more_body", False):
+                break
 
-        await self.app(scope, _limited_receive, send)
+        async def _replay_receive() -> Any:
+            if buffered:
+                return buffered.pop(0)
+            return await receive()
+
+        await self.app(scope, _replay_receive, send)
+
+    @staticmethod
+    async def _reject_413(send: Any) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send(
+            {"type": "http.response.body", "body": b'{"detail":"request body too large"}'}
+        )
 
 
 app.add_middleware(_MaxBodySizeMiddleware)

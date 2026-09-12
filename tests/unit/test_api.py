@@ -338,6 +338,54 @@ def test_reindex_endpoint(
     assert resp.json()["decision"]["outcome"] == "ALLOWED"
 
 
+def test_chunked_oversized_body_to_a_bodyless_route_is_rejected() -> None:
+    """Regression for Codex#10 (round 9, 2026-09-12), reproduced exactly as
+    reported: the Content-Length precheck (round 8, Codex#13) fixed the
+    ordinary oversized-request case, but a CHUNKED request (which omits
+    Content-Length entirely) to a bodyless endpoint was never counted by
+    anything, since nothing downstream ever called receive() to trigger
+    the old per-chunk counter. Tested directly at the ASGI protocol level
+    (no Content-Length header, multiple http.request frames with
+    more_body=True) since it is the transport-level omission of
+    Content-Length that matters here, not any particular HTTP client's
+    ability to produce one."""
+    import asyncio
+
+    import app.main as main_module
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/knowledge/reindex",
+        "headers": [],  # no content-length - as under chunked transfer-encoding
+    }
+    chunk = b"x" * 100_000
+    chunks_needed = main_module._MAX_BODY_BYTES // len(chunk) + 2
+    remaining = chunks_needed
+
+    async def fake_receive() -> dict[str, object]:
+        nonlocal remaining
+        remaining -= 1
+        return {"type": "http.request", "body": chunk, "more_body": remaining > 0}
+
+    async def downstream_app(scope: object, receive: object, send: object) -> None:
+        # a bodyless handler: never calls receive() itself, same as
+        # reindex()'s real handler.
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    sent: list[dict[str, object]] = []
+
+    async def fake_send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    middleware = main_module._MaxBodySizeMiddleware(downstream_app)
+    asyncio.run(middleware(scope, fake_receive, fake_send))
+
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 413
+
+
 def test_reindex_rejects_an_oversized_body_despite_taking_no_body_param(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
