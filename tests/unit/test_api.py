@@ -950,6 +950,23 @@ def test_reindex_rejects_a_cross_port_localhost_origin(
     assert resp.status_code == 403
 
 
+def test_reindex_rejects_a_malformed_origin_with_403_not_500(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#9 (round 12, 2026-09-13), reproduced exactly as
+    reported: `urlsplit(origin).hostname`/`.port` raise a raw ValueError
+    for a malformed authority (a non-numeric port, or an invalid IPv6
+    literal) - `_is_local_origin` propagated that straight out as a
+    generic 500 instead of the 403 every other untrusted-origin shape
+    already gets. A header this malformed is exactly as untrusted as one
+    naming a different host outright."""
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(REPO / "tests" / "fixtures" / "corpus_alt"))
+    monkeypatch.setenv("SKOS_DB_PATH", str(tmp_path / "idx.sqlite"))
+    for origin in ("http://localhost:bad", "http://localhost:99999", "http://[:::]:80"):
+        resp = client.post("/v1/knowledge/reindex", headers={"Origin": origin})
+        assert resp.status_code == 403, origin
+
+
 def test_reindex_rejects_a_forged_localhost_host_from_a_remote_peer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

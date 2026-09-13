@@ -428,12 +428,26 @@ def _is_local_origin(request: Request) -> bool:
     for header in ("origin", "referer"):
         value = request.headers.get(header)
         if value:
-            parts = urlsplit(value)
-            hostname = (parts.hostname or "").lower()
+            # Codex#9 (round 12, 2026-09-13), reproduced exactly as
+            # reported: `urlsplit(value).hostname`/`.port` raise a raw
+            # ValueError for a malformed authority (an invalid IPv6
+            # literal, or a non-numeric port) - direct calls with
+            # `Origin: http://localhost:bad` or `http://[:::]:80`
+            # propagated that ValueError straight out of this function,
+            # becoming a generic 500 instead of the 403 every OTHER
+            # untrusted-origin shape already gets from the caller below. A
+            # header this malformed is exactly as untrusted as one naming
+            # a different host outright - fail closed the same way.
+            try:
+                parts = urlsplit(value)
+                hostname = (parts.hostname or "").lower()
+                port = parts.port
+            except ValueError:
+                return False
             if hostname not in _ALLOWED_HOSTS:
                 return False
             return parts.scheme == request.url.scheme and _effective_port(
-                parts.scheme, parts.port
+                parts.scheme, port
             ) == _effective_port(request.url.scheme, request.url.port)
     host = _hostname_only(request.headers.get("host") or "")
     return host in _ALLOWED_HOSTS
