@@ -117,6 +117,39 @@ def test_assess_oversized_yaml_exits_cleanly_instead_of_raising(
     assert "invalid assessment file" in capsys.readouterr().err
 
 
+def test_assess_a_directory_exits_cleanly_instead_of_raising(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Regression for Codex#10 (round 12, 2026-09-13), reproduced exactly as
+    reported: `_cmd_assess()` only ever checks that the file EXISTS - a
+    directory also "exists", but `Path.read_text()` on one raises
+    `IsADirectoryError` (an `OSError` subclass), which escaped as a raw
+    traceback instead of the normal exit-code-2 usage-error path."""
+    a_directory = tmp_path / "not-a-file"
+    a_directory.mkdir()
+
+    code = main(["assess", str(a_directory)])
+
+    assert code == 2
+    assert "could not read input file" in capsys.readouterr().err
+
+
+def test_assess_invalid_utf8_exits_cleanly_instead_of_raising(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Regression for Codex#10 (round 12, 2026-09-13), reproduced exactly as
+    reported: invalid UTF-8 bytes raise `UnicodeDecodeError` from
+    `Path.read_text(encoding="utf-8")`, before `safe_load_bounded()`'s own
+    error handling ever runs - escaping as a raw traceback."""
+    bad = tmp_path / "bad-encoding.yaml"
+    bad.write_bytes(b"name: \xff\xfe not valid utf-8\n")
+
+    code = main(["assess", str(bad)])
+
+    assert code == 2
+    assert "could not read input file" in capsys.readouterr().err
+
+
 def test_assess_policy_blocked_exit_three(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

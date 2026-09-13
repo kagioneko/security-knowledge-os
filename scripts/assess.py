@@ -5,6 +5,9 @@
 
 The LLM provider comes from SKOS_LLM_PROVIDER (default: none). With provider=none
 the assessment still completes - the deterministic engine does all the work.
+
+Exit codes: 0 ok, 2 usage/input error, 3 POLICY_BLOCKED (matches app/cli.py's
+`skos assess`).
 """
 
 from __future__ import annotations
@@ -21,7 +24,8 @@ from app.config import Settings  # noqa: E402
 from app.ingestion.parser import FrontMatterError, safe_load_bounded  # noqa: E402
 from app.llm.factory import get_client  # noqa: E402
 from app.models.assessment import AssessmentInput  # noqa: E402
-from app.reviewer.assess import assess  # noqa: E402
+from app.models.report import ReportStatus  # noqa: E402
+from app.reviewer.report import build_report  # noqa: E402
 from app.reviewer.rule_loader import load_rules  # noqa: E402
 from app.storage.db import connect  # noqa: E402
 
@@ -49,6 +53,12 @@ def main(argv: list[str] | None = None) -> int:
     # own post-parse total-size validator ever ran, and nothing caught
     # yaml.YAMLError/RecursionError/ValidationError - a malformed or
     # hostile file escaped as a raw traceback.
+    #
+    # Codex#10 (round 12, 2026-09-13), reproduced exactly as reported: this
+    # try block did not cover `args.input.read_text()` itself either - a
+    # directory (`IsADirectoryError`, an `OSError` subclass, since
+    # `args.input.exists()` above is true for directories too) or invalid
+    # UTF-8 (`UnicodeDecodeError`) both escaped as a raw traceback.
     try:
         raw = safe_load_bounded(
             args.input.read_text(encoding="utf-8"),
@@ -61,6 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     except (FrontMatterError, ValidationError) as exc:
         print(f"invalid assessment file: {exc}", file=sys.stderr)
         return 2
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"could not read input file: {exc}", file=sys.stderr)
+        return 2
     catalogue = load_rules(args.rules)
     client = get_client(settings)
 
@@ -71,12 +84,24 @@ def main(argv: list[str] | None = None) -> int:
     # schema into a not-yet-built --db path instead of treating it as absent.
     conn = connect(args.db, read_only=True) if args.db and args.db.exists() else None
     try:
-        result = assess(inp, catalogue, settings=settings, client=client, index_conn=conn)
+        # Codex#10 (round 12, 2026-09-13), reproduced exactly as reported:
+        # this called assess() (the bare library entry point) directly -
+        # every OTHER caller (app/main.py, app/cli.py) goes through
+        # build_report(), which catches PolicyStop and turns it into a
+        # typed, POLICY_BLOCKED AssessmentReport. A corrupt/foreign index
+        # (or any other PolicyStop-raising condition) here instead escaped
+        # as a raw, uncaught exception - never the documented exit code 3.
+        report = build_report(inp, catalogue, settings=settings, client=client, index_conn=conn)
     finally:
         if conn is not None:
             conn.close()
 
-    print(result.model_dump_json(indent=2))
+    if report.status is ReportStatus.POLICY_BLOCKED:
+        print(report.model_dump_json(indent=2))
+        return 3
+
+    assert report.result is not None
+    print(report.result.model_dump_json(indent=2))
     return 0
 
 

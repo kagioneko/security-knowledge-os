@@ -332,6 +332,17 @@ def main(argv: list[str] | None = None) -> int:
     except (FrontMatterError, ValidationError) as exc:
         print(f"invalid assessment file: {exc}", file=sys.stderr)
         return 2
+    # Codex#10 (round 12, 2026-09-13), reproduced exactly as reported:
+    # `_load_input()`'s / `_cmd_report()`'s `path.read_text()` is not
+    # covered by any of the catches above - a FILE that merely EXISTS
+    # (the only thing `_cmd_assess()`/`_cmd_report()` check) can still be
+    # a directory (`IsADirectoryError`, an `OSError` subclass), unreadable
+    # (`PermissionError`), or not valid UTF-8 (`UnicodeDecodeError`), and
+    # each escaped as a raw traceback instead of this CLI's normal
+    # exit-code-2 usage-error path.
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"could not read input file: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
