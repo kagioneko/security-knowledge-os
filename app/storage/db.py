@@ -179,20 +179,86 @@ def untrusted_ancestor_chain_reason(path: Path) -> str | None:
     by-untrusted is only dangerous WITHOUT the sticky bit (``S_ISVTX``) -
     with it set, only the entry's owner, the directory's owner, or root
     can rename or unlink an entry, so a shared, world-writable ancestor
-    with the sticky bit is not a substitution vector either. Resolves
-    symlinks along the way deliberately (this is a pass/fail precondition
-    check on the trust of the path a caller is ABOUT to use, not a
-    race-proof no-follow read itself).
+    with the sticky bit is not a substitution vector either.
+
+    Follows symlinks along the way deliberately (this remains a pass/fail
+    precondition check on the trust of the path a caller is ABOUT to use,
+    not a race-proof no-follow read itself) - but does so one lexical
+    component at a time (Codex#1, round 15, 2026-09-14), NOT via a single
+    upfront `path.resolve()` as this used to. `.resolve()` silently erases
+    evidence that a lexical ancestor was itself a symlink: given a
+    world-writable `exposed/` containing `exposed/link -> elsewhere/`, the
+    old check resolved straight through to `elsewhere` and only ever
+    walked up FROM THERE, never once looking at `exposed` even though
+    `exposed/link` is exactly the entry an attacker holding `exposed` can
+    repoint at will. Walking lexically means every directory actually
+    traversed - including the ones a symlink points through - gets
+    checked, and the directory CONTAINING a symlink is checked before the
+    symlink is followed (an untrusted writer there can repoint it).
     """
-    current = path.resolve(strict=False)
-    while True:
-        ancestor = current.parent
-        if ancestor == current:
-            return None  # reached the filesystem root
-        reason = _untrusted_directory_stat_reason(ancestor)
+    components = [p for p in path.absolute().parts[1:] if p != ""]
+    _, reason = _walk_lexical_ancestors(components[:-1], origin=path, hops=0)
+    return reason
+
+
+_MAX_SYMLINK_HOPS = 40  # matches a typical kernel ELOOP bound
+
+
+def _walk_lexical_ancestors(
+    components: list[str], *, origin: Path, hops: int
+) -> tuple[Path, str | None]:
+    """Walk `components` (absolute, from the filesystem root) one entry at
+    a time using `lstat` - never `.resolve()` - checking every directory
+    actually traversed for untrusted-writability. `.`/`..` are resolved
+    against the REAL current location as they are encountered, not
+    stripped lexically ahead of time (a `..` following a symlink must
+    apply to the symlink's TARGET directory, not the literal string
+    before it). A symlink is followed only after its containing directory
+    passes the check; its target's own components are then walked the
+    same way, recursively, bounded by `_MAX_SYMLINK_HOPS` the same way the
+    kernel bounds a resolution loop (ELOOP). A component that cannot be
+    stat'd (including "does not exist yet") fails CLOSED, matching
+    `_untrusted_directory_stat_reason`'s own OSError handling below -
+    returning None here would let an unverifiable/about-to-be-created
+    ancestor pass silently.
+    """
+    if hops > _MAX_SYMLINK_HOPS:
+        return Path("/"), f"too many levels of symbolic links resolving {origin}"
+    current = Path("/")
+    for name in components:
+        if name in ("", "."):
+            continue
+        if name == "..":
+            current = current.parent
+            continue
+        candidate = current / name
+        try:
+            st = candidate.lstat()
+        except OSError as exc:
+            return candidate, f"could not verify ownership/permissions of {candidate}: {exc}"
+        if stat.S_ISLNK(st.st_mode):
+            reason = _untrusted_directory_stat_reason(current)
+            if reason is not None:
+                return candidate, f"{reason}; contains a symlink on the path to {origin}"
+            link_target = Path(os.readlink(candidate))
+            if link_target.is_absolute():
+                target_components = [p for p in link_target.parts[1:] if p != ""]
+            else:
+                target_components = [p for p in (current / link_target).parts[1:] if p != ""]
+            resolved, reason = _walk_lexical_ancestors(
+                target_components, origin=origin, hops=hops + 1
+            )
+            if reason is not None:
+                return resolved, reason
+            current = resolved
+            continue
+        reason = _untrusted_directory_stat_reason(candidate)
         if reason is not None:
-            return f"{reason}; an ancestor directory of {path} could be renamed out from under it"
-        current = ancestor
+            return candidate, (
+                f"{reason}; an ancestor directory of {origin} could be renamed out from under it"
+            )
+        current = candidate
+    return current, None
 
 
 def _untrusted_directory_stat_reason(directory: Path) -> str | None:

@@ -302,6 +302,68 @@ def test_untrusted_ancestor_chain_allows_a_verified_private_group(
     assert db_module.untrusted_ancestor_chain_reason(state / "idx.sqlite") is None
 
 
+def test_untrusted_ancestor_chain_flags_a_world_writable_directory_behind_a_symlink(
+    tmp_path: Path,
+) -> None:
+    """Regression for Codex#1 (round 15, 2026-09-14), reproduced exactly as
+    reported: untrusted_ancestor_chain_reason() started with
+    `path.resolve(strict=False)`, which silently follows every symlink
+    before any check runs - erasing the evidence that a lexical ancestor
+    was a symlink at all. A world-writable `exposed/` directory containing
+    `exposed/link -> nicely_owned/target` let the OLD check see only
+    `nicely_owned/target`'s own (fine) ancestors, never `exposed` itself,
+    even though `exposed/link` is exactly the entry an attacker holding
+    `exposed` can repoint at will."""
+    from app.storage.db import untrusted_ancestor_chain_reason
+
+    exposed = tmp_path / "exposed"
+    exposed.mkdir()
+    os.chmod(exposed, 0o777)
+
+    nicely_owned = tmp_path / "nicely_owned"
+    target = nicely_owned / "target"
+    target.mkdir(parents=True)
+    os.chmod(nicely_owned, 0o700)
+    os.chmod(target, 0o700)
+
+    link = exposed / "link"
+    link.symlink_to(target, target_is_directory=True)
+
+    root = link / "knowledge"
+    root.mkdir()
+
+    reason = untrusted_ancestor_chain_reason(root / "idx.sqlite")
+    assert reason is not None
+    assert str(exposed) in reason
+
+
+def test_untrusted_ancestor_chain_allows_a_symlink_through_trusted_directories(
+    tmp_path: Path,
+) -> None:
+    """Mirror case: a symlink whose containing directory (and whose
+    target's own ancestors) are all trusted must still be allowed - the
+    fix must not flag every symlink outright, only ones reachable through
+    an untrusted directory."""
+    from app.storage.db import untrusted_ancestor_chain_reason
+
+    real = tmp_path / "real"
+    target = real / "target"
+    target.mkdir(parents=True)
+    os.chmod(real, 0o700)
+    os.chmod(target, 0o700)
+
+    link_parent = tmp_path / "link_parent"
+    link_parent.mkdir()
+    os.chmod(link_parent, 0o700)
+    link = link_parent / "link"
+    link.symlink_to(target, target_is_directory=True)
+
+    root = link / "knowledge"
+    root.mkdir()
+
+    assert untrusted_ancestor_chain_reason(root / "idx.sqlite") is None
+
+
 def test_group_is_private_for_a_real_single_member_group() -> None:
     """Sanity check against the REAL system group database (not
     monkeypatched) - this process's own primary group, in the common
