@@ -112,6 +112,77 @@ def test_reindex_fails_closed_and_keeps_the_old_index(
     assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
 
 
+def test_reindex_returns_policy_blocked_when_current_revision_hits_fts5_unavailable(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#3 (round 15, 2026-09-14), reproduced exactly as
+    reported: FTS5Unavailable (raised by connect() when the SQLite build
+    lacks the FTS5 extension) is a RuntimeError subclass, not one of the
+    types the pre-swap except clause around _current_revision() caught -
+    it escaped as a raw exception instead of the typed POLICY_BLOCKED
+    ReindexReport every other failure path here returns. The existing
+    index is never touched either way (this never gets far enough to
+    write one)."""
+    import app.retrieval.index as index_module
+    from app.storage.db import FTS5Unavailable
+
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    assert good.ok
+
+    original_connect = index_module.connect
+
+    def _flaky(path, *, read_only=False):  # type: ignore[no-untyped-def]
+        if Path(path) == db:
+            raise FTS5Unavailable("simulated: FTS5 unavailable in this build")
+        return original_connect(path, read_only=read_only)
+
+    index_module.connect = _flaky
+    try:
+        report = reindex_atomic(corpus_alt_root, db)
+    finally:
+        index_module.connect = original_connect
+
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+
+
+def test_reindex_returns_policy_blocked_when_staging_integrity_check_hits_fts5_unavailable(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#3 (round 15, 2026-09-14): the build-step's own
+    pre-swap except clause (around building + integrity-checking the
+    STAGING index, before publish) had the identical FTS5Unavailable gap
+    - connect(staging, read_only=True) can raise it too, and this is also
+    a pre-swap failure path where db_path must stay untouched."""
+    import app.retrieval.index as index_module
+    from app.storage.db import FTS5Unavailable
+
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    good_revision = good.new_revision
+    assert good.ok
+
+    original_connect = index_module.connect
+
+    def _flaky(path, *, read_only=False):  # type: ignore[no-untyped-def]
+        if ".staging." in Path(path).name:
+            raise FTS5Unavailable("simulated: FTS5 unavailable in this build")
+        return original_connect(path, read_only=read_only)
+
+    index_module.connect = _flaky
+    try:
+        report = reindex_atomic(corpus_alt_root, db)
+    finally:
+        index_module.connect = original_connect
+
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert _revision(db) == good_revision  # existing index untouched (pre-swap failure)
+    assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
+    assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
+
+
 def test_reindex_from_a_missing_root_fails_closed_and_keeps_the_old_index(
     tmp_path: Path, corpus_alt_root: Path
 ) -> None:

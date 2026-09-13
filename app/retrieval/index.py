@@ -27,6 +27,7 @@ from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
 from app.models.retrieval import Chunk, chunk_content_hash
 from app.storage.db import (
     ForeignDatabaseError,
+    FTS5Unavailable,
     UntrustedStateDirectoryError,
     connect,
     open_no_follow,
@@ -471,7 +472,17 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
         old_revision = _current_revision(db_path)
         expected_file_count = len(iter_knowledge_files(knowledge_root))
         issues = validate_tree(knowledge_root)
-    except (OSError, sqlite3.Error, ForeignDatabaseError, ValueError) as exc:
+    except (OSError, sqlite3.Error, ForeignDatabaseError, FTS5Unavailable, ValueError) as exc:
+        # Codex#3 (round 15, 2026-09-14), reproduced exactly as reported:
+        # FTS5Unavailable (raised by connect() -> _current_revision() when
+        # the SQLite build lacks the FTS5 extension) is a RuntimeError
+        # subclass, not one of the types this tuple caught - a supported
+        # environmental failure escaped as a raw exception instead of the
+        # typed POLICY_BLOCKED ReindexReport every other failure path here
+        # returns. The existing index is never touched either way (this
+        # never gets far enough to write one); this is a contract gap, not
+        # a fail-open one.
+        #
         # Codex#5 (round 7, 2026-09-12): validate_tree() above reads every
         # file's content too - a malformed-content failure there (invalid
         # UTF-8, deeply-nested
@@ -609,7 +620,14 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
         sqlite3.Error,
         ValueError,
         UntrustedStateDirectoryError,
+        FTS5Unavailable,
     ) as abort:
+        # Codex#3 (round 15, 2026-09-14): see the identical FTS5Unavailable
+        # gap fixed above for _current_revision() - this build-step try
+        # block also opens SQLite connections (connect(staging, ...) for
+        # the integrity check) that can raise it, and this is likewise a
+        # pre-swap failure path (db_path is never touched here either way).
+        #
         # any failure before the swap - including an unexpected OSError while
         # building, not just our own _ReindexAbort - leaves db_path untouched.
         # Codex#4 sub-point 2 (round 5, 2026-09-12): ValueError is included as
