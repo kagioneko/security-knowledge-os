@@ -19,6 +19,29 @@ def test_validate_rules_ok(capsys: pytest.CaptureFixture[str]) -> None:
     assert "7 rule(s), all valid" in capsys.readouterr().out
 
 
+def test_ingest_ok(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["ingest", str(REPO / "knowledge")]) == 0
+
+
+def test_ingest_a_file_instead_of_a_directory_exits_nonzero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression for Codex#5 (round 13, 2026-09-13), reproduced exactly as
+    reported (this is the finding's own repro shape): `skos ingest
+    README.md` reported "loadable units: 0" and exited 0 - load_corpus()
+    records the root-is-not-a-directory failure as an ERROR-level
+    `report.issues` entry, but `_cmd_ingest()` only ever printed
+    `report.skipped` (per-file skips) and always returned 0, never
+    looking at `report.issues` at all."""
+    a_file = REPO / "README.md"
+
+    code = main(["ingest", str(a_file)])
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "ERROR" in err and "snapshot-failed" in err
+
+
 def test_validate_safe_tests_ok(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["validate-safe-tests", str(REPO / "safe_tests")]) == 0
     assert "4 safe-test template(s), all valid" in capsys.readouterr().out

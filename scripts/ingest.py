@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings  # noqa: E402
 from app.ingestion.loader import compute_knowledge_revision, load_corpus  # noqa: E402
+from app.ingestion.validator import Level  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,6 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"loadable units : {len(report.units)}")
     print(f"revision       : {compute_knowledge_revision(report.units)}")
     print(f"warnings       : {report.warning_count}")
+    print(f"errors         : {report.error_count}")
     for unit in report.units:
         fm = unit.front_matter
         print(f"  + {fm.id} [{fm.classification.value}] {fm.title}")
@@ -38,6 +40,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"skipped        : {len(report.skipped)}")
         for path, reason in report.skipped:
             print(f"  - {path}\n      {reason}")
+    # Codex#5 (round 13, 2026-09-13), reproduced exactly as reported: this
+    # always returned 0 - a root that could not even be safely snapshotted
+    # (missing, not a directory, an unsafe ancestor) reported "loadable
+    # units: 0" and exited success, with the actual ERROR-level issue
+    # never printed or checked anywhere.
+    if report.error_count:
+        print("\nERROR(S):", file=sys.stderr)
+        for issue in report.issues:
+            if issue.level is Level.ERROR:
+                print(f"  {issue}", file=sys.stderr)
+        return 1
     return 0
 
 

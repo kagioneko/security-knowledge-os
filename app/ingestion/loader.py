@@ -43,6 +43,18 @@ class LoadReport:
     def warning_count(self) -> int:
         return sum(1 for issue in self.issues if issue.level is Level.WARNING)
 
+    @property
+    def error_count(self) -> int:
+        # Codex#5 (round 13, 2026-09-13), reproduced exactly as reported:
+        # `load_corpus()` records a snapshot-failure (root missing, not a
+        # directory, an unsafe ancestor, ...) as an ERROR-level issue here,
+        # but both `scripts/ingest.py` and `app/cli.py`'s `_cmd_ingest()`
+        # only ever printed `report.skipped` (per-FILE skips) and always
+        # returned exit 0 - a root that is not a directory at all reported
+        # "loadable units: 0" and succeeded, never surfacing that the ERROR
+        # this property now exposes had occurred.
+        return sum(1 for issue in self.issues if issue.level is Level.ERROR)
+
 
 def load_corpus(knowledge_root: Path) -> LoadReport:
     """Codex#3 (round 5, 2026-09-12), reproduced exactly as reported: this

@@ -179,6 +179,18 @@ def _cmd_ingest(args: argparse.Namespace, s: Settings) -> int:
         print(f"  + {fm.id} [{fm.classification.value}] {fm.title}")
     for path, reason in report.skipped:
         print(f"  - {path}\n      {reason}")
+    # Codex#5 (round 13, 2026-09-13), reproduced exactly as reported: this
+    # always returned 0 - a root that could not even be safely snapshotted
+    # (missing, not a directory, an unsafe ancestor) reported "loadable
+    # units: 0" and exited success, with the actual ERROR-level issue
+    # (recorded in report.issues, separate from the per-file report.skipped
+    # printed above) never printed or checked anywhere.
+    if report.error_count:
+        print("\nERROR(S):", file=sys.stderr)
+        for issue in report.issues:
+            if issue.level is Level.ERROR:
+                print(f"  {issue}", file=sys.stderr)
+        return 1
     return 0
 
 
