@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `7c73db3` (round-14 fixes, **not yet pushed**)
+- Commit: `6b15132` (round-15 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **212**
-- Tests: **635** items (634 pass, 1 skip = JA-R02)
+- Tests: **646** items (645 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -15,7 +15,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **fourteen rounds**, 2026-09-11 -- 2026-09-13. Rounds 1-2
+  audit), **fifteen rounds**, 2026-09-11 -- 2026-09-14. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -285,9 +285,56 @@ review; regenerate with `git ls-files` after any change.
   needed a bounded thread-pool timeout rather than an unbounded call,
   since the pre-fix always-blocking flock() would otherwise hang the
   test suite itself — confirmed by hand) — see `git log` commit messages
-  ("fix round-14 Codex#…") for the itemized mapping. A fifteenth round
-  re-reviewing everything through this commit is the next step before
-  push.
+  ("fix round-14 Codex#…") for the itemized mapping.
+
+  Round 15 (2026-09-14, audited commit `557f036`, after one usage-limit
+  interruption and a scheduled automatic retry): Codex **CHANGES-REQUIRED**
+  again (9 findings independent of round 14's: 2 HIGH — the round-12/13
+  ancestor-directory trust check started with `path.resolve(strict=False)`,
+  which silently follows every symlink before any check runs, so a
+  world-writable `exposed/` containing `exposed/link -> elsewhere/` was
+  invisible to the check entirely (it only ever inspected `elsewhere`'s
+  own ancestors); and the review-runner's `danger-full-access` sandbox
+  risk, re-confirmed still present (round-14's accepted `ulimit`
+  mitigation, container/VM fix still deliberately deferred, unchanged);
+  6 MEDIUM — `connect()`/`reindex_atomic()`'s "only chmod what we
+  created" fix (round 8) was itself still check-then-act
+  (`.exists()` then `.mkdir(exist_ok=True)`, which silently accepts a
+  pre-existing symlink), so `os.chmod()` could re-permission an
+  attacker's own directory reached through a raced symlink — reproduced
+  with Codex's own exploit script; `FTS5Unavailable` (a RuntimeError
+  subclass) escaped both pre-swap reindex exception handlers instead of
+  the typed `POLICY_BLOCKED` contract; the safe-test destination
+  validator truncated a URL authority at its first `:`, treating
+  userinfo as the host (`https://localhost:443@attacker.com/x` checked
+  only "localhost") and never recognized a bare IPv6 literal at all;
+  `AnswerPatch`'s "never accepts a raw secret" guarantee does not extend
+  to an opaque, unrecognized-shape value in free-text fields — already
+  an intentional, tested limitation, clarified in documentation rather
+  than re-scoped; the `/answers` singleflight lock's blocking
+  `threading.Lock.acquire()` had no timeout, so enough duplicate
+  requests could exhaust FastAPI's shared sync-route worker pool; and
+  both cross-review scripts reported success (exit 0, a "実行済み"
+  HANDOFF.md marker) even when the reviewer or preflight actually
+  failed or produced no verdict; 1 LOW — dependency versions are pinned
+  but not hash-authenticated, re-confirmed as the same already-accepted
+  MVP-scope trade-off `constraints.txt` already documented) — **all 9
+  addressed** (7 fixed outright with regression tests confirmed to fail
+  against the pre-fix code via `git stash`/`git checkout`, 2 documented
+  as already-accepted unchanged risk) — see `git log` commit messages
+  ("fix round-15 Codex#…") for the itemized mapping. Notably, **finding
+  #1 from rounds 9/11/12/13/14 (credential-shaped values reaching the
+  LLM payload) did NOT recur** — the round-14 structural anonymization
+  fix held under this round's independent audit, confirmed explicitly in
+  finding #5's own text ("the LLM-review anonymization prevents these
+  values from being structurally copied into its review payload").
+  While fixing the review-script honesty finding (#8), an earlier
+  attempt to test it assumed `timeout 0` fails a command instantly; GNU
+  `timeout` actually treats `0` as "no timeout", so a real Codex
+  invocation ran (and consumed real usage) before being caught and
+  killed ~15s in — subsequent testing used a fake `codex`/`agy` shim in
+  a throwaway sandbox instead. A sixteenth round re-reviewing everything
+  through this commit is the next step before push.
 
 ## Tracked files by area
 
@@ -449,7 +496,9 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
 | JA-R02 cross-language retrieval | accepted (out of MVP scope) |
 | CLI uses argparse, not Typer (spec §5) | accepted, documented |
 | Pack Manager (M9-M10) not in repo | out of scope; ZIP-import attack surface is future work |
-| `scripts/run_cross_review.sh` runs the Codex reviewer with `CODEX_SANDBOX=danger-full-access` (bwrap fails on this host's kernel config) - a prompt-injection string in any reviewed file could induce the reviewer to run arbitrary commands or write/exfiltrate outside this repo, not just audit it | accepted, mitigated — round-14 Codex#2: a full fix (disposable container/VM, read-only bind mount, no Vault/socket access, restricted network) was discussed with the user and deliberately deferred - it changes how the shared Codex review pipeline runs across every project on the host, needing the host's actual container/VM capabilities checked first. Applied instead: `ulimit`-based CPU-time and max-written-file-size caps scoped to the reviewer process alone (deliberately not a process-count limit, which is enforced per-UID system-wide on Linux and could starve unrelated services running as the same account) |
+| `scripts/run_cross_review.sh` runs the Codex reviewer with `CODEX_SANDBOX=danger-full-access` (bwrap fails on this host's kernel config) - a prompt-injection string in any reviewed file could induce the reviewer to run arbitrary commands or write/exfiltrate outside this repo, not just audit it | accepted, mitigated — round-14 Codex#2, re-confirmed unchanged round-15 Codex#7: a full fix (disposable container/VM, read-only bind mount, no Vault/socket access, restricted network) was discussed with the user and deliberately deferred - it changes how the shared Codex review pipeline runs across every project on the host, needing the host's actual container/VM capabilities checked first. Applied instead: `ulimit`-based CPU-time and max-written-file-size caps scoped to the reviewer process alone (deliberately not a process-count limit, which is enforced per-UID system-wide on Linux and could starve unrelated services running as the same account) |
+| `AnswerPatch` free-text fields accept an opaque, unrecognized-shape value (no known credential pattern matches it) | accepted, documented — round-15 Codex#5: already an intentional, tested limitation (round-7); never reaches the external LLM regardless (round-14 structural anonymization); retained in the in-memory store for the entry's lifetime, same accepted unauthenticated-localhost scope as the store itself |
+| `constraints.txt` pins exact versions but not package hashes - the same version string could still come from an unintended index or a replaced artifact | accepted (documented in `constraints.txt` itself, out of scope for this MVP release process) — round-15 Codex#9 re-confirmed the same trade-off, no new action |
 
 ## Cross-AI review — status
 

@@ -24,6 +24,14 @@
 # This is a reviewed, working combination as of commit generation time - not a
 # hash-pinned/supply-chain-attested lock (see PyPA's pylock.toml specification
 # for that stronger guarantee, out of scope for this MVP release process).
+#
+# Codex#9 (round 15, 2026-09-14), reproduced exactly as reported: version
+# pinning alone does not authenticate package artifacts - the same
+# version string can still come from an unintended index or a replaced
+# artifact; `-c constraints.txt` verifies resolved VERSIONS, not hashes.
+# Re-flagged, same accepted scope decision as above - no new action
+# taken here beyond confirming it is still the intended, documented
+# trade-off for this MVP.
 
 annotated-doc==0.0.5
 annotated-types==0.8.0
