@@ -231,11 +231,44 @@ def reindex_atomic(
         # resolve to the current working directory, which always
         # "exists" - reindexing chmod'd the caller's cwd to 0700). Only
         # chmod a directory this call actually created.
-        parent_already_existed = db_path.parent.exists()
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        if not parent_already_existed:
-            with contextlib.suppress(OSError):
-                os.chmod(db_path.parent, 0o700)
+        #
+        # Codex#2 (round 15, 2026-09-14), reproduced exactly as reported:
+        # "only chmod if we created it" was itself still check-then-act -
+        # `.exists()` (check) then `.mkdir(exist_ok=True)` (act) leaves a
+        # window where an attacker able to write into the parent's own
+        # parent can plant a symlink to an unrelated, differently-owned
+        # directory in between; `Path.mkdir(exist_ok=True)` silently
+        # accepts a pre-existing symlink-to-a-directory (only `is_dir()`
+        # is checked, which follows symlinks), so the "not already
+        # existed" branch still ran and `os.chmod()` - which follows
+        # symlinks by default - re-permissioned the attacker's directory
+        # instead. Fixed identically to `app.storage.db.connect()`'s own
+        # version of this same bug (Codex#2, round 15): atomic `os.mkdir`
+        # (EEXIST for a symlink too - no exist_ok to swallow that) and
+        # chmod only ever through an fd opened O_DIRECTORY|O_NOFOLLOW.
+        db_path.parent.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.mkdir(db_path.parent, 0o700)
+            parent_created = True
+        except FileExistsError:
+            parent_created = False
+        try:
+            parent_fd = os.open(db_path.parent, os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            return ReindexReport(
+                decision=stop(
+                    PolicyOutcome.POLICY_BLOCKED,
+                    "reindex",
+                    f"state directory {db_path.parent} could not be safely opened "
+                    f"(may be a symlink or not a directory): {exc}",
+                )
+            )
+        try:
+            if parent_created:
+                with contextlib.suppress(OSError):
+                    os.fchmod(parent_fd, 0o700)
+        finally:
+            os.close(parent_fd)
         # Codex#3 (round 11, 2026-09-13): finding #1/#2 (round 10) each
         # narrowed a symlink-substitution TOCTOU window in this function to
         # a single stat-then-use gap, but a residual window is provably

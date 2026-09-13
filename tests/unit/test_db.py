@@ -9,6 +9,7 @@ intended). '?' and '%' in the path have similar misparsing risks.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import stat
 from pathlib import Path
@@ -407,6 +408,48 @@ def test_connect_refuses_to_write_when_an_ancestor_is_untrusted(tmp_path: Path) 
 
     with pytest.raises(UntrustedStateDirectoryError):
         connect(state / "idx.sqlite")
+
+
+def test_connect_state_dir_creation_does_not_chmod_a_racily_planted_symlinks_target(
+    tmp_path: Path,
+) -> None:
+    """Regression for Codex#2 (round 15, 2026-09-14), reproduced exactly as
+    reported (this IS Codex's own repro, adapted to pytest): the old
+    check-then-act sequence - `parent.exists()`, then
+    `parent.mkdir(exist_ok=True)`, then `os.chmod(parent, 0o700)` - let an
+    attacker who can write into `parent`'s own parent plant a symlink to
+    an unrelated, differently-owned directory in the window between the
+    exists() check and the mkdir() call. `Path.mkdir(exist_ok=True)`
+    silently accepts a pre-existing symlink-to-a-directory (only
+    `is_dir()` is checked, which follows symlinks), so the "we created it"
+    branch still ran and `os.chmod()` - which follows symlinks by default
+    - re-permissioned the attacker's OWN directory instead of `parent`."""
+    from unittest.mock import patch
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    os.chmod(victim, 0o755)
+
+    state_link = tmp_path / "state"
+    state_link.symlink_to(victim, target_is_directory=True)
+
+    real_exists = Path.exists
+    already_raced = {"done": False}
+
+    def raced_exists(self: Path) -> bool:
+        if self == state_link and not already_raced["done"]:
+            already_raced["done"] = True
+            return False  # simulates: checked just before the attacker plants the symlink
+        return real_exists(self)
+
+    # either outcome is acceptable here; the mode assertion below is the point
+    with patch.object(Path, "exists", raced_exists), contextlib.suppress(Exception):
+        connect(state_link / "index.sqlite").close()
+
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o755, (
+        "connect() must never chmod a directory it did not itself create, "
+        "even when racing a symlink into its intended state-directory path"
+    )
 
 
 def test_snapshot_tree_refuses_when_an_ancestor_of_root_is_untrusted(tmp_path: Path) -> None:

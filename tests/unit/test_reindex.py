@@ -7,6 +7,7 @@ fail-closed choice, so these tests use clean corpora for the success path.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import stat
 from pathlib import Path
@@ -753,6 +754,50 @@ def test_reindex_does_not_chmod_a_preexisting_index_directory(
 
     assert report.ok
     assert stat.S_IMODE(existing.stat().st_mode) == 0o755
+
+
+def test_reindex_state_dir_creation_does_not_chmod_a_racily_planted_symlinks_target(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#2 (round 15, 2026-09-14), reproduced exactly as
+    reported: the old check-then-act sequence - `db_path.parent.exists()`,
+    then `.mkdir(exist_ok=True)`, then `os.chmod(db_path.parent, 0o700)` -
+    let an attacker who can write into the parent's own parent plant a
+    symlink to an unrelated, differently-owned directory in the window
+    between the exists() check and the mkdir() call.
+    `Path.mkdir(exist_ok=True)` silently accepts a pre-existing
+    symlink-to-a-directory (only `is_dir()` is checked, which follows
+    symlinks), so the "not already existed" branch still ran and
+    `os.chmod()` - which follows symlinks by default - re-permissioned
+    the attacker's own directory instead of the intended state
+    directory. Identical bug and fix to `app.storage.db.connect()`'s own
+    version of this (same round, finding #2)."""
+    from unittest.mock import patch
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    os.chmod(victim, 0o755)
+
+    state_link = tmp_path / "state"
+    state_link.symlink_to(victim, target_is_directory=True)
+
+    real_exists = Path.exists
+    already_raced = {"done": False}
+
+    def raced_exists(self: Path) -> bool:
+        if self == state_link and not already_raced["done"]:
+            already_raced["done"] = True
+            return False  # simulates: checked just before the attacker plants the symlink
+        return real_exists(self)
+
+    # either outcome is acceptable here; the mode assertion below is the point
+    with patch.object(Path, "exists", raced_exists), contextlib.suppress(Exception):
+        reindex_atomic(corpus_alt_root, state_link / "idx.sqlite")
+
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o755, (
+        "reindex_atomic() must never chmod a directory it did not itself create, "
+        "even when racing a symlink into its intended state-directory path"
+    )
 
 
 def test_reindex_rejects_a_lock_path_symlinked_to_an_unrelated_file(

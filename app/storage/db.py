@@ -394,12 +394,44 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
         # "index.sqlite" - the current working directory itself, since
         # `Path("index.sqlite").parent == Path(".")`, which always
         # "exists"). Only chmod a directory this call actually created.
+        #
+        # Codex#2 (round 15, 2026-09-14), reproduced exactly as reported:
+        # "only chmod if we created it" was itself still check-then-act -
+        # `parent.exists()` (check) followed by `parent.mkdir(exist_ok=True)`
+        # (act) leaves a window where an attacker able to write into
+        # parent's own parent can plant a symlink to an unrelated,
+        # differently-owned directory in between. `Path.mkdir(exist_ok=True)`
+        # silently accepts a pre-existing symlink-to-a-directory (it only
+        # checks `is_dir()`, which follows symlinks) instead of raising, so
+        # the "not already existed" branch still ran - and `os.chmod()`
+        # follows symlinks by default, re-permissioning whatever the
+        # attacker's target was, not `parent` itself. Fixed by making
+        # creation atomic (bare `os.mkdir`, which raises EEXIST for a
+        # symlink exactly like it would for a real directory - no
+        # exist_ok to silently swallow that) and only ever chmod'ing
+        # through an fd opened O_DIRECTORY|O_NOFOLLOW - if a symlink (or
+        # non-directory) is ever in that spot, the open itself fails
+        # instead of chmod silently following it.
         parent = Path(db_path).parent
-        parent_already_existed = parent.exists()
-        parent.mkdir(parents=True, exist_ok=True)
-        if not parent_already_existed:
-            with contextlib.suppress(OSError):  # best-effort: no POSIX perms on this fs
-                os.chmod(parent, 0o700)
+        parent.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.mkdir(parent, 0o700)
+            created_parent = True
+        except FileExistsError:
+            created_parent = False
+        try:
+            parent_fd = os.open(parent, os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise UntrustedStateDirectoryError(
+                f"state directory {parent} could not be safely opened "
+                f"(may be a symlink or not a directory): {exc}"
+            ) from exc
+        try:
+            if created_parent:
+                with contextlib.suppress(OSError):  # best-effort: no POSIX perms on this fs
+                    os.fchmod(parent_fd, 0o700)
+        finally:
+            os.close(parent_fd)
         # Codex#6 (round 11, 2026-09-13): see untrusted_state_dir_reason()'s
         # own comment - the pre/post identity check further down can be
         # defeated by an ABA race (substitute, let SQLite write, restore
