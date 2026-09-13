@@ -163,3 +163,31 @@ def test_db_connection_string_with_credentials_is_flagged() -> None:
 
 def test_an_ordinary_url_without_credentials_is_not_flagged_as_a_db_string() -> None:
     assert _PATTERNS["db-connection-string"].search("https://example.com/docs") is None
+
+
+def test_openai_project_key_shaped_value_is_flagged() -> None:
+    """Regression for Codex#1 (round 13, 2026-09-13): a modern OpenAI
+    project API key (`sk-proj-` prefix) was not in any pattern list,
+    runtime or scanner - this is the finding's own repro shape."""
+    text = "sk-proj-" + "A" * 48
+    assert _PATTERNS["openai-key"].search(text) is not None
+
+
+def test_huggingface_token_shaped_value_is_flagged() -> None:
+    text = "hf_" + "B" * 30
+    assert _PATTERNS["huggingface-token"].search(text) is not None
+
+
+def test_npm_token_shaped_value_is_flagged() -> None:
+    text = "npm_" + "C" * 36
+    assert _PATTERNS["npm-token"].search(text) is not None
+
+
+def test_pypi_token_shaped_value_is_flagged() -> None:
+    text = "pypi-AgEIcHlwaS5vcmcC" + "D" * 50
+    assert _PATTERNS["pypi-token"].search(text) is not None
+
+
+def test_github_fine_grained_pat_shaped_value_is_flagged() -> None:
+    text = "github_pat_" + "E" * 22
+    assert _PATTERNS["github-fine-grained-pat"].search(text) is not None

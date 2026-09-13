@@ -183,6 +183,43 @@ def test_free_text_fields_reject_a_db_connection_string_with_credentials() -> No
         AssessmentInput(name="t", system_prompt=fake_url)
 
 
+def test_free_text_fields_reject_an_openai_project_key_shaped_value() -> None:
+    """Regression for Codex#1 (round 13, 2026-09-13), reproduced exactly as
+    reported: a modern OpenAI project API key (`sk-proj-` + 48 more
+    characters) in `outbound_destinations` reached `AttackSurface` / the
+    `ReviewPayload` sent to an external LLM provider unfiltered - this is
+    the finding's own repro shape."""
+    fake_key = "sk-proj-" + "A" * 48
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"outbound_destinations": [fake_key]})
+    with pytest.raises(ValidationError):
+        AssessmentInput(name="t", system_prompt=fake_key)
+
+
+def test_free_text_fields_reject_a_huggingface_token_shaped_value() -> None:
+    fake_token = "hf_" + "B" * 30
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"rag_sources": [fake_token]})
+
+
+def test_free_text_fields_reject_an_npm_token_shaped_value() -> None:
+    fake_token = "npm_" + "C" * 36
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"tool_permissions": {fake_token: "read"}})
+
+
+def test_free_text_fields_reject_a_pypi_token_shaped_value() -> None:
+    fake_token = "pypi-AgEIcHlwaS5vcmcC" + "D" * 50
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"outbound_destinations": [fake_token]})
+
+
+def test_free_text_fields_reject_a_github_fine_grained_pat_shaped_value() -> None:
+    fake_pat = "github_pat_" + "E" * 22
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"rag_sources": [fake_pat]})
+
+
 def test_allow_list_of_fields() -> None:
     assert set(AnswerPatch.model_fields) == {
         "system_prompt",

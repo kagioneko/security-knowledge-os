@@ -24,6 +24,18 @@ ordinary free text; this module's actual, honest boundary is "known
 shapes are rejected", never "no secret can pass". Do not restate that
 stronger claim in docs/comments (Codex#1, round 12: a prior restatement
 of it in PUBLICATION_MANIFEST.md was itself flagged as inaccurate).
+
+Codex#1 (round 13, 2026-09-13) found the same gap a FOURTH time (an
+OpenAI `sk-proj-` key), and explicitly noted that widening this
+enumeration "cannot establish a never-accepts/never-sends guarantee" -
+its suggested structural alternative (stop forwarding raw free-text
+identifiers to the LLM at all; replace them with local placeholders or
+derived booleans/enums/counts) was deliberately NOT taken here: it would
+reshape AttackSurface/AssessmentContext and the LLM review payload
+broadly, a larger, riskier change than this bug-fix cycle scope, and was
+explicitly deferred by request (2026-09-13) in favor of continuing this
+enumeration. Revisit that structural option if this same gap recurs
+again rather than adding a fifth format in isolation.
 """
 
 from __future__ import annotations
@@ -80,6 +92,25 @@ CREDENTIAL_SHAPE_PATTERNS: dict[str, re.Pattern[str]] = {
         r"(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://"
         r"[^\s:@/'\"]+:[^\s:@/'\"]+@[^\s/'\"]+"
     ),
+    # Codex#1 (round 13, 2026-09-13), reproduced exactly as reported: a
+    # modern OpenAI project API key (fixed `sk-proj-` prefix) reached the
+    # LLM payload unfiltered - the existing `sk-ant-`/Stripe `sk_`-prefixed
+    # patterns above do not match this distinct, longer prefix.
+    "openai-key": re.compile(r"sk-proj-[0-9A-Za-z_-]{20,}"),
+    # A Hugging Face access token: fixed `hf_` prefix, 20+ alphanumeric
+    # characters.
+    "huggingface-token": re.compile(r"hf_[0-9A-Za-z]{20,}"),
+    # A granular npm access token: fixed `npm_` prefix, 36 alphanumeric
+    # characters (legacy npm tokens are bare UUIDs, indistinguishable from
+    # ordinary identifiers, and are not covered here).
+    "npm-token": re.compile(r"npm_[0-9A-Za-z]{36}"),
+    # A PyPI API token: fixed `pypi-AgEIcHlwaS5vcmcC` prefix (base64 of a
+    # fixed macaroon header identifying pypi.org), 50+ more characters.
+    "pypi-token": re.compile(r"pypi-AgEIcHlwaS5vcmcC[0-9A-Za-z_-]{50,}"),
+    # A GitHub fine-grained personal access token: fixed `github_pat_`
+    # prefix - distinct from the classic `gh[pousr]_`-prefixed tokens
+    # already covered above.
+    "github-fine-grained-pat": re.compile(r"github_pat_[0-9A-Za-z_]{20,}"),
 }
 
 
