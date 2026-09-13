@@ -26,16 +26,24 @@ stronger claim in docs/comments (Codex#1, round 12: a prior restatement
 of it in PUBLICATION_MANIFEST.md was itself flagged as inaccurate).
 
 Codex#1 (round 13, 2026-09-13) found the same gap a FOURTH time (an
-OpenAI `sk-proj-` key), and explicitly noted that widening this
-enumeration "cannot establish a never-accepts/never-sends guarantee" -
-its suggested structural alternative (stop forwarding raw free-text
-identifiers to the LLM at all; replace them with local placeholders or
-derived booleans/enums/counts) was deliberately NOT taken here: it would
-reshape AttackSurface/AssessmentContext and the LLM review payload
-broadly, a larger, riskier change than this bug-fix cycle scope, and was
-explicitly deferred by request (2026-09-13) in favor of continuing this
-enumeration. Revisit that structural option if this same gap recurs
-again rather than adding a fifth format in isolation.
+OpenAI `sk-proj-` key). Codex's suggested structural alternative (stop
+forwarding raw free-text identifiers to the LLM at all; replace them
+with local placeholders or derived booleans/enums/counts) was discussed
+with the user and NOT taken - it would reshape AttackSurface/
+AssessmentContext and the LLM review payload broadly. Instead
+(2026-09-13), the identifier-shaped fields (RAG sources, outbound
+destinations, tool names, approval keys - never system_prompt/
+developer_prompt, which are free text by design) gained a SECOND,
+independent check below: `reject_non_identifier_shapes()`. Where
+`reject_credential_shapes()` above is a denylist (block known-bad
+shapes; a new key format always needs a new entry), the new check is an
+ALLOWLIST for what a legitimate identifier looks like (short, separator-
+delimited words) - a real API key's random body is, by construction, a
+long UNBROKEN run of characters regardless of which service issued it,
+so this generalizes to key formats no one has enumerated yet, at the
+cost of also rejecting a legitimate identifier that happens to contain
+one unusually long unbroken word (accepted trade-off: the field is
+identifier-shaped by contract, not prose).
 """
 
 from __future__ import annotations
@@ -120,5 +128,50 @@ def reject_credential_shapes(value: str) -> str:
             raise ValueError(
                 "value looks like a real credential (matches a known secret shape) - "
                 "store secrets in Vault and never in an assessment field"
+            )
+    return value
+
+
+# Codex#1 (round 13, 2026-09-13): the boundary the ALLOWLIST below draws.
+# A legitimate hostname, tool name, or similar short identifier is made of
+# short words joined by these separators (`api.example.com`,
+# `internal_wiki`, `email_send`, `my-service-name`); a real API key's
+# random body is - regardless of which service issued it, known or not -
+# a single long UNBROKEN run of characters. 24 comfortably covers real
+# identifier words (this project's own fixtures top out at 9-character
+# words: "documents", "customer") while every credential shape already in
+# CREDENTIAL_SHAPE_PATTERNS above has an unbroken random segment well
+# past it.
+_MAX_IDENTIFIER_SEGMENT_LENGTH = 24
+_IDENTIFIER_SEPARATORS = re.compile(r"[.\-_/:@\s]+")
+
+
+def reject_non_identifier_shapes(value: str) -> str:
+    """Codex#1 (round 13, 2026-09-13), reproduced exactly as reported: a
+    modern OpenAI project key reached the LLM payload unfiltered - the
+    FOURTH round in a row this same gap was found under a new format
+    (round 9, 11, 12, 13). Rather than adding a fifth entry to the
+    denylist above, this is an ALLOWLIST for what a legitimate
+    identifier-shaped value looks like: only for fields that are
+    identifiers/hostnames BY CONTRACT (RAG source names, outbound
+    destinations, tool names, approval keys) - never `system_prompt`/
+    `developer_prompt`, which hold actual prose and legitimately may
+    contain a long word, URL, or hash.
+
+    Splits on the usual identifier/hostname separators and rejects any
+    resulting segment over `_MAX_IDENTIFIER_SEGMENT_LENGTH` characters -
+    the shape every random credential body has, independent of which
+    service issued it or whether this module has ever seen that format
+    before. Consulted independently of, and in addition to,
+    `reject_credential_shapes()` above; both must pass.
+    """
+    for segment in _IDENTIFIER_SEPARATORS.split(value):
+        if len(segment) > _MAX_IDENTIFIER_SEGMENT_LENGTH:
+            raise ValueError(
+                f"value contains a {len(segment)}-character unbroken segment "
+                f"(over the {_MAX_IDENTIFIER_SEGMENT_LENGTH}-character limit for a "
+                "single word of a hostname/identifier) - this looks like a "
+                "credential rather than a name; store secrets in Vault and "
+                "never in an assessment field"
             )
     return value

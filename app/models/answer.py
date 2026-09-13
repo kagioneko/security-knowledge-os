@@ -36,7 +36,7 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
-from app.models._credential_shapes import reject_credential_shapes
+from app.models._credential_shapes import reject_credential_shapes, reject_non_identifier_shapes
 
 ToolPerm = Literal["read", "write", "delete", "send", "shell"]
 MemoryScope = Literal["session", "user", "global"]
@@ -63,7 +63,19 @@ _Text = Annotated[str, Field(max_length=50_000), AfterValidator(reject_credentia
 # tool_permissions/human_approval capped the number of keys but not each key's
 # length. Mirrors AssessmentInput's identical `_Short = Annotated[str,
 # Field(max_length=500)]` convention (app/models/assessment.py).
-_ShortItem = Annotated[str, Field(max_length=500), AfterValidator(reject_credential_shapes)]
+#
+# Codex#1 (round 13, 2026-09-13): every field using `_ShortItem` (RAG
+# sources, outbound destinations, tool/approval names) is identifier-
+# shaped BY CONTRACT, unlike `_Text` above (actual prompt prose) - so it
+# also gets `reject_non_identifier_shapes`, the allowlist half of the
+# credential-shape defense (app/models/_credential_shapes.py's own
+# docstring explains why both a denylist and an allowlist are applied).
+_ShortItem = Annotated[
+    str,
+    Field(max_length=500),
+    AfterValidator(reject_credential_shapes),
+    AfterValidator(reject_non_identifier_shapes),
+]
 
 
 class AnswerPatch(BaseModel):

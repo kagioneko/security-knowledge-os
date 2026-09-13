@@ -55,7 +55,16 @@ def test_free_text_fields_accept_an_opaque_non_credential_shaped_value() -> None
     credential shape (see test below) - but an arbitrary OPAQUE string
     with no recognizable shape is still indistinguishable from ordinary
     free text and is accepted. This test documents that narrower,
-    residual limitation explicitly rather than leaving it implicit."""
+    residual limitation explicitly rather than leaving it implicit.
+
+    Codex#1 (round 13, 2026-09-13) narrowed it FURTHER for the
+    identifier-shaped fields (rag_sources, tool_permissions, ...): they
+    now also reject a long UNBROKEN segment regardless of shape (see
+    test_identifier_shaped_fields_reject_an_unrecognized_key_format
+    below) - the value below is deliberately hyphen-separated into short
+    words ("arbitrary", "free", "text", ...) specifically so it still
+    passes that new check too; system_prompt (free prose, not identifier-
+    shaped) never gained that additional constraint."""
     patch = AnswerPatch.model_validate(
         {
             "system_prompt": "arbitrary-free-text-value-12345",
@@ -66,6 +75,63 @@ def test_free_text_fields_accept_an_opaque_non_credential_shaped_value() -> None
     assert patch.system_prompt == "arbitrary-free-text-value-12345"
     assert patch.rag_sources == ["arbitrary-free-text-value-12345"]
     assert patch.tool_permissions == {"arbitrary-free-text-value-12345": "read"}
+
+
+def test_identifier_shaped_fields_reject_an_unrecognized_key_format() -> None:
+    """Regression for Codex#1 (round 13, 2026-09-13): the denylist above
+    (reject_credential_shapes) only ever catches ENUMERATED formats - the
+    FOURTH round in a row (9, 11, 12, 13) a new, previously-unenumerated
+    key format reached the LLM payload. reject_non_identifier_shapes is
+    an ALLOWLIST instead: a completely fictional key shape this project
+    has never seen (no vendor prefix in CREDENTIAL_SHAPE_PATTERNS at all)
+    is still rejected, because its random body is - like every real key -
+    one long unbroken run of characters, which no legitimate hostname/
+    tool-name/identifier is shaped like."""
+    never_enumerated = "zk_totally_unknown_service_" + "X" * 40
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"outbound_destinations": [never_enumerated]})
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"rag_sources": [never_enumerated]})
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"tool_permissions": {never_enumerated: "read"}})
+    with pytest.raises(ValidationError):
+        AssessmentInput(name="t", tools=[{"name": never_enumerated}])
+
+
+def test_identifier_shaped_fields_still_accept_realistic_values() -> None:
+    """The allowlist must not reject the ordinary, legitimate shapes these
+    fields actually hold in real use - hostnames and snake_case names,
+    exactly like this project's own assessment fixtures
+    (tests/fixtures/assessments/) use throughout."""
+    patch = AnswerPatch.model_validate(
+        {
+            "outbound_destinations": ["api.partner-service.example.com"],
+            "rag_sources": ["internal_wiki", "customer_tickets", "uploaded_documents"],
+            "tool_permissions": {"email_send": "send", "doc_delete": "delete"},
+        }
+    )
+    assert patch.outbound_destinations == ["api.partner-service.example.com"]
+    assert patch.rag_sources == ["internal_wiki", "customer_tickets", "uploaded_documents"]
+
+
+def test_identifier_allowlist_segment_length_boundary() -> None:
+    """Pins the exact threshold: a 24-character unbroken segment is still
+    an acceptable single "word" of an identifier; 25 is not."""
+    from app.models._credential_shapes import reject_non_identifier_shapes
+
+    assert reject_non_identifier_shapes("x" * 24) == "x" * 24
+    with pytest.raises(ValueError, match="unbroken segment"):
+        reject_non_identifier_shapes("x" * 25)
+
+
+def test_system_prompt_is_exempt_from_the_identifier_allowlist() -> None:
+    """system_prompt/developer_prompt hold actual prose, not identifiers -
+    a long unbroken word, URL fragment, or hash that would be rejected in
+    an identifier-shaped field must remain accepted here, since it is not
+    itself a recognized credential shape."""
+    long_unbroken_word = "a" * 40  # not a credential shape, just a long word
+    patch = AnswerPatch.model_validate({"system_prompt": long_unbroken_word})
+    assert patch.system_prompt == long_unbroken_word
 
 
 def test_free_text_fields_reject_a_known_credential_shape() -> None:

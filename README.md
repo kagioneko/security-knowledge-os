@@ -147,11 +147,22 @@ failure with `--strict`, `2` usage/input error, `3` `POLICY_BLOCKED`.
 question can fill (`memory_persistent`, `memory_scope`, `outbound_enabled`,
 `credential_storage`, `tool_permissions`, `human_approval`, …). There is no
 generic deep-merge and no field is *named* for a raw secret value - but this
-is a naming/schema guarantee only, not content detection: a free-text field
-(`system_prompt`, `rag_sources`, `tool_permissions` keys, …) still accepts and
-retains arbitrary text, including a value that happens to look like a real
-credential (Codex#12, round 7 / #7, round 8, 2026-09-12 - see
-`tests/unit/test_answers.py`). Given this project's Vault-only credential
+is a naming/schema guarantee only, not a complete content-detection
+guarantee. Two independent checks apply to every free-text field
+(`app/models/_credential_shapes.py`): a **denylist** rejecting values
+matching an enumerated known credential shape (AWS, Stripe, OpenAI, Google,
+GitHub, JWTs, database connection strings, …), and, for fields that are
+identifiers/hostnames *by contract* (`rag_sources`, `outbound_destinations`,
+`tool_permissions`/`human_approval` keys, tool `name`s - never
+`system_prompt`/`developer_prompt`, which hold actual prose), an
+**allowlist** requiring the value to look like a short, separator-delimited
+identifier - a real credential's random body is a long unbroken run of
+characters regardless of which service issued it, so this also rejects key
+formats no one has enumerated yet (Codex#1, rounds 7-13, 2026-09-12 --
+2026-09-13 - see `tests/unit/test_answers.py`). Free-text prose fields
+(`system_prompt`, `developer_prompt`) still only get the denylist - an
+arbitrary opaque string with no recognizable shape is indistinguishable
+from ordinary prose there. Given this project's Vault-only credential
 policy, never place a real secret in any assessment field. **Rejected (HTTP
 422):**
 an unknown patch field, a permission value outside the closed enum, a type

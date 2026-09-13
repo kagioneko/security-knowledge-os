@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
-from app.models._credential_shapes import reject_credential_shapes
+from app.models._credential_shapes import reject_credential_shapes, reject_non_identifier_shapes
 from app.models.risk import Finding, FindingStatus, Severity
 
 # Codex cross-review finding #6 (round 2, 2026-09-11): AssessmentInput had no
@@ -26,7 +26,19 @@ from app.models.risk import Finding, FindingStatus, Severity
 # rejects the same concrete, unambiguous secret SHAPES secret_scan.py /
 # safe_test.py already recognize - it cannot catch every possible secret,
 # but every free-text field is now covered, not left unfiltered.
-_Short = Annotated[str, Field(max_length=500), AfterValidator(reject_credential_shapes)]
+#
+# Codex#1 (round 13, 2026-09-13): `_Short` is used for RAG sources,
+# outbound destinations, and approval-action names - identifier-shaped BY
+# CONTRACT, unlike `_Text` below (actual prompt prose) - so it also gets
+# `reject_non_identifier_shapes`, the allowlist half of the credential-
+# shape defense (app/models/_credential_shapes.py's own docstring
+# explains why both a denylist and an allowlist are applied).
+_Short = Annotated[
+    str,
+    Field(max_length=500),
+    AfterValidator(reject_credential_shapes),
+    AfterValidator(reject_non_identifier_shapes),
+]
 _Text = Annotated[str, Field(max_length=50_000), AfterValidator(reject_credential_shapes)]
 
 # Codex cross-review finding #3 (round 3, 2026-09-12): the per-field bounds
@@ -54,7 +66,12 @@ class MemoryInput(BaseModel):
 
 class ToolInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    name: Annotated[str, Field(max_length=200), AfterValidator(reject_credential_shapes)]
+    name: Annotated[
+        str,
+        Field(max_length=200),
+        AfterValidator(reject_credential_shapes),
+        AfterValidator(reject_non_identifier_shapes),
+    ]
     permissions: str | None = Field(default=None, max_length=100)
     requires_approval: bool | None = None
 
