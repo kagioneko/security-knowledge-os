@@ -3,16 +3,18 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `37e3c56` (round-10 cross-review findings addressed, **not yet pushed**)
+- Commit: `0108bdd` (round-11 cross-review findings addressed, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **208**
-- Tests: **529** items (528 pass, 1 skip = JA-R02)
-- `scripts/preflight.py`: **PASS** (now also verifies `constraints.txt` pins
-  every installed dependency-closure package, round 10 Codex#9, not just
-  that present pins match; and that the "Tracked files by area" table and
-  the licence status stay consistent with reality, round 10 Codex#10)
+- Tests: **550** items (549 pass, 1 skip = JA-R02)
+- `scripts/preflight.py`: **PASS** (now also verifies the documented
+  quickstart `pip install -e` command installs every declared extra and
+  pins `constraints.txt`, round 11 Codex#9; and that the tracked
+  `sbom.json` matches the current environment, ignoring only its
+  timestamp, without preflight itself rewriting that tracked file to
+  check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **ten rounds**, 2026-09-11 -- 2026-09-13. Rounds 1-2
+  audit), **eleven rounds**, 2026-09-11 -- 2026-09-13. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -115,8 +117,42 @@ review; regenerate with `git ls-files` after any change.
   with a regression test confirmed to fail against the pre-fix code via
   `git stash`/`git checkout` — see `git log` commit messages ("fix
   round-10 Codex#…" and the finding-specific commits above them) for the
-  itemized mapping. An eleventh round re-reviewing these round-10 fixes is
-  the next step before push.
+  itemized mapping. Round 11 (2026-09-13, audited commit `f291ec0`): Codex
+  **CHANGES-REQUIRED** again (12 findings independent of round 10's: 3 HIGH
+  — `AnswerPatch`'s credential-shape detection covered only five known
+  formats (AWS, private-key, Slack, GitHub, Anthropic), so a Stripe-style
+  key, JWT, or opaque secret reached the external LLM review payload
+  unredacted; the public `assess()` library entry point validated only
+  that a `RuleCatalogue` was non-empty, so a directly-constructed rule
+  referencing a nonexistent fact evaluated to a deterministic false PASS
+  instead of going through `load_rules()`'s full validation; and the
+  round-10 staging-database fix still checked the staging file by
+  pathname and only *then* called `os.replace()`, leaving an ABA window
+  where the pathname could be swapped to an attacker database in between;
+  7 MEDIUM — the `/answers` cache fingerprint was computed from a second,
+  independent re-read of the rules/safe-test directories rather than the
+  parsed objects actually evaluated, resource loading for `/answers` ran
+  before the concurrency semaphore was acquired, the round-9/10
+  `O_NOFOLLOW` SQLite `connect()` fix still re-resolved the pathname after
+  opening (rather than binding to the held file descriptor), the
+  directory-fd snapshot walk copied every file with no count/size/depth
+  bound, CLI assessment YAML parsing had no pre-parse size/depth
+  protections and did not catch `yaml.YAMLError`/`RecursionError`, the
+  documented `pip install -e ".[dev]"` quickstart did not install the
+  `api`/`llm` extras `scripts/preflight.py`'s own SBOM completeness check
+  requires and never applied `constraints.txt`, and `preflight.py`
+  invoked `generate_sbom.py` without `--check`, so every run silently
+  overwrote the tracked `sbom.json`; 2 LOW — the standalone
+  `validate_tree()` (used by the CLI, independent of `load_corpus()`) still
+  read the live, externally-mutable knowledge root twice per file with no
+  directory-fd snapshot, and this manifest's own test/component counts
+  were already one commit stale at the audited commit) — **all 12 fixed**,
+  each with a regression test confirmed to fail against the pre-fix code
+  (via `git stash` for the code-level findings; the sbom-mutation fix was
+  verified by diffing `sbom.json` before/after both the old and new
+  invocations) — see `git log` commit messages ("fix round-11 Codex#…")
+  for the itemized mapping. A twelfth round re-reviewing these round-11
+  fixes is the next step before push.
 
 ## Tracked files by area
 
