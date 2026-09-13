@@ -32,7 +32,7 @@ import stat
 import tempfile
 from pathlib import Path
 
-from app.storage.db import untrusted_ancestor_chain_reason
+from app.storage.db import untrusted_ancestor_chain_reason, untrusted_directory_reason
 
 
 class SnapshotError(OSError):
@@ -226,6 +226,14 @@ def snapshot_tree(root: Path) -> Path:
     # Shared with app.storage.db.untrusted_state_dir_reason() (round 11),
     # which has the identical gap for db_path's own ancestors.
     untrusted = untrusted_ancestor_chain_reason(root)
+    if untrusted is not None:
+        raise SnapshotError(untrusted)
+    # Codex#4 (round 13, 2026-09-13), reproduced exactly as reported: the
+    # check above verifies every ANCESTOR of `root` but never `root`
+    # ITSELF - a root directly writable by an untrusted group/other
+    # (without the sticky bit) can be substituted the same way, without
+    # needing to touch anything above it.
+    untrusted = untrusted_directory_reason(root)
     if untrusted is not None:
         raise SnapshotError(untrusted)
 

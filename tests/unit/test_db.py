@@ -254,11 +254,18 @@ def test_untrusted_ancestor_chain_allows_group_writable_by_our_own_group(
     assert untrusted_ancestor_chain_reason(state / "idx.sqlite") is None
 
 
-def test_untrusted_ancestor_chain_flags_group_writable_by_a_different_group(
+def test_untrusted_ancestor_chain_flags_group_writable_by_a_non_private_group(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A group-writable ancestor whose group is NOT this process's own is
-    exactly the shared-with-untrusted-others case the check exists for."""
+    """Regression for Codex#4 (round 13, 2026-09-13), reproduced exactly as
+    reported: round 12's check trusted a group-writable ancestor whenever
+    the group's GID merely equalled this process's own effective GID -
+    that does not prove the group is actually PRIVATE. Another local
+    account sharing the same group (a real, common setup - project
+    groups, `docker`, `adm`, ...) could still rename the ancestor.
+    _group_is_private() (not GID equality) is now the actual gate;
+    monkeypatched here directly since real group membership varies by
+    system and this test must be deterministic."""
     import app.storage.db as db_module
 
     shared = tmp_path / "shared"
@@ -268,11 +275,58 @@ def test_untrusted_ancestor_chain_flags_group_writable_by_a_different_group(
     state.mkdir()
     os.chmod(state, 0o700)
 
-    monkeypatch.setattr(db_module.os, "getegid", lambda: shared.stat().st_gid + 1)
+    monkeypatch.setattr(db_module, "_group_is_private", lambda gid: False)
 
     reason = db_module.untrusted_ancestor_chain_reason(state / "idx.sqlite")
     assert reason is not None
     assert str(shared) in reason
+
+
+def test_untrusted_ancestor_chain_allows_a_verified_private_group(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The mirror case: a group-writable ancestor whose group genuinely IS
+    private (this test forces the answer since real group membership
+    varies by system) must still be allowed."""
+    import app.storage.db as db_module
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o775)
+    state = shared / "state"
+    state.mkdir()
+    os.chmod(state, 0o700)
+
+    monkeypatch.setattr(db_module, "_group_is_private", lambda gid: True)
+
+    assert db_module.untrusted_ancestor_chain_reason(state / "idx.sqlite") is None
+
+
+def test_group_is_private_for_a_real_single_member_group() -> None:
+    """Sanity check against the REAL system group database (not
+    monkeypatched) - this process's own primary group, in the common
+    single-user-workstation "user-private group" layout, has no explicit
+    secondary members and exactly one primary-group member (this
+    process's own account). Skips on a system where that convention does
+    not hold (a shared primary group, or a system with no traditional
+    passwd/group database at all)."""
+    import grp
+    import pwd
+
+    from app.storage.db import _group_is_private
+
+    own_gid = os.getegid()
+    own_group = grp.getgrgid(own_gid)
+    primary_members = {entry.pw_uid for entry in pwd.getpwall() if entry.pw_gid == own_gid}
+    if own_group.gr_mem or primary_members != {os.geteuid()}:
+        pytest.skip("this system's own primary group is not a private user-group")
+    assert _group_is_private(own_gid) is True
+
+
+def test_group_is_private_is_false_for_an_unknown_gid() -> None:
+    from app.storage.db import _group_is_private
+
+    assert _group_is_private(2**31 - 1) is False
 
 
 def test_connect_refuses_to_write_when_an_ancestor_is_untrusted(tmp_path: Path) -> None:
@@ -309,4 +363,21 @@ def test_snapshot_tree_refuses_when_an_ancestor_of_root_is_untrusted(tmp_path: P
     (root / "ku.md").write_text("content", encoding="utf-8")
 
     with pytest.raises(SnapshotError, match=str(shared)):
+        snapshot_tree(root)
+
+
+def test_snapshot_tree_refuses_when_root_itself_is_untrusted(tmp_path: Path) -> None:
+    """Regression for Codex#4 (round 13, 2026-09-13), reproduced exactly as
+    reported: snapshot_tree() checked root's ANCESTORS (round 12) but
+    never root ITSELF - a root directly writable by an untrusted group/
+    other (without the sticky bit) can be substituted the same way,
+    without needing to touch anything above it."""
+    from app.ingestion.snapshot import SnapshotError, snapshot_tree
+
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    os.chmod(root, 0o777)
+    (root / "ku.md").write_text("content", encoding="utf-8")
+
+    with pytest.raises(SnapshotError, match=str(root)):
         snapshot_tree(root)

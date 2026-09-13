@@ -108,6 +108,43 @@ def untrusted_state_dir_reason(parent: Path) -> str | None:
     return untrusted_ancestor_chain_reason(parent)
 
 
+def _group_is_private(gid: int) -> bool:
+    """Codex#4 (round 13, 2026-09-13), reproduced exactly as reported: the
+    round-12 fix trusted a group-writable ancestor whenever the group's
+    GID merely equalled this process's own effective GID - that does not
+    establish the group is actually PRIVATE. Another local account that
+    happens to share the same group (a real, common setup - project
+    groups, `docker`, `adm`, ...) could rename an ancestor and substitute
+    a directory between this check and the caller's later open, exactly
+    the ABA this whole check exists to close.
+
+    A group is genuinely private (matches the "user-private group" UPG
+    convention this project's own deployment relies on) only when NO
+    account other than this process's own euid can write as that group:
+    no explicit secondary member (``grp`` entry's ``gr_mem``), and no
+    OTHER account has it as a PRIMARY group either (``gr_mem`` alone
+    misses that - a user's primary group membership lives in ``/etc/
+    passwd``'s gid field, not in ``/etc/group``'s member list). Any
+    lookup failure (unknown gid, no traditional passwd/group database at
+    all) is treated as NOT private - this only ever loosens a check that
+    would otherwise reject the ancestor outright, never the reverse.
+    """
+    import grp
+    import pwd
+
+    try:
+        group = grp.getgrgid(gid)
+    except (KeyError, OSError):
+        return False
+    if group.gr_mem:
+        return False
+    try:
+        primary_members = {entry.pw_uid for entry in pwd.getpwall() if entry.pw_gid == gid}
+    except OSError:
+        return False
+    return primary_members == {os.geteuid()}
+
+
 def untrusted_ancestor_chain_reason(path: Path) -> str | None:
     """Codex#4 (round 12, 2026-09-13), reproduced exactly as reported: the
     check above (and the identical no-follow-at-the-root check
@@ -134,39 +171,65 @@ def untrusted_ancestor_chain_reason(path: Path) -> str | None:
     rule for exactly this situation (``sshd(8)``: a group-writable
     ancestor is accepted when its group matches the user's own), a
     directory is flagged only when it is writable by OTHER, or writable
-    by a GROUP other than this process's own - never merely for being
-    writable by this process's own group. The other property that
-    matters is the same one the kernel itself uses to decide whether
-    ``/tmp`` (world-writable) is safe to share: writable-by-untrusted is
-    only dangerous WITHOUT the sticky bit (``S_ISVTX``) - with it set,
-    only the entry's owner, the directory's owner, or root can rename or
-    unlink an entry, so a shared, world-writable ancestor with the sticky
-    bit is not a substitution vector either. Resolves symlinks along the
-    way deliberately (this is a pass/fail precondition check on the trust
-    of the path a caller is ABOUT to use, not a race-proof no-follow read
-    itself).
+    by a group that is not PROVEN PRIVATE to this process's own account
+    (Codex#4, round 13, 2026-09-13 - matching only the *GID*, as round 12
+    did, does not prove no one else can write as that group). The other
+    property that matters is the same one the kernel itself uses to
+    decide whether ``/tmp`` (world-writable) is safe to share: writable-
+    by-untrusted is only dangerous WITHOUT the sticky bit (``S_ISVTX``) -
+    with it set, only the entry's owner, the directory's owner, or root
+    can rename or unlink an entry, so a shared, world-writable ancestor
+    with the sticky bit is not a substitution vector either. Resolves
+    symlinks along the way deliberately (this is a pass/fail precondition
+    check on the trust of the path a caller is ABOUT to use, not a
+    race-proof no-follow read itself).
     """
     current = path.resolve(strict=False)
     while True:
         ancestor = current.parent
         if ancestor == current:
             return None  # reached the filesystem root
-        try:
-            st = ancestor.stat()
-        except OSError as exc:
-            return f"could not verify ownership/permissions of {ancestor}: {exc}"
-        writable_by_untrusted = bool(st.st_mode & stat.S_IWOTH) or (
-            bool(st.st_mode & stat.S_IWGRP) and st.st_gid != os.getegid()
-        )
-        sticky = bool(st.st_mode & stat.S_ISVTX)
-        if writable_by_untrusted and not sticky:
-            return (
-                f"{ancestor} is writable by a group or user other than this "
-                f"process, without the sticky bit (mode {oct(stat.S_IMODE(st.st_mode))}, "
-                f"gid {st.st_gid}); an ancestor directory of {path} could be "
-                "renamed out from under it, refusing to write"
-            )
+        reason = _untrusted_directory_stat_reason(ancestor)
+        if reason is not None:
+            return f"{reason}; an ancestor directory of {path} could be renamed out from under it"
         current = ancestor
+
+
+def _untrusted_directory_stat_reason(directory: Path) -> str | None:
+    """The single-directory half of `untrusted_ancestor_chain_reason()`'s
+    check - writable by OTHER, or by a group not proven private to this
+    process, without the sticky bit. Shared so a caller that also needs
+    to check a directory ITSELF (not just its ancestors) - see
+    `app.ingestion.snapshot.snapshot_tree()`'s use on `root`, Codex#4
+    round 13, 2026-09-13 - gets the identical rule."""
+    try:
+        st = directory.stat()
+    except OSError as exc:
+        return f"could not verify ownership/permissions of {directory}: {exc}"
+    writable_by_untrusted = bool(st.st_mode & stat.S_IWOTH) or (
+        bool(st.st_mode & stat.S_IWGRP) and not _group_is_private(st.st_gid)
+    )
+    sticky = bool(st.st_mode & stat.S_ISVTX)
+    if writable_by_untrusted and not sticky:
+        return (
+            f"{directory} is writable by a group or user other than this "
+            f"process, without the sticky bit (mode {oct(stat.S_IMODE(st.st_mode))}, "
+            f"gid {st.st_gid})"
+        )
+    return None
+
+
+def untrusted_directory_reason(directory: Path) -> str | None:
+    """Codex#4 (round 13, 2026-09-13), reproduced exactly as reported:
+    `snapshot_tree()` checked `root`'s ANCESTORS (via
+    `untrusted_ancestor_chain_reason()`, round 12) but never `root`
+    ITSELF - a root that is directly writable by an untrusted group/other
+    (without the sticky bit) can be substituted the same way an ancestor
+    can, without needing to touch anything above it. Public entry point
+    for the single-directory half of that same check, resolving symlinks
+    the same deliberate way (a pass/fail precondition check on trust, not
+    a race-proof no-follow read)."""
+    return _untrusted_directory_stat_reason(directory.resolve(strict=False))
 
 
 # Codex#4 (round 8, 2026-09-12), reproduced exactly as reported: `os.chmod`
