@@ -605,7 +605,7 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
             post = verify_chunk_hashes(conn)
         finally:
             conn.close()
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
         # Codex cross-review finding #1 (round 3, 2026-09-12): this used to be
         # `except OSError` and unconditionally `_cleanup(staging, backup)`
         # regardless of whether os.replace() had already published the new
@@ -617,6 +617,16 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
         # subclasses that are not OSError (e.g. a locked/corrupt file opening
         # cleanly but failing on the first query), which escaped uncaught and
         # skipped this restore path entirely.
+        #
+        # Codex#3 (round 13, 2026-09-13), reproduced exactly as reported:
+        # `connect(db_path, read_only=True)` right above can itself raise
+        # `ForeignDatabaseError`/`UntrustedStateDirectoryError`/
+        # `FTS5Unavailable` - all `RuntimeError` subclasses, none of them
+        # `OSError` or `sqlite3.Error` - which escaped this except clause
+        # entirely: the newly-swapped, UNVERIFIED index stayed live and the
+        # last-known-good backup stayed stranded, contradicting the "old
+        # index kept on any post-swap failure" guarantee this whole
+        # restore path exists to provide.
         if published:
             restored = _restore_or_remove(db_path, backup, had_existing)
             _cleanup(staging)
@@ -631,6 +641,21 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
             old_revision=old_revision,
             new_revision=build.knowledge_revision,
         )
+    except BaseException:
+        # Codex#3 (round 13, 2026-09-13): a genuinely UNEXPECTED exception
+        # (anything not already anticipated above) must still trigger
+        # restoration before propagating - silently converting it into a
+        # POLICY_BLOCKED report the way the clause above does would
+        # misrepresent an actual bug as an expected operational failure
+        # (the same "do not misrepresent unexpected exceptions" principle
+        # app/reviewer/report.py's build_report() already applies to
+        # PolicyStop). Restore, then re-raise unchanged.
+        if published:
+            _restore_or_remove(db_path, backup, had_existing)
+            _cleanup(staging)
+        else:
+            _cleanup(staging, backup)
+        raise
 
     if not post.is_allowed:
         restored = _restore_or_remove(db_path, backup, had_existing)

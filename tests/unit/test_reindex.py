@@ -292,6 +292,101 @@ def test_reindex_restores_backup_on_post_swap_exception_not_a_stop_decision(
     assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
 
 
+def _flaky_connect_on_second_use_of(index_module, target_db: Path, exc: BaseException):  # type: ignore[no-untyped-def]
+    """Raise `exc` the SECOND time `connect()` is called with `target_db` -
+    the first such call is `_current_revision(db_path)` (step 1, before the
+    build even starts); the second is the post-swap integrity-check
+    connect() this finding is about. Returns (patched_fn, restore_fn)."""
+    calls = {"n": 0}
+    original = index_module.connect
+
+    def _flaky(path, *, read_only=False):  # type: ignore[no-untyped-def]
+        if Path(path) == target_db:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise exc
+        return original(path, read_only=read_only)
+
+    return _flaky, original
+
+
+def test_reindex_restores_backup_on_a_runtime_error_from_post_swap_connect(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#3 (round 13, 2026-09-13), reproduced exactly as
+    reported: `connect(db_path, read_only=True)` right after the swap can
+    itself raise `ForeignDatabaseError`/`UntrustedStateDirectoryError`/
+    `FTS5Unavailable` - all `RuntimeError` subclasses, none of them
+    `OSError` or `sqlite3.Error` - which escaped the except clause
+    entirely: the newly-swapped, unverified index stayed live and the
+    backup stayed stranded."""
+    import app.retrieval.index as index_module
+
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    good_revision = good.new_revision
+    assert _revision(db) == good_revision
+
+    corpus2 = tmp_path / "corpus2"
+    import shutil
+
+    shutil.copytree(corpus_alt_root, corpus2)
+    ku = next(corpus2.glob("public/**/*.md"))
+    ku.write_text(ku.read_text(encoding="utf-8").replace("0.1", "0.2"), encoding="utf-8")
+
+    flaky, original = _flaky_connect_on_second_use_of(
+        index_module, db, RuntimeError("simulated FTS5Unavailable-like failure")
+    )
+    index_module.connect = flaky
+    try:
+        bad = reindex_atomic(corpus2, db)
+    finally:
+        index_module.connect = original
+
+    assert not bad.ok
+    assert bad.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert _revision(db) == good_revision  # restored, not left on the unverified swap
+    assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
+    assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
+
+
+def test_reindex_restores_backup_then_reraises_a_genuinely_unexpected_exception(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """A post-swap exception outside every anticipated type (not OSError,
+    sqlite3.Error, or RuntimeError - a real bug, not an operational
+    failure) must still trigger restoration before propagating, rather
+    than being silently converted into a POLICY_BLOCKED report as if it
+    were an expected failure."""
+    import app.retrieval.index as index_module
+
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    good_revision = good.new_revision
+    assert _revision(db) == good_revision
+
+    corpus2 = tmp_path / "corpus2"
+    import shutil
+
+    shutil.copytree(corpus_alt_root, corpus2)
+    ku = next(corpus2.glob("public/**/*.md"))
+    ku.write_text(ku.read_text(encoding="utf-8").replace("0.1", "0.2"), encoding="utf-8")
+
+    flaky, original = _flaky_connect_on_second_use_of(
+        index_module, db, KeyError("totally unexpected bug")
+    )
+    index_module.connect = flaky
+    try:
+        with pytest.raises(KeyError):
+            reindex_atomic(corpus2, db)
+    finally:
+        index_module.connect = original
+
+    assert _revision(db) == good_revision  # still restored, not left on the unverified swap
+    assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
+    assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
+
+
 def test_reindex_rejects_a_build_that_skipped_units(
     tmp_path: Path, fixture_knowledge_root: Path
 ) -> None:
