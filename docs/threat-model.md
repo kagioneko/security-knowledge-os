@@ -45,7 +45,17 @@ that edits knowledge content.
 ## Residual risks (accepted for the MVP)
 
 - API assessment store is in-memory (lost on restart) - `§18` "unauthenticated
-  localhost" scope.
+  localhost" scope. `AnswerPatch`'s free-text fields (Codex#5, round 15,
+  2026-09-14) can accept an opaque, unrecognized-shape secret an answerer
+  pastes in by mistake - `reject_credential_shapes`/`reject_non_identifier_
+  shapes` only catch KNOWN shapes (see `app/models/answer.py`'s module
+  docstring) - and such a value is retained here for the store entry's
+  lifetime and readable back via `GET /v1/assessments/{id}` by anyone who
+  can reach this same unauthenticated scope; this is the same accepted
+  boundary as the rest of the store, not a separate one. It is never
+  forwarded to the external LLM regardless (`app/reviewer/llm_review.py`'s
+  anonymization, round 14) - only the in-scope, already-unauthenticated
+  read-back applies.
 - Integrity is a content hash (SHA-256), which proves the index matches the
   knowledge files, **not** that the knowledge files are authentic. Signature /
   trusted-manifest / human-approval is Pack Manager (M9-M10) work.

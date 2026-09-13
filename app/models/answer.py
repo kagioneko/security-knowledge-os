@@ -38,6 +38,19 @@ protects the external LLM call. Storing a real secret anywhere in an
 assessment remains against this project's Vault-only credential policy
 regardless of what this schema happens to accept.
 
+Codex#5 (round 15, 2026-09-14), reproduced exactly as reported: an
+OPAQUE value with no recognized shape at all - ``AnswerPatch.model_
+validate({"system_prompt": "correct-horse-battery-staple", ...})`` -
+is, correctly per the above, accepted. Whether that residual gap
+matters depends entirely on what happens to the value AFTER acceptance:
+it is retained in the API's in-memory assessment store and readable
+back through ``GET /v1/assessments/{id}`` for as long as that entry
+lives - the SAME accepted, unauthenticated-localhost scope
+``docs/threat-model.md``'s "Residual risks" section already documents
+for the store as a whole, not a separate boundary this schema
+introduces. It is still never forwarded to the external LLM regardless
+of shape (the structural guarantee above holds unconditionally).
+
 Unknown fields are rejected by the schema (``extra="forbid"``); unknown tool or
 action names and type mismatches are rejected when the patch is applied.
 """
