@@ -55,6 +55,7 @@ _MAX_SNAPSHOT_FILES = 20_000
 _MAX_SNAPSHOT_FILE_BYTES = 5_000_000
 _MAX_SNAPSHOT_TOTAL_BYTES = 200_000_000
 _MAX_SNAPSHOT_DEPTH = 64
+_COPY_CHUNK_BYTES = 65_536
 
 
 class _Budget:
@@ -107,6 +108,19 @@ def _copy_file_no_follow(
         # substitution the identity check above didn't happen to catch),
         # BEFORE copying a single byte - an oversized file fails fast
         # instead of paying its full read/write cost first.
+        #
+        # Codex#4 (round 14, 2026-09-13), reproduced exactly as reported:
+        # this pre-check alone was not ENFORCEMENT during the copy - if
+        # the file GREW after this fstat but before/during
+        # shutil.copyfileobj() (unbounded), every new byte was copied in
+        # full before the post-copy metadata check below caught the
+        # growth, after the disk/IO cost was already paid (a fault-
+        # injected repro copied 5,000,002 bytes from a source that was
+        # one byte at the time of this check). The chunked loop below
+        # re-checks the ACTUAL running byte count (never the stale
+        # pre-copy stat) after every chunk, so growth mid-copy is caught
+        # before the NEXT chunk is even read, not after the whole
+        # (by-then-oversized) file has been.
         if before.st_size > _MAX_SNAPSHOT_FILE_BYTES:
             raise SnapshotError(
                 f"{dest.name}: {before.st_size} bytes exceeds the "
@@ -117,16 +131,27 @@ def _copy_file_no_follow(
             raise SnapshotError(
                 f"more than {_MAX_SNAPSHOT_FILES} files under this root; refusing to snapshot"
             )
-        budget.bytes_copied += before.st_size
-        if budget.bytes_copied > _MAX_SNAPSHOT_TOTAL_BYTES:
-            raise SnapshotError(
-                f"more than {_MAX_SNAPSHOT_TOTAL_BYTES} total bytes under this root; "
-                "refusing to snapshot"
-            )
         with os.fdopen(fd, "rb", closefd=False) as src, open(dest, "wb") as out:
-            shutil.copyfileobj(src, out)
+            copied = 0
+            while True:
+                chunk = src.read(_COPY_CHUNK_BYTES)
+                if not chunk:
+                    break
+                copied += len(chunk)
+                budget.bytes_copied += len(chunk)
+                if copied > _MAX_SNAPSHOT_FILE_BYTES:
+                    raise SnapshotError(
+                        f"{dest.name}: grew past the {_MAX_SNAPSHOT_FILE_BYTES}-byte "
+                        "per-file snapshot limit while being copied"
+                    )
+                if budget.bytes_copied > _MAX_SNAPSHOT_TOTAL_BYTES:
+                    raise SnapshotError(
+                        f"more than {_MAX_SNAPSHOT_TOTAL_BYTES} total bytes under this "
+                        "root; refusing to snapshot"
+                    )
+                out.write(chunk)
         # Codex#2 (round 8, 2026-09-12), reproduced exactly as reported:
-        # shutil.copyfileobj above has now read the entire file, but that
+        # the chunked read above has now read the entire file, but that
         # read is not atomic against a concurrent writer to the SAME inode
         # - a write that lands (and is even reverted right after) between
         # open() and the read completing can leave copied bytes that never

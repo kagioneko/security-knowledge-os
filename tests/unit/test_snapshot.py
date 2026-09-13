@@ -77,27 +77,47 @@ def test_rejects_a_file_mutated_during_the_copy_itself(
     reported: the existing "immune to later mutation" test below only
     mutates the source AFTER snapshot_tree() has fully returned - it never
     exercises a write landing DURING the read inside
-    `_copy_file_no_follow()`. Monkeypatching shutil.copyfileobj to mutate
-    the source file (via a separate open(), not the already-open fd)
-    right after the read simulates exactly that: the bytes already read
-    into the snapshot may or may not reflect a state that ever existed as
-    a stable, observable version of the file. The before/after fstat
-    comparison on the same fd must detect this and refuse to publish
-    rather than silently keeping whatever bytes were read."""
-    import shutil as shutil_module
+    `_copy_file_no_follow()`. Wraps the fd's read() (round 14, Codex#4:
+    the copy is now a chunked loop, not a single shutil.copyfileobj()
+    call) to mutate the source file (via a separate open(), not the
+    already-open fd) right after the first chunk is read, simulating
+    exactly that: the bytes already read into the snapshot may or may not
+    reflect a state that ever existed as a stable, observable version of
+    the file. The before/after fstat comparison on the same fd must
+    detect this and refuse to publish rather than silently keeping
+    whatever bytes were read."""
+    import os as os_module
 
     root = tmp_path / "src"
     root.mkdir()
     ku = root / "ku.md"
     ku.write_text("original", encoding="utf-8")
 
-    real_copyfileobj = shutil_module.copyfileobj
+    real_fdopen = os_module.fdopen
+    mutated = {"done": False}
 
-    def racy_copyfileobj(src: object, dst: object, *a: object, **kw: object) -> None:
-        real_copyfileobj(src, dst, *a, **kw)  # type: ignore[arg-type]
-        ku.write_text("mutated-during-the-copy-window", encoding="utf-8")
+    class _RacyReader:
+        def __init__(self, real_file: object) -> None:
+            self._real = real_file
 
-    monkeypatch.setattr(shutil_module, "copyfileobj", racy_copyfileobj)
+        def read(self, *a: object, **kw: object) -> bytes:
+            chunk: bytes = self._real.read(*a, **kw)  # type: ignore[attr-defined]
+            if chunk and not mutated["done"]:
+                mutated["done"] = True
+                ku.write_text("mutated-during-the-copy-window", encoding="utf-8")
+            return chunk
+
+        def __enter__(self) -> _RacyReader:
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            self._real.close()  # type: ignore[attr-defined]
+            return False
+
+    def racy_fdopen(fd: int, *a: object, **kw: object) -> object:
+        return _RacyReader(real_fdopen(fd, *a, **kw))
+
+    monkeypatch.setattr(os_module, "fdopen", racy_fdopen)
 
     with pytest.raises(SnapshotError, match="changed while being copied"):
         snapshot_tree(root)
@@ -203,6 +223,60 @@ def test_rejects_a_file_over_the_per_file_snapshot_size_limit(tmp_path: Path) ->
         f.write(b"\0")
 
     with pytest.raises(SnapshotError, match="per-file snapshot limit"):
+        snapshot_tree(root)
+
+
+def test_rejects_a_file_that_grows_past_the_limit_during_the_copy_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#4 (round 14, 2026-09-13), reproduced exactly
+    as reported: the per-file size limit above was checked ONCE, on the
+    fd's fstat, BEFORE a single byte was copied - if the file grew after
+    that check but during the (previously unbounded)
+    shutil.copyfileobj() call, every new byte was copied in full before
+    the post-copy metadata check caught the growth, after the disk/IO
+    cost was already paid. A fault-injected repro copied 5,000,002 bytes
+    from a source that was one byte at the time of the size check. The
+    chunked copy loop must catch this WHILE copying (a running count of
+    ACTUAL bytes read, checked every chunk), not after the whole grown
+    file has already been copied."""
+    import os as os_module
+
+    import app.ingestion.snapshot as snapshot_module
+
+    root = tmp_path / "src"
+    root.mkdir()
+    growing = root / "growing.bin"
+    growing.write_bytes(b"\0")  # 1 byte - passes the pre-copy fstat check
+
+    real_fdopen = os_module.fdopen
+    grown = {"done": False}
+
+    class _GrowingReader:
+        def __init__(self, real_file: object) -> None:
+            self._real = real_file
+
+        def read(self, *a: object, **kw: object) -> bytes:
+            if not grown["done"]:
+                grown["done"] = True
+                with growing.open("ab") as f:
+                    f.write(b"\0" * (snapshot_module._MAX_SNAPSHOT_FILE_BYTES + 2))
+            chunk: bytes = self._real.read(*a, **kw)  # type: ignore[attr-defined]
+            return chunk
+
+        def __enter__(self) -> _GrowingReader:
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            self._real.close()  # type: ignore[attr-defined]
+            return False
+
+    def growing_fdopen(fd: int, *a: object, **kw: object) -> object:
+        return _GrowingReader(real_fdopen(fd, *a, **kw))
+
+    monkeypatch.setattr(os_module, "fdopen", growing_fdopen)
+
+    with pytest.raises(SnapshotError, match="grew past"):
         snapshot_tree(root)
 
 
