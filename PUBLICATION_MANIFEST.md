@@ -121,8 +121,11 @@ review; regenerate with `git ls-files` after any change.
   **CHANGES-REQUIRED** again (12 findings independent of round 10's: 3 HIGH
   — `AnswerPatch`'s credential-shape detection covered only five known
   formats (AWS, private-key, Slack, GitHub, Anthropic), so a Stripe-style
-  key, JWT, or opaque secret reached the external LLM review payload
-  unredacted; the public `assess()` library entry point validated only
+  key or JWT (both concrete, enumerable shapes, same as the five above)
+  reached the external LLM review payload unredacted — this remains an
+  enumeration of KNOWN shapes only, never a claim that no opaque secret
+  can pass (round 12, Codex#1, re-flagged this exact phrasing here as
+  inaccurate); the public `assess()` library entry point validated only
   that a `RuleCatalogue` was non-empty, so a directly-constructed rule
   referencing a nonexistent fact evaluated to a deterministic false PASS
   instead of going through `load_rules()`'s full validation; and the

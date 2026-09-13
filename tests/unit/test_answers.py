@@ -150,6 +150,39 @@ def test_free_text_fields_reject_a_jwt_shaped_value() -> None:
         AnswerPatch.model_validate({"system_prompt": fake_jwt})
 
 
+def test_free_text_fields_reject_a_google_api_key_shaped_value() -> None:
+    """Regression for Codex#1 (round 12, 2026-09-13), reproduced exactly as
+    reported: a Google-API-key-shaped value (`AIza` + 35 more characters,
+    always this exact length) in `outbound_destinations` reached
+    `AttackSurface` / the `ReviewPayload` sent to an external LLM provider
+    unfiltered."""
+    fake_key = "AIza" + "B" * 35
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"outbound_destinations": [fake_key]})
+    with pytest.raises(ValidationError):
+        AssessmentInput(name="t", system_prompt=fake_key)
+
+
+def test_free_text_fields_reject_a_gitlab_pat_shaped_value() -> None:
+    fake_pat = "glpat-" + "C" * 20
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"rag_sources": [fake_pat]})
+
+
+def test_free_text_fields_reject_a_discord_bot_token_shaped_value() -> None:
+    fake_token = "M" + "D" * 24 + "." + "E" * 6 + "." + "F" * 27
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"system_prompt": fake_token})
+
+
+def test_free_text_fields_reject_a_db_connection_string_with_credentials() -> None:
+    fake_url = "postgres://" + "dbuser" + ":" + "hunter2" + "@" + "db.internal:5432/prod"
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"outbound_destinations": [fake_url]})
+    with pytest.raises(ValidationError):
+        AssessmentInput(name="t", system_prompt=fake_url)
+
+
 def test_allow_list_of_fields() -> None:
     assert set(AnswerPatch.model_fields) == {
         "system_prompt",

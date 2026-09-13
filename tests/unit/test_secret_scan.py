@@ -107,3 +107,59 @@ def test_a_real_shaped_credential_in_a_formerly_allow_listed_file_is_flagged(
     exit_code = secret_scan.main()
     assert exit_code == 1
     assert "safe_test.py" in capsys.readouterr().out
+
+
+def test_patterns_share_the_runtime_credential_shape_source() -> None:
+    """Regression for Codex#8 (round 12, 2026-09-13), reproduced exactly as
+    reported: this script kept its own separate pattern dict, never
+    updated when app/models/_credential_shapes.py gained Stripe/JWT
+    detection in round 11 - a Stripe key or JWT committed to a tracked
+    file passed this scan even though the runtime model already rejected
+    the same value. Building _PATTERNS from the shared dict means every
+    name added there (present or future) is automatically present here
+    too; this test would fail if that import were ever reverted to a
+    separately hand-maintained copy."""
+    from app.models._credential_shapes import CREDENTIAL_SHAPE_PATTERNS
+
+    for name in CREDENTIAL_SHAPE_PATTERNS:
+        assert name in _PATTERNS
+
+
+def test_stripe_key_shaped_value_is_flagged() -> None:
+    text = "sk_live_" + "A" * 32
+    assert _PATTERNS["stripe-key"].search(text) is not None
+
+
+def test_jwt_shaped_value_is_flagged() -> None:
+    text = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        ".eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+        ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+    )
+    assert _PATTERNS["jwt"].search(text) is not None
+
+
+def test_google_api_key_shaped_value_is_flagged() -> None:
+    """Regression for Codex#1 (round 12, 2026-09-13): a Google-API-key-
+    shaped value was not in any pattern list, runtime or scanner."""
+    text = "AIza" + "B" * 35
+    assert _PATTERNS["google-api-key"].search(text) is not None
+
+
+def test_gitlab_pat_shaped_value_is_flagged() -> None:
+    text = "glpat-" + "C" * 20
+    assert _PATTERNS["gitlab-pat"].search(text) is not None
+
+
+def test_discord_bot_token_shaped_value_is_flagged() -> None:
+    text = "M" + "D" * 24 + "." + "E" * 6 + "." + "F" * 27
+    assert _PATTERNS["discord-bot-token"].search(text) is not None
+
+
+def test_db_connection_string_with_credentials_is_flagged() -> None:
+    text = "postgres://" + "dbuser" + ":" + "hunter2" + "@" + "db.internal:5432/prod"
+    assert _PATTERNS["db-connection-string"].search(text) is not None
+
+
+def test_an_ordinary_url_without_credentials_is_not_flagged_as_a_db_string() -> None:
+    assert _PATTERNS["db-connection-string"].search("https://example.com/docs") is None

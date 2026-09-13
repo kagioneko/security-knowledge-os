@@ -24,12 +24,21 @@ import subprocess
 import sys
 from pathlib import Path
 
-_PATTERNS = {
-    "aws-access-key": re.compile(r"AKIA[0-9A-Z]{16}"),
-    "private-key-block": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-    "slack-token": re.compile(r"xox[baprs]-[0-9A-Za-z-]{12,}"),
-    "github-pat": re.compile(r"gh[pousr]_[0-9A-Za-z]{30,}"),
-    "anthropic-key": re.compile(r"sk-ant-[0-9A-Za-z_-]{20,}"),
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.models._credential_shapes import CREDENTIAL_SHAPE_PATTERNS  # noqa: E402
+
+# Codex#8 (round 12, 2026-09-13), reproduced exactly as reported: this
+# script kept its own separate, hand-maintained pattern dict - Stripe and
+# JWT detection were added to app/models/_credential_shapes.py (round 11)
+# without this script's copy ever being updated, so a Stripe key or JWT
+# committed to a tracked file passed this pre-publication scan even though
+# the runtime model already rejected the same value. Building on the
+# SAME shared dict (imported above) means the two can no longer drift
+# apart - "generic-assignment" is this script's own addition (a scan
+# concern with no equivalent in the runtime model, which validates typed
+# field VALUES, not `key = "..."`-shaped source text).
+_PATTERNS: dict[str, re.Pattern[str]] = {
+    **CREDENTIAL_SHAPE_PATTERNS,
     "generic-assignment": re.compile(
         r"(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*['\"][0-9A-Za-z/+_-]{16,}['\"]"
     ),
