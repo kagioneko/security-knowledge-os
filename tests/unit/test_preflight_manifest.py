@@ -179,6 +179,27 @@ def test_constraints_completeness_catches_an_incomplete_file(tmp_path, monkeypat
     assert preflight._constraints_pins_are_complete() is False
 
 
+def test_real_quickstart_install_command_installs_every_extra() -> None:
+    """Regression for Codex#9 (round 11, 2026-09-13), reproduced exactly as
+    reported: the documented quickstart command `pip install -e ".[dev]"`
+    does not install `anthropic` or `uvicorn` (the `api`/`llm` extras),
+    and does not apply constraints.txt, so a fresh install following it
+    can both fail the SBOM completeness check and resolve different
+    (unreviewed) versions than the audited baseline."""
+    assert preflight._quickstart_install_command_installs_every_extra() is True
+
+
+def test_quickstart_check_catches_a_narrow_install_command(tmp_path, monkeypatch) -> None:
+    (tmp_path / "README.md").write_text(
+        '.venv/bin/pip install -e ".[dev]"\n', encoding="utf-8"
+    )
+    import shutil
+
+    shutil.copy(preflight.ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
+    monkeypatch.setattr(preflight, "ROOT", tmp_path)
+    assert preflight._quickstart_install_command_installs_every_extra() is False
+
+
 def test_head_itself_is_a_known_ancestor_of_head() -> None:
     import subprocess
 

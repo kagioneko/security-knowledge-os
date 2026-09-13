@@ -427,6 +427,43 @@ def _no_stale_license_undecided_text() -> bool:
     return ok
 
 
+def _quickstart_install_command_installs_every_extra() -> bool:
+    """Codex#9 (round 11, 2026-09-13), reproduced exactly as reported: the
+    documented quickstart command `pip install -e ".[dev]"` does not
+    install `anthropic` or `uvicorn` (the `api`/`llm` extras) - a fresh
+    install following it fails this script's own SBOM completeness check
+    (every declared dependency group must be installed), and does not
+    apply `constraints.txt`, so it can resolve different (unreviewed)
+    versions than the audited baseline. Every `pip install -e` line found
+    in README.md / REVIEW_PACKAGE.md must request every optional-
+    dependency group declared in pyproject.toml and pin `constraints.txt`.
+    """
+    import tomllib
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    declared_groups = set(pyproject.get("project", {}).get("optional-dependencies", {}))
+
+    offenders = []
+    for rel in ("README.md", "REVIEW_PACKAGE.md"):
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if "pip install -e" not in line:
+                continue
+            extras_match = re.search(r'\.\[([^\]]+)\]', line)
+            requested = set(extras_match.group(1).split(",")) if extras_match else set()
+            missing = declared_groups - requested
+            if missing or "constraints.txt" not in line:
+                offenders.append(f"{rel}: {line.strip()!r} (missing: {sorted(missing)})")
+
+    ok = not offenders
+    print(f"[{'ok ' if ok else 'FAIL'}] quickstart install command installs every declared extra")
+    for o in offenders:
+        print(f"    {o}")
+    return ok
+
+
 def main() -> int:
     py = sys.executable
     checks = [
@@ -461,6 +498,7 @@ def main() -> int:
         _publication_manifest_matches_reality(),
         _manifest_area_counts_match_reality(),
         _no_stale_license_undecided_text(),
+        _quickstart_install_command_installs_every_extra(),
     ]
 
     print("\nManual gates still required before publishing:")

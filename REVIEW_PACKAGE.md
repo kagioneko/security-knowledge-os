@@ -154,8 +154,17 @@ secret/          OUTSIDE the repository. Never indexed, never sent to an LLM.
 
 ```
 python3.12 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install -e ".[api,llm,dev]" -c constraints.txt
 .venv/bin/python scripts/preflight.py      # pytest + ruff + mypy + validators + scans
 .venv/bin/skos test                        # 12-fixture smoke
 .venv/bin/python scripts/evaluate.py --db var/index.sqlite   # §24 metrics
 ```
+
+Codex#9 (round 11, 2026-09-13), reproduced exactly as reported: `pip
+install -e ".[dev]"` alone does not install `anthropic` or `uvicorn`
+(the `api`/`llm` extras) - `scripts/preflight.py`'s own SBOM completeness
+check requires every declared dependency group installed, so that
+narrower command fails preflight, and a fresh install following it can
+resolve different (unreviewed) versions than the SBOM/constraints.txt
+audited baseline describes. `-c constraints.txt` pins every installed
+package to the exact reviewed version.

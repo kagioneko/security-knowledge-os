@@ -79,7 +79,7 @@ treated as data, never as a control instruction. Details in
 
 ```bash
 python3.12 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install -e ".[api,llm,dev]" -c constraints.txt
 
 # Validate the knowledge base (empty on a fresh checkout -> 0 issues)
 .venv/bin/python scripts/validate_knowledge.py knowledge
