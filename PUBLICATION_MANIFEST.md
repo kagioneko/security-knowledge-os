@@ -296,7 +296,8 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
 
 | item | status |
 | --- | --- |
-| API assessment store in-memory (FIFO cap 5000 entries; `AssessmentInput` fields size-bounded; repeated-patch results deduped) | accepted (spec §18 localhost scope) — round-1 Codex#10, round-2 Codex#6 |
+| API assessment store in-memory (FIFO cap 5000 entries; `AssessmentInput` fields size-bounded; repeated-patch results deduped; per-lineage `/answers` chain capped at 100 revisions, round-12 Codex#5) | accepted (spec §18 localhost scope) — round-1 Codex#10, round-2 Codex#6 |
+| unbounded AGGREGATE provider spend across many independent assessments/chains, without authentication or a monetary budget | accepted — round-12 Codex#5: a full auth + per-principal rate/token/budget system is a real feature, not a bug fix (same "out of scope" line drawn in round 9, Codex#6, for concurrency); only reachable at all when an operator has opted into a real, paid LLM provider — the default `llm_provider` is `none` (fully offline, zero cost) |
 | integrity = SHA-256 (content, not authenticity) | accepted (signature is Pack Manager, M9-M10) — Antigravity ADV-03 |
 | `Finding` A8 boundary can be bypassed via direct Python `model_copy(update=...)` | accepted — Codex#13: no code path in this app does this; Pydantic's construction bypass is a library property, not a security boundary; the actual boundary is the LLM's JSON output going through `model_validate_json` + schema `extra="forbid"`, which cannot be bypassed this way |
 | `SafeTest._FORBIDDEN` regex deny-list would be bypassable by a determined author if a future execution engine is added | accepted / architectural note — Antigravity ADV-04: no execution engine exists yet (safe tests are non-executable templates only); M9-M10 must use sandboxed execution (gVisor/bubblewrap), not regex filtering, when one is added |

@@ -204,6 +204,30 @@ _STORE_TOTAL_BYTES = 0
 _MAX_ANSWER_CACHE_ENTRIES = 5000
 _ANSWER_CACHE: dict[tuple[object, ...], str] = {}
 
+# Codex#5 (round 12, 2026-09-13), reproduced exactly as reported: the
+# answer-cache dedup above only catches a repeat of the SAME patch against
+# the SAME parent - always patching the newest CHILD with a different
+# value each time (e.g. toggling one field back and forth) changes the
+# cache key on every call, so a chain of otherwise-legitimate-looking
+# requests can trigger an unbounded number of real provider calls over
+# time, with nothing bounding the chain's LENGTH the way
+# _MAX_CONCURRENT_ASSESSMENTS bounds concurrent width. A full auth +
+# per-principal rate/token/monetary budget system (Codex's own suggested
+# fix, same as round 9's identical "out of scope" note above) is a real
+# feature, not a bug fix. What IS a proportionate bug fix: every
+# assessment already carries its own chain depth for free (`revision`,
+# incremented once per `/answers` call - see submit_answers() below), so
+# capping it costs no new state and closes the unbounded-LENGTH case
+# outright; a caller past the cap starts a fresh assessment instead
+# (itself still bounded by the concurrency/store caps above). This does
+# not bound total SPEND across many independent chains, or over time -
+# only the length of any one chain; the residual, disclosed risk
+# (unbounded aggregate provider spend without authentication) exists only
+# when an operator has opted into a real, paid LLM provider at all - the
+# default `llm_provider` is `none` (fully offline, zero cost) - see
+# PUBLICATION_MANIFEST.md's Known/accepted risks table.
+_MAX_ANSWER_CHAIN_DEPTH = 100
+
 # Codex#6 (round 9, 2026-09-12), reproduced exactly as reported: the loopback
 # checks stop remote and browser-CSRF callers, but any local OS user/process
 # could still issue unlimited unique assessments (each a real rule-load, and
@@ -664,6 +688,18 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
         raise HTTPException(status_code=422, detail="the answer patch is empty")
 
     original_input, original_report = entry
+    if (
+        original_report.result is not None
+        and original_report.result.revision >= _MAX_ANSWER_CHAIN_DEPTH
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"this assessment has reached the maximum answer-chain depth "
+                f"({_MAX_ANSWER_CHAIN_DEPTH}); start a new assessment instead of "
+                "continuing to patch this one"
+            ),
+        )
     try:
         new_input = apply_patch(original_input, patch)
     except AnswerValidationError as exc:

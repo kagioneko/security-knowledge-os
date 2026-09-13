@@ -85,6 +85,59 @@ def test_answers_reassesses_and_tracks_history(client: TestClient) -> None:
     assert [h["revision"] for h in history] == [1, 2]
 
 
+def test_answers_rejects_past_the_max_chain_depth(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#5 (round 12, 2026-09-13), reproduced exactly as
+    reported: the answer-cache dedup only catches a repeat of the SAME
+    patch against the SAME parent - always patching the newest CHILD with
+    a different value each time bypasses it indefinitely, since the cache
+    key changes on every call. Nothing bounded the chain's LENGTH the way
+    _MAX_CONCURRENT_ASSESSMENTS bounds its concurrent WIDTH. Every
+    assessment already carries its own chain depth for free (`revision`,
+    incremented once per successful `/answers` call); capping it closes
+    the unbounded-length case with no new state."""
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "_MAX_ANSWER_CHAIN_DEPTH", 2)
+
+    created = client.post(
+        "/v1/assessments", json=_input("U-002-memory-persistence-unspecified")
+    ).json()
+    aid = created["result"]["assessment_id"]
+
+    first = client.post(f"/v1/assessments/{aid}/answers", json={"memory_persistent": True})
+    assert first.status_code == 200
+    assert first.json()["result"]["revision"] == 2
+    child_id = first.json()["result"]["assessment_id"]
+
+    resp = client.post(f"/v1/assessments/{child_id}/answers", json={"memory_persistent": False})
+    assert resp.status_code == 422
+    assert "chain depth" in resp.json()["detail"]
+
+
+def test_a_fresh_assessment_is_unaffected_by_another_lineage_at_the_chain_cap(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The chain-depth cap is per-lineage, not global - a caller that hits
+    it on one assessment can always start a brand-new one (itself still
+    bounded by the concurrency/store caps), it just cannot keep extending
+    the SAME chain indefinitely."""
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "_MAX_ANSWER_CHAIN_DEPTH", 1)
+
+    created = client.post(
+        "/v1/assessments", json=_input("U-002-memory-persistence-unspecified")
+    ).json()
+    aid = created["result"]["assessment_id"]
+    blocked = client.post(f"/v1/assessments/{aid}/answers", json={"memory_persistent": True})
+    assert blocked.status_code == 422
+
+    fresh = client.post("/v1/assessments", json=_input("U-002-memory-persistence-unspecified"))
+    assert fresh.status_code == 200
+
+
 def test_concurrent_identical_answers_do_not_duplicate_the_assessment(
     client: TestClient,
 ) -> None:
