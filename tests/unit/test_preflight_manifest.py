@@ -271,3 +271,61 @@ def test_stale_license_undecided_text_is_detected(tmp_path, monkeypatch) -> None
     )
     monkeypatch.setattr(preflight, "ROOT", tmp_path)
     assert preflight._no_stale_license_undecided_text() is False
+
+
+def test_tracked_sbom_check_fails_when_sbom_json_is_missing(tmp_path, monkeypatch) -> None:
+    """Regression for Codex#12 (round 11, 2026-09-13): a missing sbom.json
+    (e.g. a fresh checkout before the first generate_sbom.py run) must fail
+    loudly with a clear next step, not raise or silently pass."""
+    monkeypatch.setattr(preflight, "ROOT", tmp_path)
+    assert preflight._tracked_sbom_matches_current_environment() is False
+
+
+def test_tracked_sbom_check_ignores_timestamp_differences(tmp_path, monkeypatch) -> None:
+    """Regression for Codex#12 (round 11, 2026-09-13), reproduced exactly as
+    reported: main() used to invoke generate_sbom.py WITHOUT --check, so
+    every preflight run atomically overwrote the tracked sbom.json - at
+    minimum its metadata.timestamp, which always differs between two runs
+    even when nothing else about the environment has changed. This check
+    must not flag that expected, meaningless difference as staleness."""
+    import json
+    import sys
+
+    sys.path.insert(0, str(preflight.ROOT / "scripts"))
+    from generate_sbom import build_sbom
+
+    sbom = build_sbom()
+    sbom["metadata"]["timestamp"] = "1999-01-01T00:00:00+00:00"
+    monkeypatch.setattr(preflight, "ROOT", tmp_path)
+    (tmp_path / "sbom.json").write_text(json.dumps(sbom), encoding="utf-8")
+
+    assert preflight._tracked_sbom_matches_current_environment() is True
+
+
+def test_tracked_sbom_check_catches_a_stale_component_list(tmp_path, monkeypatch) -> None:
+    """Regression for Codex#12 (round 11, 2026-09-13): a dependency change
+    (e.g. a new package installed) that is never followed by re-running
+    generate_sbom.py must be caught here - the tracked sbom.json no longer
+    describes the environment preflight is actually running pytest/mypy/
+    pip-audit against."""
+    import json
+    import sys
+
+    sys.path.insert(0, str(preflight.ROOT / "scripts"))
+    from generate_sbom import build_sbom
+
+    sbom = build_sbom()
+    sbom["components"].append(
+        {"type": "library", "name": "not-actually-installed", "version": "0.0.0"}
+    )
+    monkeypatch.setattr(preflight, "ROOT", tmp_path)
+    (tmp_path / "sbom.json").write_text(json.dumps(sbom), encoding="utf-8")
+
+    assert preflight._tracked_sbom_matches_current_environment() is False
+
+
+def test_real_tracked_sbom_matches_the_current_environment() -> None:
+    """Sanity: the committed sbom.json is currently fresh - this checks
+    preflight actually looks, not just that the synthetic tmp_path cases
+    above work."""
+    assert preflight._tracked_sbom_matches_current_environment() is True

@@ -464,6 +464,55 @@ def _quickstart_install_command_installs_every_extra() -> bool:
     return ok
 
 
+def _tracked_sbom_matches_current_environment() -> bool:
+    """Codex#12 (round 11, 2026-09-13), reproduced exactly as reported:
+    `main()` used to invoke `generate_sbom.py --require-complete` WITHOUT
+    `--check`, so every preflight run atomically overwrote the tracked
+    `sbom.json` - changing at minimum its `metadata.timestamp` - before any
+    later check (e.g. the publication-manifest component-count check) ran.
+    A `preflight.py` failure for an unrelated reason left the worktree
+    dirty with a side effect the run never asked for or reported; running
+    preflight was itself indistinguishable from `git diff`-worthy work.
+
+    Reuses `generate_sbom.py`'s own `build_sbom()` to compute what the SBOM
+    for the CURRENT environment would be, entirely in memory - no file is
+    written - and compares it against the CURRENTLY TRACKED `sbom.json`
+    with both `metadata.timestamp` fields blanked out (the one field that
+    always differs between two runs even when nothing else has). A
+    mismatch means a dependency changed without `sbom.json` being
+    regenerated and committed; the fix is to run
+    ``python scripts/generate_sbom.py`` (which still writes, on request,
+    exactly as before) and commit the result, not to have preflight do it
+    silently on every run.
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from generate_sbom import build_sbom
+
+    sbom_path = ROOT / "sbom.json"
+    if not sbom_path.exists():
+        print("[FAIL] tracked sbom.json matches the current environment")
+        print("    sbom.json does not exist - run: python scripts/generate_sbom.py")
+        return False
+
+    tracked: dict[str, object] = json.loads(sbom_path.read_text(encoding="utf-8"))
+    current = build_sbom()
+    tracked_metadata = tracked.get("metadata")
+    if isinstance(tracked_metadata, dict):
+        tracked_metadata.pop("timestamp", None)
+    current_metadata = current.get("metadata")
+    if isinstance(current_metadata, dict):
+        current_metadata.pop("timestamp", None)
+
+    ok = tracked == current
+    print(f"[{'ok ' if ok else 'FAIL'}] tracked sbom.json matches the current environment")
+    if not ok:
+        print(
+            "    sbom.json is stale (a dependency changed since it was last "
+            "generated) - run: python scripts/generate_sbom.py"
+        )
+    return ok
+
+
 def main() -> int:
     py = sys.executable
     checks = [
@@ -473,17 +522,22 @@ def main() -> int:
         _run("validate-knowledge", [py, "scripts/validate_knowledge.py", "knowledge"]),
         _run("validate-rules", [py, "scripts/validate_rules.py", "rules"]),
         _run("validate-safe-tests", [py, "scripts/validate_safe_tests.py", "safe_tests"]),
-        # Codex#8 (round 6, 2026-09-12): this used to invoke the generator
-        # plainly - it overwrites sbom.json and exits 0 even when coverage
-        # is PARTIAL, so a partial SBOM was written AND reported as a
-        # passing preflight check. --require-complete makes generate_sbom.py
-        # itself refuse (see scripts/generate_sbom.py::main()).
+        # Codex#8 (round 6, 2026-09-12): --require-complete makes
+        # generate_sbom.py refuse a PARTIAL-coverage environment instead of
+        # reporting a passing check (see scripts/generate_sbom.py::main()).
         #
-        # Codex#10 (round 7, 2026-09-12): runs BEFORE secret-scan now -
-        # secret-scan reads the CURRENT on-disk sbom.json, so running it
-        # first would scan yesterday's content and never see what this
-        # regeneration just wrote.
-        _run("sbom", [py, "scripts/generate_sbom.py", "--require-complete"]),
+        # Codex#12 (round 11, 2026-09-13), reproduced exactly as reported:
+        # this used to run WITHOUT --check, so every preflight run
+        # unconditionally overwrote the tracked sbom.json (at minimum its
+        # timestamp) before later checks ran. --check makes this step
+        # purely a coverage/completeness report; freshness against the
+        # TRACKED file is now its own explicit, non-mutating check below.
+        _run("sbom", [py, "scripts/generate_sbom.py", "--check", "--require-complete"]),
+        _tracked_sbom_matches_current_environment(),
+        # Codex#10 (round 7, 2026-09-12): must run AFTER the sbom checks
+        # above - secret-scan reads the CURRENT on-disk sbom.json, and the
+        # freshness check just confirmed that is exactly what the current
+        # environment would produce anyway.
         _run("secret-scan", [py, "scripts/secret_scan.py"]),
         # Codex#13 (round 7, 2026-09-12): "automated OSV/pip-audit
         # scanning" - queries the OSV database for every installed
