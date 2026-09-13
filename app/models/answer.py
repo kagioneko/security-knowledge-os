@@ -17,14 +17,26 @@ credential value.
 Codex#2 (round 9, 2026-09-12): the above became "does not satisfy the stated
 boundary" once a credential-shaped free-text value was traced flowing into
 AttackSurface and the ReviewPayload sent to an external LLM provider. Every
-free-text field here now rejects the concrete, unambiguous credential SHAPES
+free-text field here rejects the concrete, unambiguous credential SHAPES
 ``app/models/_credential_shapes.py`` recognizes (the same ones
 ``scripts/secret_scan.py`` / ``app/policy/safe_test.py`` already treat as
-unambiguously secret-shaped). This still cannot catch every possible secret -
-an arbitrary opaque string is indistinguishable from ordinary free text - so
-storing a real secret anywhere in an assessment remains against this
-project's Vault-only credential policy regardless of what this schema
-happens to accept.
+unambiguously secret-shaped), and the identifier-shaped ones additionally
+reject a value that merely LOOKS like a long, unbroken credential body
+regardless of shape - but Codex#1 (rounds 9, 11, 12, 13, 2026-09-12 --
+2026-09-13) kept finding a real secret shape neither check caught (most
+recently a UUID-form token, whose short hyphen-separated segments pass
+the second check too).
+
+The actual "never sends a raw secret to the external LLM" guarantee is
+NOT either check above - it is structural: ``app/reviewer/llm_review.py``
+never serializes the real value of an identifier-shaped field into the
+LLM payload at all (Codex#1, round 14, 2026-09-13 - see that module's own
+``_anonymize_for_llm()`` docstring). The checks in this module remain as
+defense in depth on the SCHEMA (rejecting an obviously secret-shaped
+value outright, before it is even stored), not as the boundary that
+protects the external LLM call. Storing a real secret anywhere in an
+assessment remains against this project's Vault-only credential policy
+regardless of what this schema happens to accept.
 
 Unknown fields are rejected by the schema (``extra="forbid"``); unknown tool or
 action names and type mismatches are rejected when the patch is applied.

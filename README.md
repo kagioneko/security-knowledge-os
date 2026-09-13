@@ -146,25 +146,35 @@ failure with `--strict`, `2` usage/input error, `3` `POLICY_BLOCKED`.
 `/answers` takes a **typed `AnswerPatch`** - an allow-list of fields a follow-up
 question can fill (`memory_persistent`, `memory_scope`, `outbound_enabled`,
 `credential_storage`, `tool_permissions`, `human_approval`, …). There is no
-generic deep-merge and no field is *named* for a raw secret value - but this
-is a naming/schema guarantee only, not a complete content-detection
-guarantee. Two independent checks apply to every free-text field
-(`app/models/_credential_shapes.py`): a **denylist** rejecting values
-matching an enumerated known credential shape (AWS, Stripe, OpenAI, Google,
-GitHub, JWTs, database connection strings, …), and, for fields that are
-identifiers/hostnames *by contract* (`rag_sources`, `outbound_destinations`,
-`tool_permissions`/`human_approval` keys, tool `name`s - never
-`system_prompt`/`developer_prompt`, which hold actual prose), an
-**allowlist** requiring the value to look like a short, separator-delimited
-identifier - a real credential's random body is a long unbroken run of
-characters regardless of which service issued it, so this also rejects key
-formats no one has enumerated yet (Codex#1, rounds 7-13, 2026-09-12 --
-2026-09-13 - see `tests/unit/test_answers.py`). Free-text prose fields
-(`system_prompt`, `developer_prompt`) still only get the denylist - an
-arbitrary opaque string with no recognizable shape is indistinguishable
-from ordinary prose there. Given this project's Vault-only credential
-policy, never place a real secret in any assessment field. **Rejected (HTTP
-422):**
+generic deep-merge and no field is *named* for a raw secret value.
+
+The actual "never sends a raw secret to the external LLM" guarantee is
+**structural, not a content filter**: fields that are identifiers/hostnames
+*by contract* (`rag_sources`, `outbound_destinations`, `tool_permissions`/
+`human_approval` keys, tool `name`s) are never forwarded to the LLM as their
+real value at all - `app/reviewer/llm_review.py::build_payload()` replaces
+each with a stable, locally-scoped anonymized label (`rag_source_1`,
+`destination_1`, `tool_1`, `action_1`, …) before ever constructing the
+request, consistently across `assessment_context` and `attack_surface` so
+the LLM can still reason about structure (counts, permissions, which
+labelled tool needs approval) and refer to a specific one across its own
+observations. This closes the class outright: no value these fields could
+ever hold - a known credential shape, an unknown future one, or a genuine
+business secret that merely looks like an ordinary name - can reach the
+provider through them, because the raw value is never serialized in the
+first place (Codex#1, rounds 9-14, 2026-09-12 -- 2026-09-13, five rounds of
+content-filter attempts each defeated by a new shape - see
+`tests/unit/test_llm_review.py`). The ORIGINAL objects (used by the
+deterministic rule engine, and returned to the calling human via
+`AssessmentResult.attack_surface`) are untouched; only the LLM request-
+building path is anonymized. `app/models/_credential_shapes.py`'s denylist
+(known credential shapes) and allowlist (identifier-shaped values) remain
+as defense in depth on these same fields, not as this boundary.
+`system_prompt`/`developer_prompt` (actual prose, not identifiers) are
+never anonymized and only get the denylist - an arbitrary opaque string
+with no recognizable shape is indistinguishable from ordinary prose there.
+Given this project's Vault-only credential policy, never place a real
+secret in any assessment field regardless. **Rejected (HTTP 422):**
 an unknown patch field, a permission value outside the closed enum, a type
 mismatch. Tool names are *not* a fixed vocabulary - a diagnosed system can have
 any tool name - so `tool_permissions[<new name>]` **adds** that tool to the

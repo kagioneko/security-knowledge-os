@@ -13,6 +13,7 @@ cannot change one. Malformed output is repaired once, then the result is
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -81,15 +82,134 @@ def _chunk_view(item: RetrievedChunk) -> RetrievedKnowledgeView:
     )
 
 
+def _label_map(values: Iterable[str], prefix: str) -> dict[str, str]:
+    """A stable (sorted-then-numbered), deterministic real-name -> local
+    label mapping, e.g. {"internal_wiki": "rag_source_1", "web":
+    "rag_source_2"}. Sorted so the same input always maps to the same
+    labels across calls (reproducibility for debugging/logs), not for any
+    security property."""
+    return {name: f"{prefix}_{i}" for i, name in enumerate(sorted(set(values)), start=1)}
+
+
+def _anonymize_for_llm(
+    context: AssessmentContext, attack_surface: AttackSurface
+) -> tuple[AssessmentContext, AttackSurface]:
+    """Codex#1 (rounds 9, 11, 12, 13, 14, 2026-09-12 -- 2026-09-13),
+    reproduced exactly as reported across FIVE rounds: every attempt to
+    FILTER a user-supplied identifier value before it reached the LLM
+    payload (a credential-shape denylist, then also an identifier-shape
+    allowlist) was defeated by a differently-shaped real secret - most
+    recently a UUID-form token, whose hyphen-separated segments are all
+    individually short enough to pass the allowlist. No filter over the
+    RAW VALUE can give an unconditional "never sends a raw secret"
+    guarantee, because the field is free text by construction.
+
+    This closes the class outright by never constructing the LLM payload
+    from the raw values at all: `retrieval_sources`, `outbound_
+    destinations`, tool names, and human_approval/action keys are
+    replaced with stable local labels (`rag_source_1`, `destination_1`,
+    `tool_1`, `action_1`, ...) before `build_payload()` ever serializes
+    anything. The LLM can still reason about STRUCTURE (how many
+    destinations, which tools have which permission, whether a
+    particular tool needs approval) and refer to a specific one
+    consistently across its own observations/questions - it just never
+    sees the actual business-context string, so no value the field could
+    ever hold (known credential shape, unknown future shape, or a
+    genuine business secret that merely LOOKS like an ordinary name) can
+    reach an external provider through these fields.
+
+    The ORIGINAL, non-anonymized `context`/`attack_surface` objects are
+    unaffected by this function (a new, separate pair of objects is
+    returned) - the deterministic rule engine (which never leaves this
+    process) and `AssessmentResult.attack_surface` (returned to the
+    calling human, who is entitled to see their own real data) both keep
+    using the real values everywhere else in app/reviewer/assess.py; only
+    the LLM request-building path in this module goes through this.
+
+    The remaining denylist (`reject_credential_shapes`) and allowlist
+    (`reject_non_identifier_shapes`) checks on these fields
+    (app/models/_credential_shapes.py) are kept as defense in depth, not
+    as this boundary - matching Codex's own repeated recommendation
+    ("keep deny-list detection only as defense in depth, not as the
+    security boundary").
+    """
+    tool_map = _label_map((t.name for t in context.tools), "tool")
+    rag_map = _label_map(context.retrieval_sources, "rag_source")
+    dest_map = _label_map(context.outbound_destinations or [], "destination")
+    action_map = _label_map(context.human_approval, "action")
+
+    def _tool_label(name: str) -> str:
+        return tool_map.get(name, "unlabeled_tool")
+
+    def _rag_label(name: str) -> str:
+        return rag_map.get(name, "unlabeled_source")
+
+    def _dest_label(name: str) -> str:
+        return dest_map.get(name, "unlabeled_destination")
+
+    def _action_label(name: str) -> str:
+        return action_map.get(name, "unlabeled_action")
+
+    def _anon_high_impact(actions: list[str]) -> list[str]:
+        # Each entry is exactly "outbound_send" or "tool:<name>" (see
+        # app/reviewer/normalize.py / app/reviewer/attack_surface.py) -
+        # relabeling here rather than re-deriving keeps this in sync with
+        # that logic automatically instead of duplicating it.
+        return [
+            f"tool:{_tool_label(action.removeprefix('tool:'))}"
+            if action.startswith("tool:")
+            else action
+            for action in actions
+        ]
+
+    anon_context = context.model_copy(
+        update={
+            "retrieval_sources": [_rag_label(s) for s in context.retrieval_sources],
+            "tools": [t.model_copy(update={"name": _tool_label(t.name)}) for t in context.tools],
+            "outbound_destinations": (
+                [_dest_label(d) for d in context.outbound_destinations]
+                if context.outbound_destinations is not None
+                else None
+            ),
+            "human_approval": {_action_label(k): v for k, v in context.human_approval.items()},
+            "high_impact_actions": _anon_high_impact(context.high_impact_actions),
+        }
+    )
+    anon_attack_surface = attack_surface.model_copy(
+        update={
+            "external_content_sources": [
+                _rag_label(s) for s in attack_surface.external_content_sources
+            ],
+            "retrieval_sources": [_rag_label(s) for s in attack_surface.retrieval_sources],
+            "tools": [_tool_label(name) for name in attack_surface.tools],
+            "tool_permissions": {
+                _tool_label(name): perm for name, perm in attack_surface.tool_permissions.items()
+            },
+            "outbound_channels": [_dest_label(d) for d in attack_surface.outbound_channels],
+            "human_approval_points": [
+                _action_label(a) for a in attack_surface.human_approval_points
+            ],
+            "high_impact_actions": _anon_high_impact(attack_surface.high_impact_actions),
+        }
+    )
+    return anon_context, anon_attack_surface
+
+
 def build_payload(
     context: AssessmentContext,
     attack_surface: AttackSurface,
     rule_findings: list[Finding],
     retrieved: list[RetrievedChunk],
 ) -> ReviewPayload:
+    # Codex#1 (rounds 9-14, 2026-09-12 -- 2026-09-13): see
+    # _anonymize_for_llm()'s own docstring - this is the single choke
+    # point every external-LLM request is built from, so anonymizing here
+    # (rather than in the caller) means no future caller of build_payload
+    # can forget it.
+    anon_context, anon_attack_surface = _anonymize_for_llm(context, attack_surface)
     return ReviewPayload(
-        assessment_context=context.model_dump(mode="json"),
-        attack_surface=attack_surface.model_dump(mode="json"),
+        assessment_context=anon_context.model_dump(mode="json"),
+        attack_surface=anon_attack_surface.model_dump(mode="json"),
         deterministic_findings=[_finding_view(f) for f in rule_findings],
         retrieved_knowledge=[_chunk_view(c) for c in retrieved],
     )

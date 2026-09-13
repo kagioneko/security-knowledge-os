@@ -84,6 +84,95 @@ def test_payload_keeps_sections_separate() -> None:
     assert payload.deterministic_findings[0].status == "FAIL"
 
 
+def test_build_payload_never_forwards_raw_identifier_values() -> None:
+    """Regression for Codex#1 (rounds 9, 11, 12, 13, 14, 2026-09-12 --
+    2026-09-13), reproduced across FIVE rounds: every filter over the RAW
+    value (a credential-shape denylist, then also an identifier-shape
+    allowlist) was eventually defeated by a differently-shaped real
+    secret. build_payload() must never construct its JSON from the raw
+    identifier fields at all - this constructs context/attack_surface
+    DIRECTLY (bypassing AnswerPatch/AssessmentInput's own denylist/
+    allowlist validators entirely) with a UUID-shaped value exactly like
+    the round-14 repro, to prove the boundary holds even for a value that
+    slipped past every upstream filter."""
+    from app.models.context import AssessmentContext, ToolPermission, ToolSpec
+
+    uuid_shaped_secret = "svc-123e4567-e89b-12d3-a456-426614174000"
+    ctx = AssessmentContext(
+        retrieval_sources=["internal_wiki", uuid_shaped_secret],
+        tools=[ToolSpec(name=uuid_shaped_secret, permission=ToolPermission.SHELL)],
+        outbound_enabled=True,
+        outbound_destinations=[uuid_shaped_secret],
+        human_approval={uuid_shaped_secret: True},
+        high_impact_actions=[f"tool:{uuid_shaped_secret}", "outbound_send"],
+    )
+    surface = AttackSurface(
+        retrieval_sources=list(ctx.retrieval_sources),
+        tools=[uuid_shaped_secret],
+        tool_permissions={uuid_shaped_secret: "shell"},
+        outbound_channels=[uuid_shaped_secret],
+        human_approval_points=[uuid_shaped_secret],
+        high_impact_actions=list(ctx.high_impact_actions),
+    )
+
+    payload = build_payload(ctx, surface, [], [])
+    serialized = payload.model_dump_json()
+
+    assert uuid_shaped_secret not in serialized
+    # structural information is preserved via a local, anonymized label
+    assert "internal_wiki" not in serialized  # anonymized too, not just the secret
+    assert "rag_source_" in serialized
+    assert "tool_" in serialized
+    assert "destination_" in serialized
+    assert "action_" in serialized
+    assert '"shell"' in serialized  # the permission ITSELF is not an identifier
+
+
+def test_build_payload_labels_are_consistent_across_context_and_attack_surface() -> None:
+    """The same real tool name must map to the SAME anonymized label in
+    both assessment_context and attack_surface (and in high_impact_
+    actions), so the LLM's own observations can consistently refer to
+    "tool_1" and have that mean the same tool everywhere in the payload."""
+    from app.models.context import AssessmentContext, ToolPermission, ToolSpec
+
+    ctx = AssessmentContext(
+        tools=[ToolSpec(name="delete_customer_record", permission=ToolPermission.DELETE)],
+        high_impact_actions=["tool:delete_customer_record"],
+    )
+    surface = AttackSurface(
+        tools=["delete_customer_record"],
+        tool_permissions={"delete_customer_record": "delete"},
+        high_impact_actions=["tool:delete_customer_record"],
+    )
+
+    payload = build_payload(ctx, surface, [], [])
+    context_dump = payload.assessment_context
+    surface_dump = payload.attack_surface
+
+    tool_label = context_dump["tools"][0]["name"]
+    assert tool_label == surface_dump["tools"][0]
+    assert tool_label in surface_dump["tool_permissions"]
+    assert f"tool:{tool_label}" == context_dump["high_impact_actions"][0]
+    assert f"tool:{tool_label}" == surface_dump["high_impact_actions"][0]
+
+
+def test_build_payload_does_not_mutate_the_original_objects() -> None:
+    """The human-facing AssessmentResult.attack_surface (app/reviewer/
+    assess.py returns the SAME `surface` object it passes to
+    run_llm_review) must keep real values - anonymization must produce
+    NEW objects, never mutate the caller's originals in place."""
+    from app.models.context import AssessmentContext, ToolPermission, ToolSpec
+
+    ctx = AssessmentContext(tools=[ToolSpec(name="email_send", permission=ToolPermission.SEND)])
+    surface = AttackSurface(tools=["email_send"], tool_permissions={"email_send": "send"})
+
+    build_payload(ctx, surface, [], [])
+
+    assert ctx.tools[0].name == "email_send"
+    assert surface.tools == ["email_send"]
+    assert surface.tool_permissions == {"email_send": "send"}
+
+
 class _RaisingClient:
     """The review's exact repro: a provider error containing secret-shaped
     diagnostic text."""
