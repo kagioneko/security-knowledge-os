@@ -196,6 +196,67 @@ def test_concurrent_identical_answers_do_not_duplicate_the_assessment(
     assert len(set(results)) == 1  # and every thread got that same assessment_id
 
 
+def test_a_duplicate_answer_waiting_on_the_lock_does_not_hold_a_semaphore_slot(
+    client: TestClient,
+) -> None:
+    """Regression for Codex#5 (round 14, 2026-09-13), reproduced exactly as
+    reported: submit_answers() used to acquire _ASSESSMENT_SEMAPHORE (via
+    _admitted_resources()) BEFORE _answer_lock_for(cache_key) - a
+    duplicate request for the SAME (assessment_id, patch) that lost the
+    race for that lock then BLOCKED on it while STILL HOLDING its own
+    semaphore permit. With capacity 2, one request doing real work plus
+    one duplicate merely WAITING already occupied every slot, so a third,
+    completely unrelated assessment got 429 even though only one
+    computation was actually running. The fix serializes duplicates on a
+    cheaper (assessment_id, input-hash) lock BEFORE admission, so a
+    waiter holds no semaphore permit while blocked."""
+    import threading
+    import time
+
+    import app.main as main_module
+
+    original_max = main_module._MAX_CONCURRENT_ASSESSMENTS
+    original_semaphore = main_module._ASSESSMENT_SEMAPHORE
+    main_module._MAX_CONCURRENT_ASSESSMENTS = 2
+    main_module._ASSESSMENT_SEMAPHORE = main_module.threading.Semaphore(2)
+
+    created = client.post(
+        "/v1/assessments", json=_input("U-002-memory-persistence-unspecified")
+    ).json()
+    aid = created["result"]["assessment_id"]
+
+    original_build_report = main_module._build_report
+
+    def _slow_build_report(inp, settings, resources):  # type: ignore[no-untyped-def]
+        time.sleep(0.3)
+        return original_build_report(inp, settings, resources)
+
+    main_module._build_report = _slow_build_report  # type: ignore[assignment]
+    try:
+        start = threading.Event()
+
+        def _submit_duplicate() -> None:
+            start.wait()
+            client.post(f"/v1/assessments/{aid}/answers", json={"memory_persistent": True})
+
+        threads = [threading.Thread(target=_submit_duplicate) for _ in range(2)]
+        for t in threads:
+            t.start()
+        start.set()
+        time.sleep(0.1)  # let both duplicates enter admission/locking
+
+        unrelated = client.post("/v1/assessments", json=_input("S-001-prompt-only"))
+
+        for t in threads:
+            t.join()
+    finally:
+        main_module._build_report = original_build_report
+        main_module._MAX_CONCURRENT_ASSESSMENTS = original_max
+        main_module._ASSESSMENT_SEMAPHORE = original_semaphore
+
+    assert unrelated.status_code == 200
+
+
 def test_answers_repeated_identical_patch_against_same_parent_is_idempotent(
     client: TestClient,
 ) -> None:

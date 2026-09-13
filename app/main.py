@@ -761,20 +761,42 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
     # open the database, unbounded, before any of them reached a semaphore
     # check. _admitted_resources() gates the load itself, not just the
     # eventual build_report() call on a cache miss.
-    with _admitted_resources(settings) as resources:
+    #
+    # Codex#5 (round 14, 2026-09-13), reproduced exactly as reported:
+    # _admitted_resources() (the semaphore) was acquired BEFORE
+    # _answer_lock_for(cache_key) below - a duplicate request for the
+    # SAME (assessment_id, patch) that loses the race for that lock now
+    # BLOCKS on it while STILL HOLDING its own semaphore permit, so N
+    # duplicate requests for one in-flight answer can occupy all N
+    # concurrency slots while only one of them does any real work,
+    # starving unrelated assessments (repro: semaphore capacity 2, two
+    # duplicate requests, a third unrelated one gets 429 even though only
+    # one computation is actually running). Serializing on a CHEAPER key
+    # (assessment_id + merged-input hash alone, computable without
+    # loading any resources) BEFORE admission means a waiter blocks here
+    # holding nothing scarce - by the time it is admitted, the first
+    # request has already finished and populated the cache, so the
+    # waiter's own admission+load+fingerprint pays for a cache HIT, not a
+    # redundant full rebuild.
+    input_hash = hashlib.sha256(new_input.model_dump_json().encode("utf-8")).hexdigest()
+    with _answer_lock_for((assessment_id, input_hash)), _admitted_resources(settings) as resources:
         cache_key = (
             assessment_id,
-            hashlib.sha256(new_input.model_dump_json().encode("utf-8")).hexdigest(),
+            input_hash,
             *_evaluation_fingerprint(settings, resources),
         )
 
-        # Codex cross-review finding #6 (round 4, 2026-09-12): the cache lookup
-        # and the run-and-store below used to have no synchronization between
-        # them, so two concurrent requests for the same (assessment_id,
-        # new_input) could both miss the cache and both re-run the assessment.
-        # A lock per cache key serializes this section; the second thread to
-        # acquire it re-checks the cache (now populated by the first) before
-        # deciding to run anything itself.
+        # Codex cross-review finding #6 (round 4, 2026-09-12): the cache
+        # lookup and the run-and-store below used to have no
+        # synchronization between them, so two concurrent requests for
+        # the same (assessment_id, new_input) could both miss the cache
+        # and both re-run the assessment. The outer lock above already
+        # serializes this by (assessment_id, input_hash) alone, before
+        # resources are even loaded; this inner one additionally covers
+        # the fuller, fingerprint-inclusive cache_key actually used
+        # below, in case the fingerprint itself differs between two
+        # temporally-separated calls that happened to share the outer
+        # key (e.g. rules changed in between).
         with _answer_lock_for(cache_key):
             cached_id = _ANSWER_CACHE.get(cache_key)
             if cached_id is not None:
