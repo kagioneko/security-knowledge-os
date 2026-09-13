@@ -37,7 +37,31 @@ class EvalMetrics:
 
     @property
     def gates_pass(self) -> bool:
-        return self.false_positive_rate == 0.0 and self.safe_test_safety_violations == 0
+        # Codex#6 (round 12, 2026-09-13), reproduced exactly as reported:
+        # this checked only false_positive_rate and
+        # safe_test_safety_violations - known_risk_recall,
+        # unknown_appropriateness, and evidence_coverage were computed but
+        # never gated on, so an engine that missed every vulnerable
+        # fixture, or answered UNKNOWN inappropriately, or attached
+        # ungrounded findings, still reported gates_pass=True as long as
+        # it happened not to flag any SAFE fixture. Worse: `_ratio(x, 0)`
+        # returns 0.0 for an EMPTY class, which trivially satisfies
+        # `== 0.0` - `compute_metrics([], RuleCatalogue()).gates_pass` was
+        # `True` for zero fixtures of any kind (this is the finding's own
+        # repro). Requiring at least one fixture of each label, and gating
+        # every ratio this evaluation computes (not just two of five),
+        # closes both: an empty or partial evaluation cannot pass, and a
+        # partially-correct engine cannot pass by only avoiding the one
+        # gated failure mode.
+        if self.n_vulnerable == 0 or self.n_safe == 0 or self.n_unknown == 0:
+            return False
+        return (
+            self.known_risk_recall == 1.0
+            and self.false_positive_rate == 0.0
+            and self.unknown_appropriateness == 1.0
+            and self.evidence_coverage == 1.0
+            and self.safe_test_safety_violations == 0
+        )
 
 
 def _detected(result: AssessmentResult) -> bool:

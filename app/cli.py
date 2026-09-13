@@ -26,7 +26,7 @@ from app.config import Settings
 from app.ingestion.parser import FrontMatterError, safe_load_bounded
 from app.ingestion.validator import Level, iter_knowledge_files, validate_tree
 from app.llm.factory import get_client
-from app.models.assessment import AssessmentInput
+from app.models.assessment import AssessmentInput, OverallStatus
 from app.models.report import AssessmentReport, ReportStatus
 from app.policy.safe_test import (
     SafeTestLoadError,
@@ -44,20 +44,34 @@ from app.storage.db import connect
 # handed to the YAML parser regardless of how it would blow up.
 _MAX_ASSESSMENT_YAML_BYTES = 500_000
 
-_FIXTURES = [
-    "V-001-indirect-injection-auto-email",
-    "V-002-rag-delete-tool-no-approval",
-    "V-003-persistent-memory-untrusted",
-    "V-004-env-secret-readable",
-    "S-001-prompt-only",
-    "S-002-rag-trusted-no-actions",
-    "S-003-readonly-tool-with-approval",
-    "S-004-credential-proxy",
-    "U-001-tool-permissions-missing",
-    "U-002-memory-persistence-unspecified",
-    "U-003-outbound-destination-unspecified",
-    "U-004-credential-handling-unspecified",
-]
+# Codex#6 (round 12, 2026-09-13), reproduced exactly as reported: this
+# hand-maintained list had drifted to 12 names while
+# tests/fixtures/assessments/ actually held 14 files - U-005 and V-005
+# (each added for a specific past regression) were silently never run by
+# `skos test`, with no error or warning either way. _cmd_test() below now
+# derives the fixture list from the directory itself (the same way
+# scripts/evaluate.py already does), which cannot drift the same way:
+# every *.yaml file under a recognized label folder is always included.
+_FIXTURE_LABELS = {"vulnerable", "safe", "unknown"}
+
+
+def _fixture_result_matches_label(label: str, status: OverallStatus) -> bool:
+    """Codex#6 (round 12, 2026-09-13), reproduced exactly as reported:
+    `skos test` only ever checked that an assessment COMPLETED (was not
+    POLICY_BLOCKED) - an engine that returned e.g. PASS for every single
+    fixture, vulnerable ones included, still printed "N/N fixtures
+    completed" and exited 0, never checking the result against what the
+    fixture's own label (folder name) says it should be. Mirrors the same
+    per-label expectation app/eval/metrics.py's compute_metrics() already
+    encodes (known_risk_recall / false_positive_rate /
+    unknown_appropriateness)."""
+    if label == "vulnerable":
+        return status in (OverallStatus.FAIL, OverallStatus.CONDITIONAL)
+    if label == "safe":
+        return status is not OverallStatus.FAIL
+    if label == "unknown":
+        return status is OverallStatus.UNKNOWN
+    return True  # an unrecognized label folder is not this check's concern
 
 
 def _load_input(path: Path) -> AssessmentInput:
@@ -229,18 +243,31 @@ def _cmd_test(args: argparse.Namespace, s: Settings) -> int:
     if not fixtures_dir.exists():
         print("fixtures not available in this install", file=sys.stderr)
         return 2
-    by_name = {p.stem: p for p in fixtures_dir.rglob("*.yaml")}
+    fixtures = sorted(
+        (p.parent.name, p) for p in fixtures_dir.rglob("*.yaml") if p.parent.name in _FIXTURE_LABELS
+    )
     failures = 0
-    for name in _FIXTURES:
-        report = _run(_load_input(by_name[name]), s, args.db)
+    for label, path in fixtures:
+        name = path.stem
+        report = _run(_load_input(path), s, args.db)
         if report.status is ReportStatus.POLICY_BLOCKED:
             print(f"  {name:44} POLICY_BLOCKED")
             failures += 1
             continue
         assert report.result is not None
         r = report.result
-        print(f"  {name:44} {r.overall_status.value:11} hr={int(r.human_review_required)}")
-    print(f"\n{len(_FIXTURES) - failures}/{len(_FIXTURES)} fixtures completed")
+        # Codex#6 (round 12, 2026-09-13), reproduced exactly as reported:
+        # "completed without POLICY_BLOCKED" used to be the only bar - the
+        # result is now also checked against what a fixture with this
+        # LABEL is supposed to produce, so a deterministically-wrong
+        # engine (e.g. one that always returns PASS) fails this smoke test
+        # instead of silently reporting "N/N fixtures completed".
+        ok = _fixture_result_matches_label(label, r.overall_status)
+        flag = "" if ok else f"  <-- unexpected for a {label!r} fixture"
+        print(f"  {name:44} {r.overall_status.value:11} hr={int(r.human_review_required)}{flag}")
+        if not ok:
+            failures += 1
+    print(f"\n{len(fixtures) - failures}/{len(fixtures)} fixtures completed")
     return 1 if failures else 0
 
 

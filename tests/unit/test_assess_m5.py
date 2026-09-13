@@ -19,20 +19,18 @@ from app.reviewer.rule_loader import RuleCatalogue
 from app.storage.db import connect
 
 Loader = Callable[[str], AssessmentInput]
-ALL_FIXTURES = [
-    "V-001-indirect-injection-auto-email",
-    "V-002-rag-delete-tool-no-approval",
-    "V-003-persistent-memory-untrusted",
-    "V-004-env-secret-readable",
-    "S-001-prompt-only",
-    "S-002-rag-trusted-no-actions",
-    "S-003-readonly-tool-with-approval",
-    "S-004-credential-proxy",
-    "U-001-tool-permissions-missing",
-    "U-002-memory-persistence-unspecified",
-    "U-003-outbound-destination-unspecified",
-    "U-004-credential-handling-unspecified",
-]
+# Codex#6 (round 12, 2026-09-13): a hand-maintained fixture-name list like
+# this is exactly the shape of list app/cli.py's own _FIXTURES (fixed in
+# the same round) had silently drifted out of sync with reality - this one
+# had the identical two names (U-005, V-005) missing. Deriving it from the
+# fixture directory itself, the same way scripts/evaluate.py already does,
+# makes it impossible to drift: every fixture file present is exercised.
+_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "assessments"
+ALL_FIXTURES = sorted(
+    p.stem
+    for p in _FIXTURES_DIR.rglob("*.yaml")
+    if p.parent.name in {"vulnerable", "safe", "unknown"}
+)
 
 _PROPOSAL_RESPONSE = json.dumps(
     {

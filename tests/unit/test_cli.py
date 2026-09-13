@@ -136,5 +136,53 @@ def test_assess_policy_blocked_exit_three(
 
 
 def test_test_command_runs_all_fixtures(capsys: pytest.CaptureFixture[str]) -> None:
+    """Regression for Codex#6 (round 12, 2026-09-13): the hand-maintained
+    _FIXTURES list had drifted to 12 while tests/fixtures/assessments/
+    actually holds 14 files (U-005, V-005 were silently never run) - the
+    fixture list is now derived from the directory itself, so this must
+    match the real, current file count, not a hardcoded one."""
     assert main(["test"]) == 0
-    assert "12/12 fixtures completed" in capsys.readouterr().out
+    assert "14/14 fixtures completed" in capsys.readouterr().out
+
+
+def test_fixture_result_matches_label_expectations() -> None:
+    from app.cli import _fixture_result_matches_label
+    from app.models.assessment import OverallStatus
+
+    assert _fixture_result_matches_label("vulnerable", OverallStatus.FAIL) is True
+    assert _fixture_result_matches_label("vulnerable", OverallStatus.CONDITIONAL) is True
+    assert _fixture_result_matches_label("vulnerable", OverallStatus.PASS) is False
+    assert _fixture_result_matches_label("vulnerable", OverallStatus.UNKNOWN) is False
+    assert _fixture_result_matches_label("safe", OverallStatus.PASS) is True
+    assert _fixture_result_matches_label("safe", OverallStatus.FAIL) is False
+    assert _fixture_result_matches_label("unknown", OverallStatus.UNKNOWN) is True
+    assert _fixture_result_matches_label("unknown", OverallStatus.PASS) is False
+
+
+def test_test_command_fails_when_a_fixture_result_does_not_match_its_label(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Regression for Codex#6 (round 12, 2026-09-13), reproduced exactly as
+    reported: `skos test` only ever checked that an assessment completed
+    (was not POLICY_BLOCKED) - a deterministically-wrong engine that
+    returned PASS for every VULNERABLE fixture still printed "N/N
+    fixtures completed" and exited 0, since nothing compared the result
+    to what the fixture's own label says it should be."""
+    import app.cli as cli_module
+    from app.models.assessment import OverallStatus
+
+    original_run = cli_module._run
+
+    def _tampered_run(inp, s, db):  # type: ignore[no-untyped-def]
+        report = original_run(inp, s, db)
+        if report.result is not None and report.result.overall_status is OverallStatus.FAIL:
+            report.result.overall_status = OverallStatus.PASS
+        return report
+
+    monkeypatch.setattr(cli_module, "_run", _tampered_run)
+
+    exit_code = main(["test"])
+
+    out = capsys.readouterr().out
+    assert exit_code == 1
+    assert "unexpected for a 'vulnerable' fixture" in out

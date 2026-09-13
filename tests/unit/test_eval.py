@@ -68,6 +68,54 @@ def test_initial_gates_hold(labelled: list[LabelledResult], catalogue: RuleCatal
     assert m.gates_pass
 
 
+def test_gates_pass_is_false_for_an_empty_evaluation(catalogue: RuleCatalogue) -> None:
+    """Regression for Codex#6 (round 12, 2026-09-13), reproduced exactly as
+    reported (this is the finding's own repro): `_ratio(x, 0)` returns
+    0.0 for an empty class, which trivially satisfies `== 0.0` -
+    `compute_metrics([], RuleCatalogue()).gates_pass` was `True` for zero
+    fixtures of any kind. An empty (or partial-label) evaluation proves
+    nothing and must never pass the gate."""
+    m = compute_metrics([], catalogue)
+    assert m.gates_pass is False
+
+
+def test_gates_pass_is_false_when_only_some_labels_are_present(
+    labelled: list[LabelledResult], catalogue: RuleCatalogue
+) -> None:
+    """A partial run (e.g. only vulnerable fixtures happened to be passed
+    in) must fail the gate the same way an empty run does - the missing
+    classes' 0.0 ratios must not be read as "perfect", they are absent."""
+    only_vulnerable = [item for item in labelled if item.label == "vulnerable"]
+    m = compute_metrics(only_vulnerable, catalogue)
+    assert m.n_safe == 0
+    assert m.gates_pass is False
+
+
+def test_gates_pass_is_false_when_recall_or_appropriateness_is_imperfect(
+    labelled: list[LabelledResult], catalogue: RuleCatalogue
+) -> None:
+    """Regression for Codex#6 (round 12, 2026-09-13), reproduced exactly as
+    reported: gates_pass previously ignored known_risk_recall,
+    unknown_appropriateness, and evidence_coverage entirely - an engine
+    that missed every vulnerable fixture (recall 0.0) but never flagged a
+    safe one (FPR 0.0, the only thing gated before) still passed."""
+    from app.models.assessment import OverallStatus
+
+    tampered = [
+        LabelledResult(
+            label=item.label,
+            result=item.result.model_copy(update={"overall_status": OverallStatus.PASS}),
+        )
+        if item.label == "vulnerable"
+        else item
+        for item in labelled
+    ]
+    m = compute_metrics(tampered, catalogue)
+    assert m.known_risk_recall == 0.0
+    assert m.false_positive_rate == 0.0  # the previously-sufficient condition
+    assert m.gates_pass is False
+
+
 def test_citation_source_match_uses_the_indexed_corpus(
     labelled: list[LabelledResult], catalogue: RuleCatalogue
 ) -> None:

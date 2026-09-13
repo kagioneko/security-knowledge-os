@@ -51,6 +51,14 @@ def main(argv: list[str] | None = None) -> int:
     conn = connect(args.db, read_only=True) if args.db.exists() else None
 
     labelled: list[LabelledResult] = []
+    # Codex#6 (round 12, 2026-09-13), reproduced exactly as reported: an
+    # invalid fixture was printed to stderr and SKIPPED - the evaluation
+    # continued and could still report gates_pass=True computed over
+    # however many fixtures happened to parse, silently certifying a
+    # SMALLER sample than what was actually on disk. A fixture this
+    # script cannot even parse is a fixture it cannot vouch for; that must
+    # fail the run, not quietly shrink the denominator.
+    skipped: list[str] = []
     try:
         for path in sorted(args.fixtures.rglob("*.yaml")):
             label = path.parent.name
@@ -71,7 +79,8 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 inp = AssessmentInput.model_validate(raw)
             except (FrontMatterError, ValidationError) as exc:
-                print(f"skipping invalid fixture {path}: {exc}", file=sys.stderr)
+                print(f"INVALID fixture {path}: {exc}", file=sys.stderr)
+                skipped.append(str(path))
                 continue
             result = assess(
                 inp, catalogue, settings=settings, index_conn=conn, safe_tests=safe_tests
@@ -95,8 +104,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"human_review_corr   : {m.human_review_correction_rate}  (needs human labels)")
     for note in m.notes:
         print(f"  note: {note}")
+    if skipped:
+        print(f"\n{len(skipped)} fixture(s) could not be parsed and were EXCLUDED above:")
+        for path in skipped:
+            print(f"  {path}")
     print(f"\ngates_pass          : {m.gates_pass}")
-    return 0 if m.gates_pass else 1
+    return 0 if m.gates_pass and not skipped else 1
 
 
 if __name__ == "__main__":
