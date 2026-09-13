@@ -52,3 +52,30 @@ def test_oversized_front_matter_is_rejected() -> None:
     text = "---\n" + ("x: " + "y" * 30_000 + "\n") + "---\nbody"
     with pytest.raises(FrontMatterError, match="exceeds"):
         split_front_matter(text)
+
+
+def test_duplicate_key_in_a_mapping_is_rejected() -> None:
+    """Regression for Codex#2 (round 12, 2026-09-13), reproduced exactly as
+    reported: PyYAML silently keeps only the LAST value when a key is
+    written twice in one mapping - a duplicated field can silently
+    override an earlier, reviewed one with no error at all."""
+    text = "---\nid: KU-0001\nclassification: public\nclassification: secret\n---\nbody"
+    with pytest.raises(FrontMatterError, match="duplicate key"):
+        split_front_matter(text)
+
+
+def test_duplicate_key_in_a_nested_mapping_is_rejected() -> None:
+    """The duplicate-key check must apply at every mapping level, not just
+    the top-level front-matter mapping."""
+    text = "---\nid: KU-0001\nnested:\n  a: 1\n  a: 2\n---\nbody"
+    with pytest.raises(FrontMatterError, match="duplicate key"):
+        split_front_matter(text)
+
+
+def test_a_key_repeated_across_sibling_mappings_is_not_flagged() -> None:
+    """The duplicate-key check is per-mapping, not global - the same key
+    name legitimately appearing once in each of two unrelated mappings
+    (e.g. two different nested blocks) is not a duplicate."""
+    text = "---\nid: KU-0001\na:\n  x: 1\nb:\n  x: 2\n---\nbody"
+    data, _ = split_front_matter(text)
+    assert data == {"id": "KU-0001", "a": {"x": 1}, "b": {"x": 2}}

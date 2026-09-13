@@ -48,9 +48,20 @@ class _RestrictedSafeLoader(yaml.SafeLoader):
     calls ``construct_object`` on the merge-tagged node, so registering a
     constructor for that tag (the usual way to override YAML behaviour) has
     no effect here. ``flatten_mapping`` itself must be overridden instead.
+
+    Codex#2 (round 12, 2026-09-13), reproduced exactly as reported: PyYAML
+    (like the YAML 1.1 spec's own "should" rather than "must") silently
+    keeps only the LAST value when the same key is written twice in one
+    mapping - a duplicated ``severity``/``conditions``/``checks`` field can
+    silently weaken a reviewed rule with no error at all. Checked here, on
+    the raw key NODES, for the same reason the merge-key check above is:
+    this runs once per mapping, before any value is actually constructed,
+    so a later sibling with the same key is rejected before it can
+    overwrite anything.
     """
 
     def flatten_mapping(self, node: yaml.MappingNode) -> None:
+        seen_keys: set[tuple[str, str]] = set()
         for key_node, _value_node in node.value:
             if key_node.tag == "tag:yaml.org,2002:merge":
                 raise yaml.constructor.ConstructorError(
@@ -59,6 +70,16 @@ class _RestrictedSafeLoader(yaml.SafeLoader):
                     "merge keys ('<<') are not allowed in front matter",
                     key_node.start_mark,
                 )
+            if isinstance(key_node, yaml.ScalarNode):
+                key_id = (key_node.tag, key_node.value)
+                if key_id in seen_keys:
+                    raise yaml.constructor.ConstructorError(
+                        None,
+                        None,
+                        f"duplicate key {key_node.value!r} in mapping",
+                        key_node.start_mark,
+                    )
+                seen_keys.add(key_id)
         super().flatten_mapping(node)
 
 

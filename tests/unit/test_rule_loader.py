@@ -183,6 +183,21 @@ def test_a_rule_id_using_the_reserved_llm_obs_prefix_is_rejected(tmp_path: Path)
         load_rules(root)
 
 
+def test_a_duplicated_yaml_key_in_a_rule_file_is_rejected(tmp_path: Path) -> None:
+    """Regression for Codex#2 (round 12, 2026-09-13), reproduced exactly as
+    reported: a rule file with `severity` written twice loaded successfully
+    with only the LAST value in effect - PyYAML's own last-key-wins
+    behaviour silently weakened the rule (high -> low here) with no error
+    at all. This is the exact repro from the finding."""
+    root = _write_rule(
+        tmp_path,
+        "id: PI-999\ntitle: duplicate-key rule\ncategory: agent-security\n"
+        "severity: high\nseverity: low\nchecks:\n  - tools_present: true\n",
+    )
+    with pytest.raises(RuleLoadError, match="duplicate key"):
+        load_rules(root)
+
+
 def test_bad_operator_is_rejected(tmp_path: Path) -> None:
     root = _write_rule(
         tmp_path,
