@@ -871,15 +871,29 @@ def reindex() -> ReindexReport:
     # Codex#6 (round 10, 2026-09-13): see _REINDEX_LOCK's own comment - reject
     # immediately instead of blocking a worker thread on reindex_atomic()'s
     # own flock() while a rebuild is already running.
+    #
+    # Codex#2 (round 13, 2026-09-13), reproduced exactly as reported:
+    # _REINDEX_LOCK only serializes callers within THIS process - with
+    # multiple Uvicorn API workers, a concurrent request reaching a
+    # DIFFERENT worker process passes this check too, and the flock inside
+    # reindex_atomic() used to always BLOCK that worker's thread instead
+    # of returning 429, then still perform a full, redundant rebuild once
+    # admitted. blocking=False makes that flock attempt non-blocking; a
+    # busy lock is reported back as decision.subject == "reindex-busy"
+    # (see reindex_atomic()'s own docstring), checked below.
     if not _REINDEX_LOCK.acquire(blocking=False):
         raise HTTPException(
             status_code=429, detail="a reindex is already running; retry shortly"
         )
     try:
         settings = _settings()
-        report = reindex_atomic(settings.knowledge_root, settings.db_path)
+        report = reindex_atomic(settings.knowledge_root, settings.db_path, blocking=False)
     finally:
         _REINDEX_LOCK.release()
+    if report.decision.subject == "reindex-busy":
+        raise HTTPException(
+            status_code=429, detail="a reindex is already running; retry shortly"
+        )
     if not report.ok:
         # Codex#11 (round 9, 2026-09-12), reproduced exactly as reported:
         # `decision.reasons` can embed configured filesystem paths and raw

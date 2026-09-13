@@ -7,6 +7,7 @@ later it can point at ``active/knowledge/`` populated by the Pack Manager.
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import os
 import shutil
@@ -179,7 +180,9 @@ def _current_revision(db_path: Path) -> str | None:
         conn.close()
 
 
-def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexReport:
+def reindex_atomic(
+    knowledge_root: Path | str, db_path: Path | str, *, blocking: bool = True
+) -> ReindexReport:
     """Rebuild the index from an already-verified, read-only knowledge root.
 
     This never changes knowledge *content* - it only re-derives the FTS index.
@@ -189,6 +192,22 @@ def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexRe
     ``.lock`` file, and the previous index is restored if the post-swap
     integrity check fails (Codex cross-review finding #3 / Antigravity B6.2,
     2026-09-11).
+
+    Codex#2 (round 13, 2026-09-13), reproduced exactly as reported:
+    app/main.py's ``_REINDEX_LOCK`` (a ``threading.Lock``) only serializes
+    callers within ONE process - with multiple Uvicorn API workers, two
+    concurrent requests reaching DIFFERENT worker processes each pass
+    that check, and the flock below (which DOES correctly serialize
+    across processes) used to always BLOCK, so the second process's
+    request occupied a worker thread waiting instead of getting an
+    immediate 429, and then still performed a full, redundant rebuild
+    once admitted. ``blocking=False`` (the API endpoint's choice; the CLI
+    and scripts keep the default ``True``, matching prior behaviour)
+    makes the flock attempt non-blocking instead: contention returns a
+    ``POLICY_BLOCKED`` report with `subject="reindex-busy"` (a DIFFERENT,
+    checkable subject from every other failure's plain "reindex", not a
+    string the caller has to pattern-match a message against) rather than
+    waiting.
     """
     knowledge_root = Path(knowledge_root)
     db_path = Path(db_path)
@@ -253,9 +272,18 @@ def reindex_atomic(knowledge_root: Path | str, db_path: Path | str) -> ReindexRe
         )
 
     with lock_file:
+        flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
         try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            fcntl.flock(lock_file, flags)
         except OSError as exc:
+            if not blocking and exc.errno in (errno.EACCES, errno.EAGAIN):
+                return ReindexReport(
+                    decision=stop(
+                        PolicyOutcome.POLICY_BLOCKED,
+                        "reindex-busy",
+                        "a reindex is already running; retry shortly",
+                    )
+                )
             return ReindexReport(
                 decision=stop(
                     PolicyOutcome.POLICY_BLOCKED,

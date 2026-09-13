@@ -924,9 +924,60 @@ def test_reindex_fails_closed_when_the_lock_setup_itself_fails(corpus_alt_root: 
     assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
 
 
+def test_reindex_atomic_nonblocking_reports_busy_instead_of_waiting(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#2 (round 13, 2026-09-13), reproduced exactly as
+    reported: reindex_atomic()'s flock() used to always BLOCK - with
+    `blocking=False`, a contended lock must return a POLICY_BLOCKED report
+    with `decision.subject == "reindex-busy"` immediately instead.
+
+    Runs the contended call in a worker thread with a bounded
+    `future.result(timeout=...)` - never a bare, unbounded call - so that
+    IF this ever regresses back to blocking, the call hangs in the
+    (leaked) worker thread while this test still fails cleanly and
+    promptly instead of hanging the whole suite (confirmed by hand: an
+    unbounded call against the pre-fix, always-blocking code hangs
+    indefinitely, since flock() locks are per OPEN FILE DESCRIPTION, not
+    per process - even a second fd opened by this SAME process contends
+    with the one held below exactly like a different process would)."""
+    import fcntl
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import TimeoutError as FutureTimeoutError
+
+    from app.retrieval.index import open_no_follow
+
+    db = tmp_path / "idx.sqlite"
+    reindex_atomic(corpus_alt_root, db)  # seed a real index first
+    lock_path = db.with_suffix(db.suffix + ".lock")
+
+    lock_fd = open_no_follow(lock_path, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(reindex_atomic, corpus_alt_root, db, blocking=False)
+            try:
+                report = future.result(timeout=5)
+            except FutureTimeoutError:
+                pytest.fail(
+                    "reindex_atomic(blocking=False) did not return within 5s - "
+                    "it is blocking on the held lock instead of reporting busy"
+                )
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+    assert not report.ok
+    assert report.decision.subject == "reindex-busy"
+
+
 def test_reindex_signature_takes_no_content() -> None:
+    """`blocking` (round 13, Codex#2) is a pure concurrency-behaviour flag,
+    not a content-bearing parameter - it does not weaken what this test
+    guards against (a future `content=`/`override=`-shaped parameter that
+    would let a caller smuggle knowledge content through reindex)."""
     import inspect
 
     from app.retrieval.index import reindex_atomic as fn
 
-    assert set(inspect.signature(fn).parameters) == {"knowledge_root", "db_path"}
+    assert set(inspect.signature(fn).parameters) == {"knowledge_root", "db_path", "blocking"}

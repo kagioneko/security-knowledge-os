@@ -863,6 +863,44 @@ def test_concurrent_reindex_admission_is_bounded(client: TestClient) -> None:
         main_module._REINDEX_LOCK.release()
 
 
+def test_reindex_maps_a_busy_lock_report_to_429(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#2 (round 13, 2026-09-13), reproduced exactly as
+    reported: `_REINDEX_LOCK` (a `threading.Lock`) only serializes callers
+    within THIS process - a concurrent request reaching a DIFFERENT
+    Uvicorn worker process passes `_REINDEX_LOCK` too, and
+    reindex_atomic()'s own flock() used to always BLOCK that worker's
+    thread instead of returning 429. reindex_atomic(blocking=False)
+    reports lock contention as decision.subject == "reindex-busy" (see
+    its own docstring); this checks the ENDPOINT correctly maps that to
+    429, exactly as if a different process held the lock. The actual
+    non-blocking flock/errno behaviour itself is exercised directly,
+    under a bounded thread-pool timeout (never risking a hung test suite
+    the way holding a real contested flock from inside this same process
+    would - confirmed by hand: it deadlocks the pre-fix, always-blocking
+    code indefinitely), by
+    test_reindex_atomic_nonblocking_reports_busy_instead_of_waiting in
+    test_reindex.py."""
+    import app.main as main_module
+    from app.models.policy_outcome import PolicyOutcome, stop
+    from app.retrieval.index import ReindexReport
+
+    def _busy(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return ReindexReport(
+            decision=stop(
+                PolicyOutcome.POLICY_BLOCKED,
+                "reindex-busy",
+                "a reindex is already running; retry shortly",
+            )
+        )
+
+    monkeypatch.setattr(main_module, "reindex_atomic", _busy)
+
+    resp = client.post("/v1/knowledge/reindex")
+    assert resp.status_code == 429
+
+
 def test_assessment_endpoint_rejects_a_foreign_origin(client: TestClient) -> None:
     """Regression for Codex#5 / Antigravity SKOS-ADV-13 (round 4,
     2026-09-12), reproduced exactly as reported: only
