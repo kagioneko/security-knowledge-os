@@ -437,6 +437,15 @@ def _quickstart_install_command_installs_every_extra() -> bool:
     versions than the audited baseline. Every `pip install -e` line found
     in README.md / REVIEW_PACKAGE.md must request every optional-
     dependency group declared in pyproject.toml and pin `constraints.txt`.
+
+    Codex#7 (round 12, 2026-09-13), reproduced exactly as reported: `-c
+    constraints.txt` alone does not reach pip's ISOLATED build environment
+    (where the `hatchling` build backend itself installs) - only the main
+    install environment. A newer, unreviewed Hatchling could still build
+    the editable install/release artifact. `--build-constraint
+    constraints.txt` pins that environment too; every documented install
+    line must carry both flags, not just one "constraints.txt" mention
+    covering either.
     """
     import tomllib
 
@@ -454,7 +463,11 @@ def _quickstart_install_command_installs_every_extra() -> bool:
             extras_match = re.search(r'\.\[([^\]]+)\]', line)
             requested = set(extras_match.group(1).split(",")) if extras_match else set()
             missing = declared_groups - requested
-            if missing or "constraints.txt" not in line:
+            has_constraint = bool(
+                re.search(r"(?<!--build-)(?:^|\s)(?:-c|--constraint)\s+constraints\.txt", line)
+            )
+            has_build_constraint = "--build-constraint constraints.txt" in line
+            if missing or not has_constraint or not has_build_constraint:
                 offenders.append(f"{rel}: {line.strip()!r} (missing: {sorted(missing)})")
 
     ok = not offenders

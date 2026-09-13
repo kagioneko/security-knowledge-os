@@ -200,6 +200,23 @@ def test_quickstart_check_catches_a_narrow_install_command(tmp_path, monkeypatch
     assert preflight._quickstart_install_command_installs_every_extra() is False
 
 
+def test_quickstart_check_catches_a_missing_build_constraint_flag(tmp_path, monkeypatch) -> None:
+    """Regression for Codex#7 (round 12, 2026-09-13), reproduced exactly as
+    reported: `-c constraints.txt` alone does not reach pip's ISOLATED
+    build environment (where the `hatchling` build backend itself
+    installs) - only the main install environment. Every declared extra
+    present and `-c constraints.txt` present was not enough; the line
+    must ALSO carry `--build-constraint constraints.txt`."""
+    import shutil
+
+    (tmp_path / "README.md").write_text(
+        '.venv/bin/pip install -e ".[api,llm,dev]" -c constraints.txt\n', encoding="utf-8"
+    )
+    shutil.copy(preflight.ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
+    monkeypatch.setattr(preflight, "ROOT", tmp_path)
+    assert preflight._quickstart_install_command_installs_every_extra() is False
+
+
 def test_head_itself_is_a_known_ancestor_of_head() -> None:
     import subprocess
 

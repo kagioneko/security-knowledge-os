@@ -12,7 +12,14 @@
 # then re-run the full test suite, ruff, mypy, and pip-audit before committing.
 #
 # Release/CI installs should pin against this file:
-#   pip install -e ".[llm,api,dev]" -c constraints.txt
+#   pip install -e ".[llm,api,dev]" -c constraints.txt --build-constraint constraints.txt
+#
+# Codex#7 (round 12, 2026-09-13), reproduced exactly as reported: `-c` alone
+# does not reach pip's ISOLATED build environment (where the `hatchling`
+# build backend itself installs) - only the main install environment. This
+# file already lists every dependency of the full installed environment,
+# hatchling included, so passing it again as `--build-constraint` pins that
+# separate environment too, with no second file to maintain.
 #
 # This is a reviewed, working combination as of commit generation time - not a
 # hash-pinned/supply-chain-attested lock (see PyPA's pylock.toml specification

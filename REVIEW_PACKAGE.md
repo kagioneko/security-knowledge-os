@@ -154,9 +154,9 @@ secret/          OUTSIDE the repository. Never indexed, never sent to an LLM.
 
 ```
 python3.12 -m venv .venv
-.venv/bin/pip install -e ".[api,llm,dev]" -c constraints.txt
+.venv/bin/pip install -e ".[api,llm,dev]" -c constraints.txt --build-constraint constraints.txt
 .venv/bin/python scripts/preflight.py      # pytest + ruff + mypy + validators + scans
-.venv/bin/skos test                        # 12-fixture smoke
+.venv/bin/skos test                        # 14-fixture smoke
 .venv/bin/python scripts/evaluate.py --db var/index.sqlite   # §24 metrics
 ```
 
@@ -168,3 +168,16 @@ narrower command fails preflight, and a fresh install following it can
 resolve different (unreviewed) versions than the SBOM/constraints.txt
 audited baseline describes. `-c constraints.txt` pins every installed
 package to the exact reviewed version.
+
+Codex#7 (round 12, 2026-09-13), reproduced exactly as reported: `-c
+constraints.txt` alone does not reach pip's ISOLATED build environment
+(where the `hatchling` build backend itself is installed) - only the
+main install environment. With pip's own default (isolated builds), a
+newer compatible Hatchling released after this audit could still be used
+to build the editable install/release artifact, differing from the
+SBOM-reviewed `hatchling==1.32.0` (which IS already pinned in
+`constraints.txt` - it just was not being applied to that separate
+environment). `--build-constraint constraints.txt` pins that environment
+too, using the exact same reviewed file (constraints.txt already lists
+every project dependency, buildtime and runtime alike, since it is a
+`pip freeze` of the full installed environment).
