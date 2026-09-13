@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `2c04fda` (round-13 fixes + a post-round-13 hardening pass, **not yet pushed**)
+- Commit: `7c73db3` (round-14 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **211**
-- Tests: **619** items (618 pass, 1 skip = JA-R02)
+- Tests: **635** items (634 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -15,7 +15,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **thirteen rounds**, 2026-09-11 -- 2026-09-13. Rounds 1-2
+  audit), **fourteen rounds**, 2026-09-11 -- 2026-09-13. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -243,8 +243,51 @@ review; regenerate with `git ls-files` after any change.
   deliberately deferred again — this allowlist is a narrower, faster
   change with the same generalizing property for this specific class of
   gap, not the broader one; revisit the full redesign if the denylist
-  needs a sixth entry despite this. A fourteenth round re-reviewing
-  everything through this commit is the next step before push.
+  needs a sixth entry despite this.
+
+  Round 14 (2026-09-13, audited commit `77a78bc`): Codex
+  **CHANGES-REQUIRED** again (6 findings independent of round 13's: 2 HIGH
+  — the round-13 identifier ALLOWLIST assumed every credential is one
+  long unbroken segment, which is false for UUID-form tokens (all hyphen-
+  separated segments individually short enough to pass); this was the
+  FIFTH round in a row (9, 11, 12, 13, 14) a content filter over the raw
+  value was defeated by a differently-shaped real secret, so — discussed
+  with the user — the structural fix Codex had suggested twice was
+  finally taken: `build_payload()` now anonymizes every identifier-shaped
+  field (RAG sources, outbound destinations, tool names, approval keys)
+  into stable local labels before ever serializing the LLM request,
+  consistently across `assessment_context`/`attack_surface`, so no value
+  these fields could ever hold can reach the provider through them at
+  all; and `scripts/run_cross_review.sh` runs the Codex reviewer with
+  `CODEX_SANDBOX=danger-full-access` (bwrap fails on this host), giving a
+  reviewer that reads a prompt-injected file real OS-level permission to
+  act on it instead of just auditing — discussed with the user, the full
+  container/VM fix was deliberately deferred (it changes the shared
+  review pipeline across every project on the host) in favor of a
+  `ulimit`-based CPU-time/max-file-size mitigation needing no new
+  infrastructure; 3 MEDIUM — `validate_safe_test()` never scanned
+  `preconditions`, `expected_secure_behavior`, or `failure_condition`,
+  and its credential/destination detection was its own stale hand-rolled
+  list rather than the shared, maintained one, the snapshot per-file size
+  limit was checked once before copying rather than enforced DURING the
+  chunked copy (a fault-injected repro copied 5 MB+ from a 1-byte
+  source), and `submit_answers()` acquired the concurrency semaphore
+  BEFORE the per-request dedup lock, so a duplicate request waiting on
+  that lock held a scarce admission slot it was not using, able to starve
+  an unrelated request; 1 LOW — the SBOM's dependency-closure walk fixed
+  `extra` to `""` for every requirement, discarding which extras a parent
+  requirement had actually activated on its own dependency, hiding
+  `filelock` (genuinely installed, reachable only through `pip-audit`'s
+  own `CacheControl[filecache]` requirement) from the "complete" SBOM) —
+  **all 6 addressed** (5 fixed outright, 1 mitigated with the container/
+  VM alternative explicitly deferred by request), each with a regression
+  test confirmed to fail against the pre-fix code via `git stash` (one
+  needed a bounded thread-pool timeout rather than an unbounded call,
+  since the pre-fix always-blocking flock() would otherwise hang the
+  test suite itself — confirmed by hand) — see `git log` commit messages
+  ("fix round-14 Codex#…") for the itemized mapping. A fifteenth round
+  re-reviewing everything through this commit is the next step before
+  push.
 
 ## Tracked files by area
 
@@ -335,13 +378,18 @@ Safe-test templates (4): `ST-IPI-001`, `ST-MEM-001`, `ST-TOOL-001`, `ST-CRED-001
 
 ## Dependencies (`sbom.json`)
 
-62 components — the project's actual dependency closure (Codex#9, round 7:
+63 components — the project's actual dependency closure (Codex#9, round 7:
 walked outward from every declared root rather than listing every
 installed distribution, which also included `pip` and unrelated
 environment packages; Codex#9, round 8: a package reachable only
 transitively through a required "runtime" root, such as `pydantic_core`
 via `pydantic`, is now also marked CycloneDX scope "required", not just
-one that is itself a *direct* pyproject.toml entry). Core install =
+one that is itself a *direct* pyproject.toml entry; Codex#6, round 14:
+`filelock` (MIT), reachable only through `pip-audit`'s own
+`CacheControl[filecache]` requirement - fixing `extra` to `""` for every
+requirement, round 9's own fix, had discarded which extras a PARENT
+requirement actually activated on its dependency, hiding this one).
+Core install =
 `pydantic` + `pyyaml`; the rest are `[api]`/`[llm]` extras or dev/test-only.
 Zero `UNKNOWN` licences. Licences present: MIT, BSD (2/3-Clause), Apache-2.0,
 PSF-2.0 — permissive — plus **`pathspec` and `certifi`, both under MPL-2.0**
@@ -359,7 +407,7 @@ which use Python's native `truststore` instead of `certifi`); `pathspec`
 is a transitive dependency of `mypy` (**not** `ruff`, which declares no
 dependencies of its own per installed-environment metadata) — both
 dev/test-only or extras, never imported by, bundled with, or distributed
-as part of `app/`'s core install. None of the 62 components conflict with
+as part of `app/`'s core install. None of the 63 components conflict with
 Apache-2.0 distribution of this project. Full list in `sbom.json`.
 
 ## §24 evaluation (internal fixtures — not real-world performance)
