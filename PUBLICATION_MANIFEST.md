@@ -5,7 +5,7 @@ review; regenerate with `git ls-files` after any change.
 
 - Commit: `7c73db3` (round-14 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **211**
+- Tracked files: **212**
 - Tests: **635** items (634 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
@@ -300,7 +300,7 @@ check enforces (total tracked files, total tests) are kept current above.
 | --- | --- | --- |
 | `app/` | 58 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
 | `tests/` | 79 | 48 test modules + fixtures |
-| `knowledge/` | 23 | 13 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
+| `knowledge/` | 24 | 14 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
 | `rules/` | 13 | 7 rule YAMLs + category `.gitkeep`s |
 | `safe_tests/` | 4 | 4 vetted templates |
 | `scripts/` | 12 | validators, ingest/build_index, assess, evaluate, sbom, secret_scan, preflight, cross-review runner |
@@ -324,11 +324,15 @@ Docs: `architecture`, `threat-model`, `safety-boundaries`, `knowledge-schema`,
 Verified: no `secret/`, no `.env`, no private-KU content tracked
 (`scripts/preflight.py`).
 
-## Public Knowledge Units (13)
+## Public Knowledge Units (14)
 
-All `classification: public`, `status: reviewed`, `derivation: summary`
-(original prose, no verbatim third-party text). Full list + per-unit sources in
-`docs/knowledge-corpus.md`; licence analysis in `docs/attribution.md`.
+All `classification: public`, `status: reviewed`. 13 are `derivation: summary`
+(original prose, no verbatim third-party text, citing a published standard).
+KU-0014 is `derivation: original` / `source_type: incident` — a first-party
+write-up of a vulnerability class found by this project's own pre-publication
+cross-AI review (rounds 9-14), not sourced from any external standard. Full
+list + per-unit sources in `docs/knowledge-corpus.md`; licence analysis in
+`docs/attribution.md`.
 
 | id | category | source |
 | --- | --- | --- |
@@ -345,10 +349,11 @@ All `classification: public`, `status: reviewed`, `derivation: summary`
 | KU-0011 | methodology | OWASP LLM05 |
 | KU-0012 | governance | NIST AI RMF 1.0 |
 | KU-0013 | methodology (Japanese) | MITRE ATLAS + OWASP LLM06 |
+| KU-0014 | incident | original (this project's own cross-AI review, rounds 9-14) |
 
 Source licences: OWASP CC-BY-SA-4.0 · MITRE ATLAS Terms of Use · NIST public
-domain. No content in the repo is under terms incompatible with Apache-2.0
-redistribution.
+domain · KU-0014 original (no external licence applies). No content in the
+repo is under terms incompatible with Apache-2.0 redistribution.
 
 ## Rules (7)
 

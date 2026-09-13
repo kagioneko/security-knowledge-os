@@ -109,14 +109,16 @@ python3.12 -m venv .venv
 .venv/bin/pytest -q
 ```
 
-The MVP ships **13 public Knowledge Units** (`knowledge/public/`, all from
+The MVP ships **14 public Knowledge Units** (`knowledge/public/`; 13 from
 published standards - OWASP LLM Top 10 2025, MITRE ATLAS, NIST AI RMF / AI 600-1;
-one in Japanese). Each unit carries `provenance` (source title, URL, version,
-licence, derivation status, last-verified date). See `docs/knowledge-corpus.md`
-and `docs/attribution.md`.
+one in Japanese - plus one, KU-0014, an original write-up of a vulnerability
+class this project's own pre-publication review process actually found). Each
+unit carries `provenance` (source title, URL, version, licence, derivation
+status, last-verified date). See `docs/knowledge-corpus.md` and
+`docs/attribution.md`.
 
 **Internal fixture evaluation** (`scripts/evaluate.py`, 12 artificial fixtures ×
-13 indexed KUs):
+14 indexed KUs):
 
 ```
 Classification Leakage          = 0
@@ -268,7 +270,7 @@ See `.env.example`.
 - `docs/knowledge-schema.md` — Knowledge Unit schema (front matter + `provenance` + body)
 - `docs/rule-schema.md` — data-only rule schema and operators
 - `docs/safe-test-schema.md` — safe-test schema, validator rules, Human Gate, read-only guard
-- `docs/knowledge-corpus.md` — the 13 shipped Knowledge Units and their sources
+- `docs/knowledge-corpus.md` — the 14 shipped Knowledge Units and their sources
 - `docs/attribution.md` — third-party sources, licences, derivation status
 - `docs/acceptance-criteria.md` — AC-01..20 status and §24 evaluation metrics
 

@@ -1,15 +1,16 @@
 # Attribution & third-party knowledge
 
-The engine code in this repository is original work. The shipped Knowledge Units
+The engine code in this repository is original work. Most shipped Knowledge Units
 (`knowledge/public/`) are **original prose that summarises publicly documented
-security concepts**; they do not reproduce third-party text verbatim. Every unit
-carries a `provenance` block (`source_title`, `source_url`, `source_version`,
-`source_license`, `derivation`, `last_verified`).
+security concepts**; they do not reproduce third-party text verbatim. One unit,
+KU-0014, is original first-party analysis with no external source at all (see
+below). Every unit carries a `provenance` block (`source_title`, `source_url`,
+`source_version`, `source_license`, `derivation`, `last_verified`).
 
-`derivation` is one of: `original` (our own analysis), `summary` (our own prose
-summarising a public concept - **all shipped units are this**), `adaptation`
-(reworded from a specific source), `quotation` (contains verbatim quoted text -
-**none of the shipped units are this**).
+`derivation` is one of: `original` (our own analysis - **KU-0014**), `summary`
+(our own prose summarising a public concept - **the other 13 shipped units are
+this**), `adaptation` (reworded from a specific source), `quotation` (contains
+verbatim quoted text - **none of the shipped units are this**).
 
 ## Sources referenced by the Knowledge corpus
 
@@ -20,6 +21,7 @@ summarising a public concept - **all shipped units are this**), `adaptation`
 | NIST AI 600-1 (Generative AI Profile) | KU-0009 | U.S. Government work / public domain |
 | NIST AI Risk Management Framework (AI RMF 1.0) | KU-0012 | U.S. Government work / public domain |
 | simonwillison.net (prompt injection writing) | KU-0002 (context only, not reproduced) | referenced, not reproduced |
+| This project's own pre-publication cross-AI review (rounds 9-14, 2026-09) | KU-0014 | N/A - original first-party incident, no external source |
 
 ## Note on CC-BY-SA-4.0
 

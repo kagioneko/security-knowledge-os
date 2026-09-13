@@ -39,7 +39,13 @@ def test_every_unit_cites_a_source() -> None:
     report = load_corpus(KNOWLEDGE)
     for u in report.units:
         assert u.front_matter.source_ref.strip()
-        assert u.front_matter.source_type.value in {"standard", "note", "github", "manual"}
+        assert u.front_matter.source_type.value in {
+            "standard",
+            "note",
+            "github",
+            "manual",
+            "incident",
+        }
 
 
 def test_rule_knowledge_refs_resolve(catalogue) -> None:

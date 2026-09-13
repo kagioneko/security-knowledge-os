@@ -34,7 +34,7 @@ the tests that cover it. Status is updated as milestones land.
 | JA-R02 | Cross-language retrieval (EN query → JA KU, JA query → EN KU) | out of MVP scope - `test_ja_retrieval.py::test_ja_r02_*` is skipped; future evaluation item |
 | M4-DISP-01 | Retrieval representative-section selection prefers content sections over meta sections for display | not started; only if a Reviewer output needs it |
 
-## §24 Evaluation metrics (M7, `scripts/evaluate.py` over the 12 labelled fixtures + 13 indexed KUs)
+## §24 Evaluation metrics (M7, `scripts/evaluate.py` over the 12 labelled fixtures + 14 indexed KUs)
 
 | metric | value | gate |
 | --- | --- | --- |
