@@ -77,7 +77,34 @@ CODEX_MODEL_OPTS=(-c 'model_reasoning_effort="high"')
 # approval_policy=never, the prompt forbids edits, and the tree is git-tracked
 # (any stray write is `git checkout`-recoverable). Override with
 # CODEX_SANDBOX=read-only once the host allows unprivileged userns.
+#
+# Codex#2 (round 14, 2026-09-13), reproduced exactly as reported:
+# danger-full-access gives the reviewer OS-level permission to run any
+# command and write anywhere the invoking user can - a prompt-injection
+# string planted in ANY file the reviewer reads (source, YAML, Markdown,
+# a knowledge-base entry) could induce it to act on that instead of just
+# auditing, and unlike a stray write inside this git-tracked repo (always
+# `git checkout`-recoverable), a write or network call OUTSIDE the repo is
+# not undoable by this script at all. A full fix (a disposable container/
+# VM with the repo bind-mounted read-only, no Vault/socket access,
+# restricted network, an explicit resource limit) was discussed with the
+# user and deliberately deferred - it changes how the shared Codex review
+# pipeline runs across every project on this host, not just this one, and
+# needs the host's actual container/VM capabilities checked first, which
+# a code-review round cannot verify on its own. What IS in scope here: a
+# resource-limit MITIGATION that needs no new infrastructure - CPU time
+# and max written-file-size caps, both scoped to this process (and its
+# children) alone via the shell's own `ulimit`. Deliberately NOT
+# `ulimit -u` (max processes): on Linux that limit is enforced per REAL
+# UID system-wide, not per process tree - setting it here could starve
+# every other service already running as this same account (nekoguard,
+# discord-bot, vps-spirit, ...), a worse outcome than the risk being
+# mitigated. This bounds worst-case local resource abuse; it does not
+# bound network access or writes within these limits - it is a
+# mitigation, not the fix Codex actually asked for.
 CODEX_SANDBOX="${CODEX_SANDBOX:-danger-full-access}"
+CODEX_MAX_CPU_SECONDS="${CODEX_MAX_CPU_SECONDS:-1800}"
+CODEX_MAX_FILE_SIZE_BLOCKS="${CODEX_MAX_FILE_SIZE_BLOCKS:-2097152}"  # 512-byte blocks; ~1 GiB
 
 run_codex() {
   local f="$OUT/codex-${STAMP}-${COMMIT}.md"
@@ -88,9 +115,16 @@ run_codex() {
     echo "config: model_reasoning_effort=high (explicit; fast mode off); sandbox=${CODEX_SANDBOX}"
     echo
   } > "$f"
-  timeout "$TIMEOUT" codex exec "${CODEX_MODEL_OPTS[@]}" \
-    -C "$REPO" -s "$CODEX_SANDBOX" --skip-git-repo-check \
-    "$CODEX_PROMPT" 2>&1 | tee -a "$f" || {
+  # Subshell so these ulimits apply only to this invocation (and whatever
+  # it spawns), never leaking into the rest of this script or the
+  # Antigravity run below.
+  (
+    ulimit -t "$CODEX_MAX_CPU_SECONDS"
+    ulimit -f "$CODEX_MAX_FILE_SIZE_BLOCKS"
+    exec timeout "$TIMEOUT" codex exec "${CODEX_MODEL_OPTS[@]}" \
+      -C "$REPO" -s "$CODEX_SANDBOX" --skip-git-repo-check \
+      "$CODEX_PROMPT"
+  ) 2>&1 | tee -a "$f" || {
       echo "!! codex exec failed or timed out (exit $?)" | tee -a "$f"; }
   echo "   done: $f"
 }

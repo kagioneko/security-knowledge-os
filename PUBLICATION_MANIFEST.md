@@ -396,6 +396,7 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
 | JA-R02 cross-language retrieval | accepted (out of MVP scope) |
 | CLI uses argparse, not Typer (spec §5) | accepted, documented |
 | Pack Manager (M9-M10) not in repo | out of scope; ZIP-import attack surface is future work |
+| `scripts/run_cross_review.sh` runs the Codex reviewer with `CODEX_SANDBOX=danger-full-access` (bwrap fails on this host's kernel config) - a prompt-injection string in any reviewed file could induce the reviewer to run arbitrary commands or write/exfiltrate outside this repo, not just audit it | accepted, mitigated — round-14 Codex#2: a full fix (disposable container/VM, read-only bind mount, no Vault/socket access, restricted network) was discussed with the user and deliberately deferred - it changes how the shared Codex review pipeline runs across every project on the host, needing the host's actual container/VM capabilities checked first. Applied instead: `ulimit`-based CPU-time and max-written-file-size caps scoped to the reviewer process alone (deliberately not a process-count limit, which is enforced per-UID system-wide on Linux and could starve unrelated services running as the same account) |
 
 ## Cross-AI review — status
 
