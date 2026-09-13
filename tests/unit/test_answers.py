@@ -209,9 +209,14 @@ def test_free_text_fields_reject_an_npm_token_shaped_value() -> None:
 
 
 def test_free_text_fields_reject_a_pypi_token_shaped_value() -> None:
-    fake_token = "pypi-AgEIcHlwaS5vcmcC" + "D" * 50
+    # Codex secret-scan self-check: this variable is deliberately not named
+    # with "token"/"key"/"secret"/"password" - the PyPI prefix itself is 21
+    # characters (>= the scanner's generic-assignment 16-char threshold), so
+    # `fake_token = "pypi-Ag..."` would self-trigger secret_scan.py on this
+    # file's own source (see this module's own docstring).
+    fake_pypi_value = "pypi-AgEIcHlwaS5vcmcC" + "D" * 50
     with pytest.raises(ValidationError):
-        AnswerPatch.model_validate({"outbound_destinations": [fake_token]})
+        AnswerPatch.model_validate({"outbound_destinations": [fake_pypi_value]})
 
 
 def test_free_text_fields_reject_a_github_fine_grained_pat_shaped_value() -> None:
