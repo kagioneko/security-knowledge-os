@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `0a46a87` (round-12 cross-review findings addressed, **not yet pushed**)
+- Commit: `f73a1c1` (round-13 cross-review findings addressed, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **210**
-- Tests: **593** items (592 pass, 1 skip = JA-R02)
+- Tracked files: **211**
+- Tests: **615** items (614 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -15,7 +15,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **twelve rounds**, 2026-09-11 -- 2026-09-13. Rounds 1-2
+  audit), **thirteen rounds**, 2026-09-11 -- 2026-09-13. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -192,8 +192,39 @@ review; regenerate with `git ls-files` after any change.
   with a regression test confirmed to fail against the pre-fix code (via
   `git stash`, or by hand for the two pure documentation/behavioral-
   observation items) — see `git log` commit messages ("fix round-12
-  Codex#…") for the itemized mapping. A thirteenth round re-reviewing
-  these round-12 fixes is the next step before push.
+  Codex#…") for the itemized mapping. Round 13 (2026-09-13, audited
+  commit `b1b899e`): Codex **CHANGES-REQUIRED** again (5 findings
+  independent of round 12's: 1 HIGH — a modern OpenAI project API key
+  (`sk-proj-` prefix) reached the external LLM review payload unfiltered
+  — the FOURTH round in a row (9, 11, 12, 13) this same credential-shape
+  gap has been found under a new format; Codex explicitly noted this
+  round that widening the enumeration "cannot establish a never-accepts/
+  never-sends guarantee" and suggested stopping the forwarding of raw
+  free-text identifiers to the LLM entirely — discussed with the user,
+  who chose to continue the enumeration for this round (added OpenAI,
+  Hugging Face, npm, PyPI, and GitHub fine-grained PAT shapes) rather
+  than take on the larger AttackSurface/AssessmentContext redesign now;
+  3 MEDIUM — `_REINDEX_LOCK` only serialized reindex admission WITHIN one
+  process, so a multi-worker Uvicorn deployment could still let a second
+  worker block on (then redundantly repeat) a rebuild instead of getting
+  429, the post-publish rollback only caught `OSError`/`sqlite3.Error`,
+  missing `RuntimeError`-family exceptions `connect()` itself can raise
+  post-swap (`ForeignDatabaseError`/`UntrustedStateDirectoryError`/
+  `FTS5Unavailable`), and round 12's group-writable-ancestor trust check
+  only compared GIDs, not whether the group was actually PRIVATE (no
+  other account could write as it) — the fix (`_group_is_private()`)
+  still had to avoid re-rejecting this project's own real deployment
+  directory, which round 12's fix had already gotten wrong once; 1 LOW —
+  `scripts/ingest.py`/`skos ingest` always returned exit 0, even when
+  `load_corpus()` recorded an ERROR-level "could not safely snapshot"
+  failure (e.g. `skos ingest README.md`, a file, not a directory)) —
+  **all 5 fixed**, each with a regression test confirmed to fail against
+  the pre-fix code (via `git stash`; one test needed a bounded
+  thread-pool timeout rather than an unbounded call, since the pre-fix
+  always-blocking flock() would otherwise hang the test suite itself
+  indefinitely - confirmed by hand) — see `git log` commit messages ("fix
+  round-13 Codex#…") for the itemized mapping. A fourteenth round
+  re-reviewing these round-13 fixes is the next step before push.
 
 ## Tracked files by area
 
@@ -205,7 +236,7 @@ check enforces (total tracked files, total tests) are kept current above.
 | area | files | notes |
 | --- | --- | --- |
 | `app/` | 58 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
-| `tests/` | 78 | 47 test modules + fixtures |
+| `tests/` | 79 | 48 test modules + fixtures |
 | `knowledge/` | 23 | 13 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
 | `rules/` | 13 | 7 rule YAMLs + category `.gitkeep`s |
 | `safe_tests/` | 4 | 4 vetted templates |
