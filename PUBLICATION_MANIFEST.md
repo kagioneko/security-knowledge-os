@@ -3,18 +3,19 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `0108bdd` (round-11 cross-review findings addressed, **not yet pushed**)
+- Commit: `0a46a87` (round-12 cross-review findings addressed, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **208**
-- Tests: **550** items (549 pass, 1 skip = JA-R02)
+- Tracked files: **210**
+- Tests: **593** items (592 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
-  quickstart `pip install -e` command installs every declared extra and
-  pins `constraints.txt`, round 11 Codex#9; and that the tracked
-  `sbom.json` matches the current environment, ignoring only its
-  timestamp, without preflight itself rewriting that tracked file to
-  check it, round 11 Codex#12)
+  quickstart `pip install -e` command installs every declared extra,
+  pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
+  so pip's isolated build environment is pinned too, round 11 Codex#9 /
+  round 12 Codex#7; and that the tracked `sbom.json` matches the current
+  environment, ignoring only its timestamp, without preflight itself
+  rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **eleven rounds**, 2026-09-11 -- 2026-09-13. Rounds 1-2
+  audit), **twelve rounds**, 2026-09-11 -- 2026-09-13. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -154,8 +155,45 @@ review; regenerate with `git ls-files` after any change.
   (via `git stash` for the code-level findings; the sbom-mutation fix was
   verified by diffing `sbom.json` before/after both the old and new
   invocations) — see `git log` commit messages ("fix round-11 Codex#…")
-  for the itemized mapping. A twelfth round re-reviewing these round-11
-  fixes is the next step before push.
+  for the itemized mapping. Round 12 (2026-09-13, audited commit
+  `7a6f252`): Codex **CHANGES-REQUIRED** again (10 findings independent of
+  round 11's: 1 HIGH — the credential-shape deny-list still missed Google
+  API keys, GitLab PATs, Discord bot tokens, and database connection
+  strings with embedded credentials (a Google-API-key-shaped value in
+  `outbound_destinations` reached the external LLM payload unfiltered) —
+  added, and `scripts/secret_scan.py`'s own separate, hand-maintained
+  pattern dict (never updated when round 11 added Stripe/JWT detection to
+  the runtime model) now builds from the SAME shared dict as the runtime
+  model, closing that drift class outright (round 12, Codex#8, folded
+  into this same fix); 7 MEDIUM — duplicate keys in one YAML mapping
+  silently kept only the LAST value (a duplicated `severity` field could
+  silently weaken a reviewed rule with no error), the directory-fd
+  snapshot walk silently skipped FIFOs/sockets/device files in place of a
+  real file (indistinguishable from an intentionally deleted rule), the
+  no-follow/trusted-directory checks (`snapshot_tree()`'s root,
+  `connect()`'s write path) only ever verified the directory ITSELF, never
+  any ANCESTOR (an attacker able to rename one could still substitute an
+  otherwise perfectly-owned directory — the first version of this fix
+  rejected the project's OWN real deployment directory outright, caught
+  by the full suite before it ever reached Codex, not by Codex), `/answers`
+  chains had no bound on their LENGTH (always patching the newest child
+  bypasses the answer-cache dedup indefinitely), `EvalMetrics.gates_pass`
+  ignored three of its five computed ratios and treated an EMPTY
+  evaluation as a trivial pass, `constraints.txt` was never applied to
+  pip's ISOLATED build environment (where the `hatchling` build backend
+  itself installs — only the main install environment was pinned), and
+  preflight's own quickstart-install-line reference to fixture count was
+  stale; 2 LOW — a standalone `validate_tree()`/CLI-fixture-list class of
+  drift (`app/cli.py`'s `skos test` silently ran only 12 of the real 14
+  fixtures and never checked a result against its own label's expected
+  status), and a malformed `Origin` header (`localhost:bad`, an out-of-
+  range port, or a malformed IPv6 literal) raised a raw 500 instead of the
+  403 every other untrusted-origin shape gets) — **all 10 fixed**, each
+  with a regression test confirmed to fail against the pre-fix code (via
+  `git stash`, or by hand for the two pure documentation/behavioral-
+  observation items) — see `git log` commit messages ("fix round-12
+  Codex#…") for the itemized mapping. A thirteenth round re-reviewing
+  these round-12 fixes is the next step before push.
 
 ## Tracked files by area
 
@@ -167,7 +205,7 @@ check enforces (total tracked files, total tests) are kept current above.
 | area | files | notes |
 | --- | --- | --- |
 | `app/` | 58 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
-| `tests/` | 76 | 45 test modules + fixtures |
+| `tests/` | 78 | 47 test modules + fixtures |
 | `knowledge/` | 23 | 13 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
 | `rules/` | 13 | 7 rule YAMLs + category `.gitkeep`s |
 | `safe_tests/` | 4 | 4 vetted templates |
