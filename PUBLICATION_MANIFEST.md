@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `f73a1c1` (round-13 cross-review findings addressed, **not yet pushed**)
+- Commit: `2c04fda` (round-13 fixes + a post-round-13 hardening pass, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **211**
-- Tests: **615** items (614 pass, 1 skip = JA-R02)
+- Tests: **619** items (618 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -223,8 +223,28 @@ review; regenerate with `git ls-files` after any change.
   thread-pool timeout rather than an unbounded call, since the pre-fix
   always-blocking flock() would otherwise hang the test suite itself
   indefinitely - confirmed by hand) — see `git log` commit messages ("fix
-  round-13 Codex#…") for the itemized mapping. A fourteenth round
-  re-reviewing these round-13 fixes is the next step before push.
+  round-13 Codex#…") for the itemized mapping.
+
+  Post-round-13 hardening (commit `2c04fda`, same day, discussed with the
+  user rather than found by a review round): round 13's Codex#1 was the
+  FOURTH round in a row (9, 11, 12, 13) the credential-shape denylist
+  missed a new vendor's key format — a denylist can only ever catch
+  formats someone has already enumerated. Added a second, independent
+  ALLOWLIST (`reject_non_identifier_shapes()`) for the fields that are
+  identifiers/hostnames by contract (RAG sources, outbound destinations,
+  tool/approval names — never `system_prompt`/`developer_prompt`, which
+  hold prose): any unbroken segment over 24 characters is rejected,
+  regardless of shape, since a real credential's random body is always
+  one long unbroken run of characters. Verified against a completely
+  fictional key shape absent from every existing pattern — rejected;
+  this project's own real fixture values (hostnames, snake_case names)
+  all still pass. The full structural redesign Codex originally suggested
+  (never forward raw identifiers to the LLM at all) was discussed and
+  deliberately deferred again — this allowlist is a narrower, faster
+  change with the same generalizing property for this specific class of
+  gap, not the broader one; revisit the full redesign if the denylist
+  needs a sixth entry despite this. A fourteenth round re-reviewing
+  everything through this commit is the next step before push.
 
 ## Tracked files by area
 
