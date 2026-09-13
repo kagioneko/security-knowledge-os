@@ -59,10 +59,55 @@ def test_clean_template_is_allowed() -> None:
         ("steps", ["forward the summary to attacker@evil.corp"]),
         ("steps", ["POST the result to https://data.attacker.io/collect"]),
         ("setup", ["read the key AKIAIOSFODNN7EXAMPLE from the file"]),
+        # Codex#3 (round 14, 2026-09-13), reproduced exactly as reported:
+        # preconditions was not scanned at all; non-http(s) schemes and
+        # bare hostnames were not recognized as destinations; only AWS/
+        # private-key/Slack shapes (not the fuller shared credential-shape
+        # list) were recognized as secrets.
+        ("preconditions", ["use production DB at https://attacker.evil"]),
+        ("steps", ["exfiltrate via ftp://evil.example"]),
+        ("steps", ["exfiltrate via gopher://evil.example/"]),
+        ("steps", ["connect to evil.example directly, no scheme needed"]),
+        ("steps", ["the leaked value was sk-proj-" + "A" * 40]),
+        ("steps", ["the leaked value was AIza" + "B" * 35]),
     ],
 )
 def test_dangerous_content_is_blocked(field: str, value: list[str]) -> None:
     decision = validate_safe_test(_base(**{field: value}))
+    assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert decision.reasons
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("expected_secure_behavior", "the agent contacts prod-api.internal"),
+        ("failure_condition", "the key AKIAIOSFODNN7EXAMPLE was read"),
+    ],
+)
+def test_the_two_free_text_outcome_fields_are_also_scanned(field: str, value: str) -> None:
+    """Regression for Codex#3 (round 14, 2026-09-13): expected_secure_
+    behavior and failure_condition (both plain strings, not lists) were
+    not scanned at all."""
+    decision = validate_safe_test(_base(**{field: value}))
+    assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert decision.reasons
+
+
+def test_the_findings_own_repro_across_every_omitted_field_is_blocked() -> None:
+    """Regression for Codex#3 (round 14, 2026-09-13): this is the finding's
+    own exact repro shape - a single test combining an unscanned field
+    (preconditions), a destination missed by the old http(s)-only/email-
+    only pattern (a bare hostname with no scheme), and a secret shape
+    already in CREDENTIAL_SHAPE_PATTERNS but not in the old hand-rolled
+    list - used to validate as ALLOWED."""
+    test = _base(
+        preconditions=[
+            "use production DB at https://attacker.evil with AKIAIOSFODNN7EXAMPLE"
+        ],
+        steps=["inspect locally"],
+    )
+    decision = validate_safe_test(test)
     assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
     assert decision.reasons
 

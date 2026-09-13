@@ -25,6 +25,7 @@ from pydantic import ValidationError
 
 from app.ingestion.parser import FrontMatterError, _read_text_no_follow, safe_load_bounded
 from app.ingestion.snapshot import snapshot_tree
+from app.models._credential_shapes import CREDENTIAL_SHAPE_PATTERNS
 from app.models.assessment import SafeTest, SafeTestEnvironment, UntrustedSafeTestProposal
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
 from app.models.risk import RiskRule
@@ -34,6 +35,14 @@ from app.models.risk import RiskRule
 # parser regardless of how it would blow up.
 _MAX_SAFE_TEST_FILE_BYTES = 50_000
 
+# Codex#3 (round 14, 2026-09-13), reproduced exactly as reported: this list
+# had its own hand-maintained AWS/private-key/Slack patterns instead of the
+# shared, actively-maintained CREDENTIAL_SHAPE_PATTERNS (app/models/
+# _credential_shapes.py, kept in sync with scripts/secret_scan.py since
+# round 12, Codex#8) - Stripe/JWT/OpenAI/Google/GitHub/npm/PyPI shapes
+# added there since round 11 were never reflected here, so a safe test
+# could name any of them and still validate. Reusing the shared dict means
+# this can no longer drift the same way.
 _FORBIDDEN = [
     (re.compile(r"\bprod(uction)?\b", re.I), "references a production target"),
     (re.compile(r"rm\s+-rf", re.I), "contains a destructive shell command"),
@@ -41,9 +50,10 @@ _FORBIDDEN = [
     (re.compile(r"\bDELETE\s+FROM\b", re.I), "contains a destructive SQL statement"),
     (re.compile(r"\bTRUNCATE\b", re.I), "contains a destructive SQL statement"),
     (re.compile(r"\bsudo\b", re.I), "escalates privileges"),
-    (re.compile(r"AKIA[0-9A-Z]{16}"), "contains an AWS-key-shaped literal"),
-    (re.compile(r"BEGIN (?:RSA |OPENSSH )?PRIVATE KEY"), "contains a private key"),
-    (re.compile(r"\bxox[bpsar]-[0-9A-Za-z-]+"), "contains a Slack-token-shaped literal"),
+    *(
+        (pattern, f"contains a {name}-shaped literal")
+        for name, pattern in CREDENTIAL_SHAPE_PATTERNS.items()
+    ),
 ]
 
 # Hosts / addresses that are safe to name in a test.
@@ -51,14 +61,31 @@ _SAFE_HOST = re.compile(
     r"^(localhost|127\.0\.0\.1|(?:[a-z0-9-]+\.)*example\.(?:com|org|net|invalid)|[a-z0-9-]+\.invalid)$",
     re.I,
 )
-_HOST_LIKE = re.compile(r"https?://([^/\s]+)|@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+# Codex#3 (round 14, 2026-09-13), reproduced exactly as reported: this only
+# ever matched an http(s) URL or an email-like "@host" - ftp://evil.example,
+# gopher://evil.example/, and a plain hostname/IP literal with no scheme at
+# all (e.g. "connect to evil.example directly") all passed unrecognized.
+# The first alternative now matches ANY URI scheme's authority, not just
+# http(s); the third is a conservative bare hostname/IP shape (at least two
+# dot-separated labels) - the module's own established posture (mentioning
+# "prod" or "sudo" ANYWHERE already blocks a test outright) already prefers
+# an author having to rephrase a false positive over missing a real
+# destination, so a safe test incidentally naming a file like "config.yaml"
+# is deliberately traded off the same way.
+_HOST_LIKE = re.compile(
+    r"[a-z][a-z0-9+.-]*://([^/\s]+)"
+    r"|@([A-Za-z0-9.-]+\.[A-Za-z]{2,})"
+    r"|\b([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+)\b",
+    re.I,
+)
 
 
 def _scan_text(parts: list[str]) -> list[str]:
     text = "\n".join(parts)
     reasons = [reason for pattern, reason in _FORBIDDEN if pattern.search(text)]
     for match in _HOST_LIKE.finditer(text):
-        host = (match.group(1) or match.group(2) or "").split(":")[0]
+        host = (match.group(1) or match.group(2) or match.group(3) or "").split(":")[0]
         if host and not _SAFE_HOST.match(host):
             reasons.append(f"names an external destination '{host}'")
     return reasons
@@ -80,7 +107,19 @@ def validate_safe_test(test: SafeTest) -> PolicyDecision:
     if SafeTestEnvironment.CANARY in test.environment and not test.uses_canary_values:
         reasons.append("declares a canary environment but uses_canary_values is false")
 
-    reasons += _scan_text(test.setup + test.steps + test.cleanup + [test.scope])
+    # Codex#3 (round 14, 2026-09-13), reproduced exactly as reported: this
+    # omitted `preconditions` entirely (operational instructions, exactly
+    # as executable-looking as setup/steps/cleanup) and the two free-text
+    # outcome fields `expected_secure_behavior`/`failure_condition` -
+    # nothing stopped an author from putting a production target,
+    # destructive command, or secret-shaped literal in any of the three.
+    reasons += _scan_text(
+        test.preconditions
+        + test.setup
+        + test.steps
+        + test.cleanup
+        + [test.scope, test.expected_secure_behavior, test.failure_condition]
+    )
 
     if reasons:
         return stop(PolicyOutcome.POLICY_BLOCKED, f"safe-test:{test.id}", *reasons)
