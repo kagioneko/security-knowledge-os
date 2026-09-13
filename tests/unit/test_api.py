@@ -1271,6 +1271,48 @@ def test_answer_lock_eviction_does_not_break_the_singleflight_guarantee() -> Non
         main_module._ANSWER_LOCKS.update(original)
 
 
+def test_answer_lock_gives_up_instead_of_blocking_forever_when_contended() -> None:
+    """Regression for Codex#6 (round 15, 2026-09-14), reproduced exactly as
+    reported: `_answer_lock_for()` used to call `entry.lock.acquire()`
+    with no timeout - enough identical duplicate requests for the same
+    (assessment_id, patch) could each occupy one of FastAPI/Starlette's
+    fixed-size sync-route worker threads waiting on this same lock
+    indefinitely, exhausting the pool shared with every other synchronous
+    endpoint. A bounded acquire turns the worst case (a stuck holder) into
+    a typed `_AnswerLockBusy` instead of an indefinite thread hold.
+
+    This test itself follows the bounded-blocking-test rule learned the
+    hard way in round 13 (a real hang from an unbounded call to
+    pre-fix blocking code) - `_answer_lock_for`'s own `timeout=` argument
+    is what makes the call below bounded; it is never called without one
+    here."""
+    import threading
+
+    import app.main as main_module
+
+    key = ("bounded-answer-lock", "hash")
+    entered_critical_section = threading.Event()
+    release_holder = threading.Event()
+
+    def _hold() -> None:
+        with main_module._answer_lock_for(key):
+            entered_critical_section.set()
+            release_holder.wait(timeout=5)
+
+    holder = threading.Thread(target=_hold)
+    try:
+        holder.start()
+        assert entered_critical_section.wait(timeout=5), "holder never entered"
+
+        with pytest.raises(main_module._AnswerLockBusy), main_module._answer_lock_for(
+            key, timeout=0.2
+        ):
+            pass  # must never be reached - the lock is still held
+    finally:
+        release_holder.set()
+        holder.join(timeout=5)
+
+
 def test_answer_cache_put_is_thread_safe_under_concurrent_eviction() -> None:
     """Same race as `test_store_put_is_thread_safe_under_concurrent_eviction`,
     for `_ANSWER_CACHE` / `_ANSWER_CACHE_GUARD` (Codex#5, round 5,

@@ -355,8 +355,39 @@ def _evict_unused_answer_locks_locked() -> None:
             del _ANSWER_LOCKS[key]
 
 
+# Codex#6 (round 15, 2026-09-14), reproduced exactly as reported:
+# `entry.lock.acquire()` below blocked WITHOUT a timeout - a burst of
+# identical duplicate requests for the same (assessment_id, patch) each
+# occupy one of FastAPI/Starlette's fixed-size sync-route worker threads
+# while waiting on this same lock. That pool is shared across every
+# synchronous endpoint this app has, health check included; enough
+# duplicates can exhaust it even though none of them hold anything
+# actually scarce (the semaphore in _admitted_resources is acquired
+# AFTER this lock precisely to avoid that - see its own comment - but
+# the worker THREAD itself is a limited resource too, and unbounded
+# blocking still ties one up per waiter). A real async singleflight
+# (anyio.Lock/Event, no worker thread held while waiting) is the fuller
+# fix but changes this route from sync def to async def and how it
+# talks to the rest of this largely-synchronous module - out of scope
+# for a single-finding fix. Bounding the wait instead keeps the
+# intended behavior for the common case (a waiter blocks briefly, the
+# first request finishes, the waiter gets a cheap cache hit - see the
+# call site's own comment for why that is the whole point of this lock,
+# not something to trade away for an immediate reject) while turning
+# the worst case (a stuck holder) into a typed 429 after
+# `_ANSWER_LOCK_TIMEOUT_SECONDS` instead of an indefinite thread hold.
+_ANSWER_LOCK_TIMEOUT_SECONDS = 30.0
+
+
+class _AnswerLockBusy(Exception):
+    """`_answer_lock_for` could not acquire its lock within
+    `_ANSWER_LOCK_TIMEOUT_SECONDS` - see that function's own docstring."""
+
+
 @contextlib.contextmanager
-def _answer_lock_for(key: tuple[object, ...]) -> Iterator[None]:
+def _answer_lock_for(
+    key: tuple[object, ...], *, timeout: float = _ANSWER_LOCK_TIMEOUT_SECONDS
+) -> Iterator[None]:
     with _ANSWER_LOCKS_GUARD:
         entry = _ANSWER_LOCKS.get(key)
         if entry is None:
@@ -364,15 +395,23 @@ def _answer_lock_for(key: tuple[object, ...]) -> Iterator[None]:
             _ANSWER_LOCKS[key] = entry
             _evict_unused_answer_locks_locked()
         entry.refcount += 1
-    entry.lock.acquire()
-    try:
-        yield
-    finally:
-        entry.lock.release()
+
+    def _release_refcount() -> None:
         with _ANSWER_LOCKS_GUARD:
             entry.refcount -= 1
             if entry.refcount == 0 and _ANSWER_LOCKS.get(key) is entry:
                 del _ANSWER_LOCKS[key]
+
+    if not entry.lock.acquire(timeout=timeout):
+        _release_refcount()
+        raise _AnswerLockBusy(
+            f"could not acquire the answer lock for {key!r} within {timeout}s"
+        )
+    try:
+        yield
+    finally:
+        entry.lock.release()
+        _release_refcount()
 
 
 # Codex cross-review finding #11 (2026-09-11): /v1/knowledge/reindex accepted
@@ -779,40 +818,51 @@ def submit_answers(assessment_id: str, patch: AnswerPatch) -> AssessmentReport:
     # waiter's own admission+load+fingerprint pays for a cache HIT, not a
     # redundant full rebuild.
     input_hash = hashlib.sha256(new_input.model_dump_json().encode("utf-8")).hexdigest()
-    with _answer_lock_for((assessment_id, input_hash)), _admitted_resources(settings) as resources:
-        cache_key = (
-            assessment_id,
-            input_hash,
-            *_evaluation_fingerprint(settings, resources),
-        )
+    try:
+        with (
+            _answer_lock_for((assessment_id, input_hash)),
+            _admitted_resources(settings) as resources,
+        ):
+            cache_key = (
+                assessment_id,
+                input_hash,
+                *_evaluation_fingerprint(settings, resources),
+            )
 
-        # Codex cross-review finding #6 (round 4, 2026-09-12): the cache
-        # lookup and the run-and-store below used to have no
-        # synchronization between them, so two concurrent requests for
-        # the same (assessment_id, new_input) could both miss the cache
-        # and both re-run the assessment. The outer lock above already
-        # serializes this by (assessment_id, input_hash) alone, before
-        # resources are even loaded; this inner one additionally covers
-        # the fuller, fingerprint-inclusive cache_key actually used
-        # below, in case the fingerprint itself differs between two
-        # temporally-separated calls that happened to share the outer
-        # key (e.g. rules changed in between).
-        with _answer_lock_for(cache_key):
-            cached_id = _ANSWER_CACHE.get(cache_key)
-            if cached_id is not None:
-                cached_entry = _STORE.get(cached_id)
-                if cached_entry is not None:
-                    return _respond(cached_entry[1])
+            # Codex cross-review finding #6 (round 4, 2026-09-12): the cache
+            # lookup and the run-and-store below used to have no
+            # synchronization between them, so two concurrent requests for
+            # the same (assessment_id, new_input) could both miss the cache
+            # and both re-run the assessment. The outer lock above already
+            # serializes this by (assessment_id, input_hash) alone, before
+            # resources are even loaded; this inner one additionally covers
+            # the fuller, fingerprint-inclusive cache_key actually used
+            # below, in case the fingerprint itself differs between two
+            # temporally-separated calls that happened to share the outer
+            # key (e.g. rules changed in between).
+            with _answer_lock_for(cache_key):
+                cached_id = _ANSWER_CACHE.get(cache_key)
+                if cached_id is not None:
+                    cached_entry = _STORE.get(cached_id)
+                    if cached_entry is not None:
+                        return _respond(cached_entry[1])
 
-            report = _build_report(new_input, settings, resources)
-            if report.result is not None:
-                prev_revision = (
-                    original_report.result.revision if original_report.result is not None else 1
-                )
-                report.result.supersedes = assessment_id
-                report.result.revision = prev_revision + 1
-                _store_put(report.result.assessment_id, (new_input, report))
-                _answer_cache_put(cache_key, report.result.assessment_id)
+                report = _build_report(new_input, settings, resources)
+                if report.result is not None:
+                    prev_revision = (
+                        original_report.result.revision
+                        if original_report.result is not None
+                        else 1
+                    )
+                    report.result.supersedes = assessment_id
+                    report.result.revision = prev_revision + 1
+                    _store_put(report.result.assessment_id, (new_input, report))
+                    _answer_cache_put(cache_key, report.result.assessment_id)
+    except _AnswerLockBusy as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="too many concurrent requests for this assessment; retry shortly",
+        ) from exc
     return _respond(report)
 
 
