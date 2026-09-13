@@ -176,8 +176,22 @@ def _walk_no_follow(
                 os.close(child_fd)
         elif entry.is_file(follow_symlinks=False):
             _copy_file_no_follow(entry, src_dir_fd, dest / entry.name, budget)
-        # any other type (fifo, socket, device, ...) is silently skipped -
-        # iter_knowledge_files() only ever looks for plain `*.md` files.
+        else:
+            # Codex#3 (round 12, 2026-09-13), reproduced exactly as
+            # reported: a FIFO, socket, or device file replacing a real
+            # rule/knowledge/safe-test file used to be silently SKIPPED
+            # here (this comment used to justify that by pointing at
+            # iter_knowledge_files() only looking for `*.md` - but
+            # load_rules()/load_safe_tests() glob other suffixes over this
+            # SAME snapshot, and none of them re-verify that a name they
+            # expected to see is still a regular file). A rule replaced by
+            # a FIFO is then indistinguishable from an intentionally
+            # deleted rule - the catalogue silently loses coverage with no
+            # error anywhere. Fail the whole snapshot instead: every
+            # caller already treats a raised SnapshotError as "could not
+            # safely read this root", the correct outcome for a directory
+            # entry this loader cannot account for at all.
+            raise SnapshotError(f"{child_display}: not a regular file or directory")
     # Codex#2 (round 8, 2026-09-12), reproduced exactly as reported:
     # entries can be added or removed by a concurrent writer while this
     # loop was copying the ones seen at the start, producing a mixed-time

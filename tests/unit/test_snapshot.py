@@ -36,6 +36,21 @@ def test_rejects_a_symlinked_leaf_file(tmp_path: Path) -> None:
         snapshot_tree(root)
 
 
+def test_rejects_a_fifo_in_place_of_a_regular_file(tmp_path: Path) -> None:
+    """Regression for Codex#3 (round 12, 2026-09-13), reproduced exactly as
+    reported: a FIFO (or socket, or device file) replacing a real rule/
+    knowledge/safe-test file used to be silently SKIPPED during the
+    snapshot walk - a rule file replaced by a FIFO was then
+    indistinguishable from an intentionally deleted rule, and the
+    resulting catalogue silently lost coverage with no error anywhere."""
+    root = tmp_path / "src"
+    root.mkdir()
+    os.mkfifo(root / "TOOL-001.yaml")
+
+    with pytest.raises(SnapshotError, match="not a regular file"):
+        snapshot_tree(root)
+
+
 def test_rejects_a_symlinked_ancestor_directory(tmp_path: Path) -> None:
     """Regression for Codex#2 (round 7, 2026-09-12), reproduced exactly as
     reported: O_NOFOLLOW (round 6, Codex#5) protects only the FINAL

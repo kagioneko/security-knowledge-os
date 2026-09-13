@@ -198,6 +198,26 @@ def test_a_duplicated_yaml_key_in_a_rule_file_is_rejected(tmp_path: Path) -> Non
         load_rules(root)
 
 
+def test_a_rule_file_replaced_by_a_fifo_is_rejected_not_silently_dropped(
+    tmp_path: Path,
+) -> None:
+    """Regression for Codex#3 (round 12, 2026-09-13), reproduced exactly as
+    reported (this is the finding's own repro shape): a rule file replaced
+    by a FIFO used to be silently skipped by the snapshot walk, so
+    load_rules() loaded the REMAINING catalogue as if the removed rule had
+    never existed - never reporting that TOOL-001-shaped coverage was
+    gone. load_rules() must now refuse to load at all rather than load a
+    silently-reduced catalogue."""
+    import os
+
+    root = tmp_path / "rules"
+    root.mkdir()
+    os.mkfifo(root / "TOOL-001.yaml")
+
+    with pytest.raises(RuleLoadError, match="not a regular file"):
+        load_rules(root)
+
+
 def test_bad_operator_is_rejected(tmp_path: Path) -> None:
     root = _write_rule(
         tmp_path,
