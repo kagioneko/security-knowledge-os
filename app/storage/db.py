@@ -105,7 +105,68 @@ def untrusted_state_dir_reason(parent: Path) -> str | None:
             f"{parent} is group- or world-writable (mode {oct(stat.S_IMODE(st.st_mode))}); "
             "refusing to write"
         )
-    return None
+    return untrusted_ancestor_chain_reason(parent)
+
+
+def untrusted_ancestor_chain_reason(path: Path) -> str | None:
+    """Codex#4 (round 12, 2026-09-13), reproduced exactly as reported: the
+    check above (and the identical no-follow-at-the-root check
+    `app.ingestion.snapshot.snapshot_tree()` does for its own root) only
+    ever verified the directory being written into ITSELF - never
+    anything above it. Substituting the whole configured directory does
+    not require write access inside it at all: renaming a directory's OWN
+    entry only requires write access to *its parent*, so an attacker able
+    to write into any ANCESTOR of an otherwise perfectly-owned, mode-0700
+    directory can still rename that directory aside and put a symlink (or
+    a different directory) in its place.
+
+    Every ancestor from `path`'s parent up to the filesystem root must
+    therefore refuse an untrusted writer too - but "owned by this
+    process" is the wrong bar to raise that high: ordinary system
+    directories several levels up (``/``, ``/home``, ...) are root-owned,
+    not owned by this process, and are correctly, safely shared; so, in
+    the common single-user-workstation "user-private group" layout, is
+    this project's OWN parent directory, typically group-writable by a
+    group whose only member is this same user. Requiring exact ownership
+    at every level made this check reject the project's own real
+    deployment directory outright (round 12 self-review caught this
+    before it ever reached Codex) - matching OpenSSH's own StrictModes
+    rule for exactly this situation (``sshd(8)``: a group-writable
+    ancestor is accepted when its group matches the user's own), a
+    directory is flagged only when it is writable by OTHER, or writable
+    by a GROUP other than this process's own - never merely for being
+    writable by this process's own group. The other property that
+    matters is the same one the kernel itself uses to decide whether
+    ``/tmp`` (world-writable) is safe to share: writable-by-untrusted is
+    only dangerous WITHOUT the sticky bit (``S_ISVTX``) - with it set,
+    only the entry's owner, the directory's owner, or root can rename or
+    unlink an entry, so a shared, world-writable ancestor with the sticky
+    bit is not a substitution vector either. Resolves symlinks along the
+    way deliberately (this is a pass/fail precondition check on the trust
+    of the path a caller is ABOUT to use, not a race-proof no-follow read
+    itself).
+    """
+    current = path.resolve(strict=False)
+    while True:
+        ancestor = current.parent
+        if ancestor == current:
+            return None  # reached the filesystem root
+        try:
+            st = ancestor.stat()
+        except OSError as exc:
+            return f"could not verify ownership/permissions of {ancestor}: {exc}"
+        writable_by_untrusted = bool(st.st_mode & stat.S_IWOTH) or (
+            bool(st.st_mode & stat.S_IWGRP) and st.st_gid != os.getegid()
+        )
+        sticky = bool(st.st_mode & stat.S_ISVTX)
+        if writable_by_untrusted and not sticky:
+            return (
+                f"{ancestor} is writable by a group or user other than this "
+                f"process, without the sticky bit (mode {oct(stat.S_IMODE(st.st_mode))}, "
+                f"gid {st.st_gid}); an ancestor directory of {path} could be "
+                "renamed out from under it, refusing to write"
+            )
+        current = ancestor
 
 
 # Codex#4 (round 8, 2026-09-12), reproduced exactly as reported: `os.chmod`

@@ -190,3 +190,123 @@ def test_connect_does_not_chmod_a_foreign_database_before_rejecting_it(
         connect(db_path)
 
     assert stat.S_IMODE(db_path.stat().st_mode) == 0o644, "a rejected foreign db must be untouched"
+
+
+def test_untrusted_ancestor_chain_flags_a_world_writable_ancestor_without_sticky(
+    tmp_path: Path,
+) -> None:
+    """Regression for Codex#4 (round 12, 2026-09-13), reproduced exactly as
+    reported: untrusted_state_dir_reason() (and the identical no-follow-at-
+    the-root check in app.ingestion.snapshot.snapshot_tree()) only ever
+    checked the directory itself, never anything above it - an attacker
+    able to rename an ANCESTOR (which needs write access only to that
+    ancestor's own parent, not to the perfectly-owned, mode-0700 directory
+    itself) could still substitute the whole tree."""
+    from app.storage.db import untrusted_ancestor_chain_reason
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o777)
+    state = shared / "state"
+    state.mkdir()
+    os.chmod(state, 0o700)
+
+    reason = untrusted_ancestor_chain_reason(state / "idx.sqlite")
+    assert reason is not None
+    assert str(shared) in reason
+
+
+def test_untrusted_ancestor_chain_allows_a_sticky_world_writable_ancestor(
+    tmp_path: Path,
+) -> None:
+    """A world-writable ancestor with the sticky bit set (like /tmp itself)
+    is not a substitution vector - only the entry's owner, the directory's
+    owner, or root can rename/unlink an entry inside it."""
+    from app.storage.db import untrusted_ancestor_chain_reason
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o1777)
+    state = shared / "state"
+    state.mkdir()
+    os.chmod(state, 0o700)
+
+    assert untrusted_ancestor_chain_reason(state / "idx.sqlite") is None
+
+
+def test_untrusted_ancestor_chain_allows_group_writable_by_our_own_group(
+    tmp_path: Path,
+) -> None:
+    """Regression for the round-12 self-review fix: a group-writable
+    ancestor whose group IS this process's own primary group (the common
+    single-user-workstation "user-private group" layout - this project's
+    own repository directory is exactly this shape) must not be flagged;
+    only a group OTHER than our own, or world-writable, is untrusted."""
+    from app.storage.db import untrusted_ancestor_chain_reason
+
+    project = tmp_path / "project"
+    project.mkdir()
+    os.chmod(project, 0o775)
+    state = project / "state"
+    state.mkdir()
+    os.chmod(state, 0o700)
+
+    assert untrusted_ancestor_chain_reason(state / "idx.sqlite") is None
+
+
+def test_untrusted_ancestor_chain_flags_group_writable_by_a_different_group(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A group-writable ancestor whose group is NOT this process's own is
+    exactly the shared-with-untrusted-others case the check exists for."""
+    import app.storage.db as db_module
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o775)
+    state = shared / "state"
+    state.mkdir()
+    os.chmod(state, 0o700)
+
+    monkeypatch.setattr(db_module.os, "getegid", lambda: shared.stat().st_gid + 1)
+
+    reason = db_module.untrusted_ancestor_chain_reason(state / "idx.sqlite")
+    assert reason is not None
+    assert str(shared) in reason
+
+
+def test_connect_refuses_to_write_when_an_ancestor_is_untrusted(tmp_path: Path) -> None:
+    """Integration regression for Codex#4 (round 12, 2026-09-13): connect()
+    only ever checked db_path's IMMEDIATE parent via
+    untrusted_state_dir_reason() - a correctly-owned, mode-0700 parent
+    below a world-writable grandparent used to pass outright."""
+    from app.storage.db import UntrustedStateDirectoryError
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o777)
+    state = shared / "state"
+    state.mkdir()
+    os.chmod(state, 0o700)
+
+    with pytest.raises(UntrustedStateDirectoryError):
+        connect(state / "idx.sqlite")
+
+
+def test_snapshot_tree_refuses_when_an_ancestor_of_root_is_untrusted(tmp_path: Path) -> None:
+    """Integration regression for Codex#4 (round 12, 2026-09-13):
+    snapshot_tree()'s O_NOFOLLOW open protects `root` itself from being a
+    symlink, but every ancestor ABOVE root was still resolved the normal
+    way - a world-writable grandparent (no sticky bit) let an attacker
+    rename it out from under an otherwise perfectly-owned root."""
+    from app.ingestion.snapshot import SnapshotError, snapshot_tree
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o777)
+    root = shared / "knowledge"
+    root.mkdir()
+    (root / "ku.md").write_text("content", encoding="utf-8")
+
+    with pytest.raises(SnapshotError, match=str(shared)):
+        snapshot_tree(root)

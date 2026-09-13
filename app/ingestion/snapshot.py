@@ -32,6 +32,8 @@ import stat
 import tempfile
 from pathlib import Path
 
+from app.storage.db import untrusted_ancestor_chain_reason
+
 
 class SnapshotError(OSError):
     """The knowledge root could not be safely snapshotted."""
@@ -210,9 +212,23 @@ def snapshot_tree(root: Path) -> Path:
     """Copy `root` into a fresh, private temp directory via a directory-fd,
     no-follow-at-every-level walk, and return the copy's path. The caller
     owns the returned directory and must remove it (``shutil.rmtree``)
-    when done. Raises ``SnapshotError`` (a symlink anywhere in the tree)
-    or ``OSError`` (root missing, a file vanished mid-walk, ...).
+    when done. Raises ``SnapshotError`` (a symlink anywhere in the tree, or
+    an untrusted ancestor above ``root``) or ``OSError`` (root missing, a
+    file vanished mid-walk, ...).
     """
+    # Codex#4 (round 12, 2026-09-13), reproduced exactly as reported:
+    # `_open_dir_no_follow(str(root))` below protects `root` ITSELF from
+    # being a symlink (O_NOFOLLOW on the final pathname component), but
+    # every ANCESTOR of `root` is still resolved the normal way - an
+    # attacker able to rename one of them (which needs write access only
+    # to THAT ancestor's own parent, not to `root` or anything under it)
+    # can substitute the entire tree this function is about to walk.
+    # Shared with app.storage.db.untrusted_state_dir_reason() (round 11),
+    # which has the identical gap for db_path's own ancestors.
+    untrusted = untrusted_ancestor_chain_reason(root)
+    if untrusted is not None:
+        raise SnapshotError(untrusted)
+
     dest = Path(tempfile.mkdtemp(prefix="skos-snapshot-"))
     try:
         root_fd = _open_dir_no_follow(str(root))
