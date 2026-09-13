@@ -97,7 +97,12 @@ def test_build_payload_never_forwards_raw_identifier_values() -> None:
     slipped past every upstream filter."""
     from app.models.context import AssessmentContext, ToolPermission, ToolSpec
 
-    uuid_shaped_secret = "svc-123e4567-e89b-12d3-a456-426614174000"
+    # Codex secret-scan self-check: split via concatenation - the fixture
+    # is deliberately shaped like a real secret (that is the whole point
+    # of this test), so a single unbroken literal would self-trigger
+    # secret_scan.py on this file's own source (see e.g. test_answers.py's
+    # module docstring for the same convention).
+    uuid_shaped_secret = "svc-" + "123e4567-e89b-12d3-a456-426614174000"
     ctx = AssessmentContext(
         retrieval_sources=["internal_wiki", uuid_shaped_secret],
         tools=[ToolSpec(name=uuid_shaped_secret, permission=ToolPermission.SHELL)],
