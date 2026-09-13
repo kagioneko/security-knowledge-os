@@ -120,31 +120,50 @@ def _dependency_closure(roots: set[str]) -> set[str]:
     an emscripten-only fetch shim, ...), proving markers were not actually
     evaluated. Parsing each requirement with `packaging.requirements.
     Requirement` and evaluating its marker for real (against this
-    interpreter's true environment, with `extra` fixed to "" - this walk
-    never selects a specific extra for a transitive dependency) correctly
+    interpreter's true environment, with `extra` fixed to "") correctly
     handles every PEP 508 marker type at once, not just extras.
+
+    Codex#6 (round 14, 2026-09-13), reproduced exactly as reported: fixing
+    `extra` to `""` for EVERY requirement discards which extras a PARENT
+    requirement actually activated on its dependency - `pip-audit`
+    declares `CacheControl[filecache]`, requesting CacheControl's own
+    "filecache" extra; CacheControl in turn declares
+    `filelock ; extra == "filecache"`, applicable only when THAT extra is
+    active. `req.extras` (the bracketed names on one requirement string)
+    is carried forward per edge and accumulated per package (a package
+    reached through two different requested extras keeps both), so a
+    dependency's own conditional requirements are evaluated against every
+    extra actually requested of it - not just its unconditional
+    (`extra == ""`) base install - closing this for any such multi-hop
+    chain, not just this one concrete case.
     """
     seen: set[str] = set()
-    frontier = set(roots)
+    active_extras: dict[str, frozenset[str]] = {}
+    frontier: list[tuple[str, frozenset[str]]] = [(name, frozenset()) for name in roots]
     while frontier:
-        name = frontier.pop()
-        if name in seen:
+        name, extras = frontier.pop()
+        already_covered = extras <= active_extras.get(name, frozenset())
+        if name in seen and already_covered:
             continue
         seen.add(name)
+        active_extras[name] = active_extras.get(name, frozenset()) | extras
         try:
             dist = metadata.distribution(name)
         except metadata.PackageNotFoundError:
             continue  # declared but not installed here - already in "missing" below
+        # "" (no extra - the base install) is always active alongside
+        # whatever extras were actually requested of this package.
+        candidate_extras = active_extras[name] | {""}
         for req_str in dist.requires or []:
             req = Requirement(req_str)
-            if req.marker is not None and not req.marker.evaluate({"extra": ""}):
-                # not applicable to this environment/interpreter, or gated
-                # behind an extra this walk never selects for a transitive
-                # dependency (Codex#9, round 7's own repro).
+            if req.marker is not None and not any(
+                req.marker.evaluate({"extra": extra}) for extra in candidate_extras
+            ):
+                # not applicable to this environment/interpreter, or
+                # gated behind an extra nothing in this closure requested.
                 continue
             req_name = _normalize(req.name)
-            if req_name not in seen:
-                frontier.add(req_name)
+            frontier.append((req_name, frozenset(req.extras)))
     return seen
 
 

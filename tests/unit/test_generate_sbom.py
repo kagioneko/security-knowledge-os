@@ -92,6 +92,75 @@ def test_dependency_closure_skips_a_requirement_gated_by_an_unselected_extra() -
     assert "pip" not in closure
 
 
+def test_dependency_closure_includes_a_dependency_activated_through_a_requested_extra() -> None:
+    """Regression for Codex#6 (round 14, 2026-09-13), reproduced exactly as
+    reported: `pip-audit` declares `CacheControl[filecache]`, requesting
+    CacheControl's own "filecache" extra; CacheControl in turn declares
+    `filelock ; extra == "filecache"`. Fixing `extra` to `""` for EVERY
+    requirement (the round-9 fix above) discarded which extras a PARENT
+    requirement had actually requested, so `filelock` (installed and
+    genuinely required through that one selected extra) was invisible to
+    the closure and absent from sbom.json, even though the SBOM claimed
+    completeness. This is the finding's own exact repro, against the real
+    installed environment."""
+    import generate_sbom as sbom_module
+
+    closure = sbom_module._dependency_closure({"pip-audit"})
+    assert "cachecontrol" in closure, "test assumption: still an installed dependency"
+    assert "filelock" in closure
+
+
+def test_dependency_closure_reprocesses_a_package_once_a_later_edge_requests_an_extra() -> None:
+    """Synthetic, fully-controlled version of the test above - independent
+    of pip-audit's real dependency graph ever changing upstream, and
+    covering an ordering edge case: `root_a` requires plain `dep` (no
+    extras); `root_b` requires `dep[an_extra]`. `dep`'s own
+    `activated-by-extra ; extra == "an_extra"` requirement must end up
+    considered reachable regardless of which root's edge to `dep` the BFS
+    happens to process first - a package already marked `seen` (from an
+    earlier, extra-less visit) must still be RE-processed once a new
+    extra is learned for it, not skipped as already-visited."""
+    import importlib.metadata as importlib_metadata
+    import unittest.mock as mock
+
+    import generate_sbom as sbom_module
+
+    class _RootA:
+        requires = ["dep"]
+        metadata = {"Name": "root-a"}
+        version = "0.0.0"
+
+    class _RootB:
+        requires = ["dep[an_extra]"]
+        metadata = {"Name": "root-b"}
+        version = "0.0.0"
+
+    class _Dep:
+        requires = ['activated-by-extra ; extra == "an_extra"']
+        metadata = {"Name": "dep"}
+        version = "0.0.0"
+
+    class _Leaf:
+        requires: list[str] = []
+        metadata = {"Name": "leaf"}
+        version = "0.0.0"
+
+    fakes = {"root-a": _RootA(), "root-b": _RootB(), "dep": _Dep()}
+    real_distribution = importlib_metadata.distribution
+
+    def fake_distribution(name: str) -> object:
+        if name in fakes:
+            return fakes[name]
+        if name == "activated-by-extra":
+            return _Leaf()
+        return real_distribution(name)
+
+    with mock.patch.object(importlib_metadata, "distribution", side_effect=fake_distribution):
+        closure = sbom_module._dependency_closure({"root-a", "root-b"})
+
+    assert closure == {"root-a", "root-b", "dep", "activated-by-extra"}
+
+
 def test_dependency_closure_skips_a_platform_inapplicable_requirement() -> None:
     """Regression for Codex#9 (round 9, 2026-09-12), reproduced exactly as
     reported: the old `"extra ==" in req` substring test only ever handled

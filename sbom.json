@@ -3,7 +3,7 @@
   "specVersion": "1.5",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-09-12T19:16:32.207720+00:00",
+    "timestamp": "2026-09-13T12:25:29.856543+00:00",
     "component": {
       "type": "application",
       "name": "security-knowledge-os",
@@ -306,6 +306,26 @@
         {
           "name": "skos:dependency-group",
           "value": "api"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "filelock",
+      "version": "3.32.6",
+      "purl": "pkg:pypi/filelock@3.32.6",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
+      ],
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "dev"
         }
       ]
     },
