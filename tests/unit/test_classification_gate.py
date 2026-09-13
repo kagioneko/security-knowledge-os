@@ -107,7 +107,14 @@ def test_validate_tree_never_reopens_a_rejected_symlink(
     rejects a symlinked candidate as an ERROR before reading it, but
     validate_tree()'s own duplicate-id pass unconditionally called
     read_markdown() on the same path again right after - reopening (and
-    reading through) the very file that was just rejected."""
+    reading through) the very file that was just rejected.
+
+    Codex#10 (round 11, 2026-09-13): validate_tree() now snapshots the
+    whole tree up front (the same directory-fd walk load_corpus() already
+    uses) - a symlink ANYWHERE in the tree now fails the whole snapshot
+    (never opened at all, by construction) rather than being individually
+    rejected per-file, the same behaviour change load_corpus() got in
+    round 10 (see test_symlinked_ku_is_never_loaded_into_the_corpus)."""
     import app.ingestion.validator as validator_module
 
     real_target = next(corpus_alt_root.glob("public/**/*.md"))
@@ -129,8 +136,42 @@ def test_validate_tree_never_reopens_a_rejected_symlink(
     finally:
         validator_module.read_markdown = original_read  # type: ignore[assignment]
 
-    assert any(i.code == "symlink-not-allowed" for i in issues)
+    assert any(i.code == "snapshot-failed" and "evil.md" in i.message for i in issues)
     assert not any("evil.md" in p for p in read_paths)
+
+
+def test_validate_tree_ancestor_directory_confinement_is_enforced(tmp_path: Path) -> None:
+    """Regression for Codex#10 (round 11, 2026-09-13), reproduced exactly as
+    reported: `check_containment()`'s O_NOFOLLOW protects only the FINAL
+    pathname component - validate_tree()'s own `rglob()` walk (via
+    `iter_knowledge_files()`) and its reads both re-resolved the full path
+    from scratch, so an ANCESTOR directory swapped to an outside-root
+    symlink between `check_containment()` succeeding and the actual read
+    was followed straight through, the same class of gap round 7/8 already
+    closed for the reindex path and for `load_rules()`/`load_safe_tests()`.
+    validate_tree() now snapshots `knowledge_root` the same
+    no-follow-at-every-level way those already do, closing this the same
+    way: the ancestor symlink itself is rejected during the snapshot walk,
+    before any file under it is ever opened.
+
+    NOTE: deliberately not named with "symlink" in it - see
+    test_ancestor_directory_confinement_is_enforced in test_rule_loader.py
+    for why (pytest's tmp_path fixture names the temp dir after the test
+    function itself, so a "...symlinked..." name would make a message
+    match on "symlink" trivially, spuriously pass pre-fix)."""
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    outside = tmp_path / "outside" / "public" / "prompt-security"
+    outside.mkdir(parents=True)
+    (outside / "ku.md").write_text(
+        "---\nid: OUT-901\ntitle: t\nclassification: public\n"
+        "category: prompt-security\nversion: 1\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (root / "public").symlink_to(outside.parent, target_is_directory=True)
+
+    issues = validate_tree(root)
+    assert any(i.code == "snapshot-failed" for i in issues)
 
 
 def test_missing_knowledge_root_is_a_hard_error(tmp_path: Path) -> None:

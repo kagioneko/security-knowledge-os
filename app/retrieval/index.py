@@ -412,8 +412,8 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
         issues = validate_tree(knowledge_root)
     except (OSError, sqlite3.Error, ForeignDatabaseError, ValueError) as exc:
         # Codex#5 (round 7, 2026-09-12): validate_tree() above reads every
-        # file's content too (validate_file() -> read_markdown()) - a
-        # malformed-content failure there (invalid UTF-8, deeply-nested
+        # file's content too - a malformed-content failure there (invalid
+        # UTF-8, deeply-nested
         # YAML) is a ValueError/RecursionError-derived exception, same
         # class this function's LATER except clause (build step) already
         # broadened for in round 5; this earlier one had not been.

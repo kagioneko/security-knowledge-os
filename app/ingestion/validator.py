@@ -7,13 +7,15 @@ adds cross-file checks (duplicate ids). Errors block ingestion; warnings do not.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+import shutil
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from app.ingestion.parser import FrontMatterError, read_markdown, split_front_matter
+from app.ingestion.snapshot import snapshot_tree
 from app.models.knowledge import Classification, KnowledgeCategory, KnowledgeUnitFrontMatter
 from app.models.risk import RULE_ID_PATTERN
 from app.policy.classification import expected_relative_dir
@@ -302,37 +304,77 @@ def validate_tree(knowledge_root: Path) -> list[ValidationIssue]:
             )
         ]
 
-    issues: list[ValidationIssue] = []
-    seen_ids: dict[str, str] = {}
+    # Codex#10 (round 11, 2026-09-13), reproduced exactly as reported: this
+    # used to walk `knowledge_root` LIVE via `iter_knowledge_files()`'s own
+    # `rglob()`, then read each clean file a SECOND time below (this loop's
+    # own `read_markdown()` call, for the duplicate-id check) after
+    # `validate_file()` had already read it once for content validation -
+    # two independent reads of the same externally-mutable path, each
+    # protected only against a swapped FINAL component
+    # (`check_containment()` / O_NOFOLLOW), never an ancestor directory
+    # swapped to an outside-root symlink between `check_containment()`
+    # succeeding and either read actually happening. Snapshotting first -
+    # the same directory-fd, no-follow-at-every-level walk every other
+    # loader already uses (`app/ingestion/snapshot.py`) - removes the live,
+    # externally-mutable tree from the read path entirely, and reading each
+    # file's front matter/body exactly once (reused for both content
+    # validation and the duplicate-id check, the same restructuring
+    # `load_corpus()` got in round 5) removes the second read outright.
+    # Issue paths are rewritten from the snapshot prefix back to the
+    # `knowledge_root` prefix actually passed in, so callers never see the
+    # ephemeral temp directory path.
+    try:
+        snapshot_root = snapshot_tree(knowledge_root)
+    except OSError as exc:
+        return [
+            ValidationIssue(
+                Level.ERROR,
+                "snapshot-failed",
+                f"could not safely read the knowledge root: {exc}",
+                str(knowledge_root),
+            )
+        ]
 
-    for md_path in iter_knowledge_files(knowledge_root):
-        file_issues = validate_file(md_path, knowledge_root)
-        issues.extend(file_issues)
-        # ADV-10 / Codex#4 (round 2, 2026-09-11): validate_file() rejects a
-        # symlinked or out-of-root candidate as an ERROR before ever reading
-        # it - but this loop used to unconditionally call read_markdown() on
-        # the same path again right afterwards for the duplicate-id check,
-        # reopening (and reading through) exactly the file that was just
-        # rejected. Never reopen a path validate_file already flagged an
-        # ERROR on; there is nothing trustworthy left to read.
-        if any(issue.level is Level.ERROR for issue in file_issues):
-            continue
-        try:
-            front_matter, _ = read_markdown(md_path)
-        except FrontMatterError:
-            continue
-        ku_id = front_matter.get("id")
-        if isinstance(ku_id, str):
+    try:
+        issues: list[ValidationIssue] = []
+        seen_ids: dict[str, str] = {}
+
+        for snap_path in iter_knowledge_files(snapshot_root):
+            location = str(knowledge_root / snap_path.relative_to(snapshot_root))
+
+            contain_issue = check_containment(snap_path, snapshot_root)
+            if contain_issue is not None:
+                issues.append(replace(contain_issue, path=location))
+                continue
+
+            try:
+                front_matter, body = read_markdown(snap_path)
+            except FrontMatterError as exc:
+                issues.append(
+                    ValidationIssue(Level.ERROR, "front-matter", str(exc), location)
+                )
+                continue
+
+            file_issues, model = validate_content(snap_path, snapshot_root, front_matter, body)
+            file_issues = [replace(issue, path=location) for issue in file_issues]
+            issues.extend(file_issues)
+
+            if model is None or any(issue.level is Level.ERROR for issue in file_issues):
+                continue
+
+            ku_id = model.id
             if ku_id in seen_ids:
                 issues.append(
                     ValidationIssue(
                         Level.ERROR,
                         "duplicate-id",
                         f"id '{ku_id}' is already used by {seen_ids[ku_id]}",
-                        str(md_path),
+                        location,
                     )
                 )
             else:
-                seen_ids[ku_id] = str(md_path)
+                seen_ids[ku_id] = location
 
-    return issues
+        return issues
+    finally:
+        shutil.rmtree(snapshot_root, ignore_errors=True)
