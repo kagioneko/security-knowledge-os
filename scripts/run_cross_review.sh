@@ -106,6 +106,21 @@ CODEX_SANDBOX="${CODEX_SANDBOX:-danger-full-access}"
 CODEX_MAX_CPU_SECONDS="${CODEX_MAX_CPU_SECONDS:-1800}"
 CODEX_MAX_FILE_SIZE_BLOCKS="${CODEX_MAX_FILE_SIZE_BLOCKS:-2097152}"  # 512-byte blocks; ~1 GiB
 
+# Codex#8 (round 15, 2026-09-14), reproduced exactly as reported:
+# `REVIEW_TIMEOUT=0 scripts/run_cross_review.sh codex; echo $?` printed 0
+# even though the reviewer never ran at all - the `|| { echo ...; }`
+# below caught the failure into a LOG LINE but let the function itself
+# (and so the whole script, and the scheduled wrapper around it) report
+# success regardless. A caller has no way to tell "produced a verdict"
+# apart from "silently produced nothing" without reading every log by
+# hand. `_has_verdict()` requires one of the three literal tokens the
+# prompt instructs the reviewer to output; a failed/timed-out/empty run
+# now makes the function - and this script's own exit code - reflect
+# that honestly.
+_has_verdict() {
+  grep -qE '\bPASS\b|\bCHANGES-REQUIRED\b' "$1"
+}
+
 run_codex() {
   local f="$OUT/codex-${STAMP}-${COMMIT}.md"
   echo ">> Codex code audit (reasoning_effort=high, not fast; sandbox=${CODEX_SANDBOX}) -> $f"
@@ -118,14 +133,34 @@ run_codex() {
   # Subshell so these ulimits apply only to this invocation (and whatever
   # it spawns), never leaking into the rest of this script or the
   # Antigravity run below.
-  (
+  # `if PIPELINE; then ...; else ...; fi` - not `PIPELINE || true` - is
+  # required here: with `set -e` active, `|| true` runs `true` as its OWN
+  # separate command to suppress errexit, and that overwrites
+  # $PIPESTATUS before this function ever gets to read it (silently
+  # losing codex's real exit code, the exact bug this fix is closing).
+  # An `if` condition suppresses errexit for the tested command without
+  # running anything else afterward, so $PIPESTATUS is still the
+  # pipeline's own when the `else` branch reads it.
+  local codex_exit
+  if (
     ulimit -t "$CODEX_MAX_CPU_SECONDS"
     ulimit -f "$CODEX_MAX_FILE_SIZE_BLOCKS"
     exec timeout "$TIMEOUT" codex exec "${CODEX_MODEL_OPTS[@]}" \
       -C "$REPO" -s "$CODEX_SANDBOX" --skip-git-repo-check \
       "$CODEX_PROMPT"
-  ) 2>&1 | tee -a "$f" || {
-      echo "!! codex exec failed or timed out (exit $?)" | tee -a "$f"; }
+  ) 2>&1 | tee -a "$f"; then
+    codex_exit=0
+  else
+    codex_exit="${PIPESTATUS[0]}"
+  fi
+  if [ "$codex_exit" -ne 0 ]; then
+    echo "!! codex exec failed or timed out (exit $codex_exit)" | tee -a "$f"
+    return 1
+  fi
+  if ! _has_verdict "$f"; then
+    echo "!! codex exec exited 0 but no PASS/PASS-with-nits/CHANGES-REQUIRED verdict was found in $f" | tee -a "$f"
+    return 1
+  fi
   echo "   done: $f"
 }
 
@@ -145,17 +180,36 @@ run_antigravity() {
   # runs past 5m and was observed returning a "partial output" stub instead of
   # a verdict (2026-09-11). Match it to $TIMEOUT so agy's own deadline is the
   # binding one.
-  timeout "$TIMEOUT" agy -p "$ANTIGRAVITY_PROMPT" \
+  # See run_codex()'s identical comment above for why this is an `if`
+  # over the pipeline, not `PIPELINE || true`.
+  local agy_exit
+  if timeout "$TIMEOUT" agy -p "$ANTIGRAVITY_PROMPT" \
     --add-dir "$REPO" --effort high --mode plan --dangerously-skip-permissions \
-    --print-timeout "${TIMEOUT}s" --output-format text 2>&1 | tee -a "$f" || {
-      echo "!! agy failed or timed out (exit $?)" | tee -a "$f"; }
+    --print-timeout "${TIMEOUT}s" --output-format text 2>&1 | tee -a "$f"; then
+    agy_exit=0
+  else
+    agy_exit="${PIPESTATUS[0]}"
+  fi
+  if [ "$agy_exit" -ne 0 ]; then
+    echo "!! agy failed or timed out (exit $agy_exit)" | tee -a "$f"
+    return 1
+  fi
+  if ! _has_verdict "$f"; then
+    echo "!! agy exited 0 but no PASS/PASS-with-nits/CHANGES-REQUIRED verdict was found in $f" | tee -a "$f"
+    return 1
+  fi
   echo "   done: $f"
 }
 
+overall_exit=0
 case "$WHICH" in
-  codex)        run_codex ;;
-  antigravity)  run_antigravity ;;
-  both)         run_codex; echo; run_antigravity ;;
+  codex)        run_codex || overall_exit=1 ;;
+  antigravity)  run_antigravity || overall_exit=1 ;;
+  both)
+    run_codex || overall_exit=1
+    echo
+    run_antigravity || overall_exit=1
+    ;;
   *) echo "usage: $0 [codex|antigravity|both]"; exit 2 ;;
 esac
 
@@ -171,3 +225,5 @@ Next:
   4. only then: publish GO -> first push
 ------------------------------------------------------------
 EOF
+
+exit "$overall_exit"
