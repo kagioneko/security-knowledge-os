@@ -517,6 +517,68 @@ def test_reindex_restores_backup_then_reraises_a_genuinely_unexpected_exception(
     assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
 
 
+def _wrong_revision_on_second_call(
+    monkeypatch: pytest.MonkeyPatch, wrong_revision: str | None
+) -> None:
+    """Make `ChunkRepository.knowledge_revision()` return `wrong_revision`
+    the SECOND time it is called anywhere in the process - during
+    `reindex_atomic()` the first call is `_current_revision(db_path)` (step
+    1, before the build even starts); the second is the post-swap
+    integrity-check this finding is about (the only other production call
+    site, `Bm25Retriever.retrieve()`, runs on the query path, never during
+    reindex). Mirrors `_flaky_connect_on_second_use_of`'s call-counting
+    technique, one level down."""
+    calls = {"n": 0}
+    original = ChunkRepository.knowledge_revision
+
+    def _flaky(self):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return wrong_revision
+        return original(self)
+
+    monkeypatch.setattr(ChunkRepository, "knowledge_revision", _flaky)
+
+
+def test_reindex_fails_closed_when_the_post_swap_visible_revision_does_not_match(
+    tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#1 (round 19, 2026-09-14), reproduced exactly as
+    reported: `reindex_atomic()` copies/replaces db_path's MAIN file only -
+    a WAL sidecar left behind by a prior writer (see `connect()`'s own
+    comment on why every write connection now forces `journal_mode =
+    DELETE`) is a separate file the swap never touches, so a fresh
+    connection could see stale-but-internally-consistent content that
+    `verify_chunk_hashes()` alone can't catch: it proves the visible
+    content is *a* valid, self-consistent index, not that it's the
+    revision we just published. Simulated here - without depending on
+    fragile real-WAL-internals trickery - by making the post-swap
+    `ChunkRepository.knowledge_revision()` read report the OLD revision
+    instead of the new one `build_index()` just reported; the fix must
+    treat that mismatch as a publish failure and restore the backup,
+    exactly like any other post-swap integrity failure."""
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    good_revision = good.new_revision
+    assert _revision(db) == good_revision
+
+    corpus2 = tmp_path / "corpus2"
+    import shutil
+
+    shutil.copytree(corpus_alt_root, corpus2)
+    ku = next(corpus2.glob("public/**/*.md"))
+    ku.write_text(ku.read_text(encoding="utf-8").replace("0.1", "0.2"), encoding="utf-8")
+
+    _wrong_revision_on_second_call(monkeypatch, good_revision)
+    bad = reindex_atomic(corpus2, db)
+
+    assert not bad.ok
+    assert bad.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert _revision(db) == good_revision  # restored, not left on the mismatched swap
+    assert list(tmp_path.glob("idx.sqlite.staging.*")) == []
+    assert list(tmp_path.glob("idx.sqlite.bak.*")) == []
+
+
 def test_reindex_rejects_a_build_that_skipped_units(
     tmp_path: Path, fixture_knowledge_root: Path
 ) -> None:

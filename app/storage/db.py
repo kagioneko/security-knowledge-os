@@ -571,6 +571,31 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
             "SQLite FTS5 is required but not available in this Python build"
         )
 
+    # Codex#1 (round 19, 2026-09-14), reproduced exactly as reported:
+    # `reindex_atomic()` copies/replaces db_path's MAIN file only -
+    # SQLite's WAL sidecar (`<path>-wal`) and shared-memory file
+    # (`<path>-shm`) are separate files it never touches. If a prior
+    # writer (this project's own code has never set WAL explicitly, but
+    # journal_mode is a property PERSISTED IN THE DATABASE FILE ITSELF,
+    # so anything with write access to db_path - including an untrusted
+    # process on a shared account - could) left db_path in WAL mode with
+    # un-checkpointed pages sitting in `<path>-wal`, that content
+    # survives a reindex untouched, and a later connection that ends up
+    # in WAL mode for any reason would read through it - the exact
+    # "reindex_atomic reports one revision, a reader sees a different
+    # one" gap Codex reproduced (reported revision A, visible revision
+    # C, `verify_chunk_hashes` still ALLOWED because C was itself an
+    # internally-consistent, previously-built valid index). Forcing
+    # every WRITE connection this project ever opens back to the
+    # classic `DELETE` rollback-journal mode - which SQLite implements
+    # as "checkpoint everything in the WAL into the main file, then
+    # remove the -wal/-shm sidecars", never as data loss - closes this
+    # at its root: this project's own connections can never leave a
+    # database in WAL mode for a later open (ours or anyone else's) to
+    # be confused by, regardless of what mode a PRIOR writer left it in.
+    if str(db_path) != ":memory:":
+        conn.execute("PRAGMA journal_mode = DELETE")
+
     has_existing_content = (
         conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') LIMIT 1"

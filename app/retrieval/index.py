@@ -698,8 +698,26 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
         conn = connect(db_path, read_only=True)
         try:
             post = verify_chunk_hashes(conn)
+            # Codex#1 (round 19, 2026-09-14), reproduced exactly as
+            # reported: `verify_chunk_hashes` proves internal consistency
+            # (every chunk's hash matches its own content), not that the
+            # content is the one we just published - a stale-but-valid
+            # revision surviving underneath (see connect()'s own comment
+            # on the WAL sidecar gap this closes) passes this check
+            # outright, because it IS a real, internally-consistent
+            # index, just not THIS one. Requiring the visible revision to
+            # equal what build_index() just reported catches that
+            # mismatch directly, independent of the exact mechanism that
+            # produced it - defense in depth alongside the WAL fix, not a
+            # replacement for it.
+            visible_revision = ChunkRepository(conn).knowledge_revision()
         finally:
             conn.close()
+        if visible_revision != build.knowledge_revision:
+            raise _RevisionMismatch(
+                f"published revision {build.knowledge_revision!r} but a fresh "
+                f"read of {db_path} shows {visible_revision!r} instead"
+            )
     except (OSError, sqlite3.Error, RuntimeError) as exc:
         # Codex cross-review finding #1 (round 3, 2026-09-12): this used to be
         # `except OSError` and unconditionally `_cleanup(staging, backup)`
@@ -764,6 +782,18 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
             new_revision=build.knowledge_revision,
         )
 
+    # Codex#1 (round 19, 2026-09-14): belt-and-suspenders cleanup - the
+    # revision check above already proved the PUBLISHED content is what
+    # we just built, and connect()'s own journal_mode=DELETE forcing (see
+    # its comment) means none of OUR connections ever leaves WAL sidecars
+    # behind. This removes any that predate this reindex entirely (e.g.
+    # left by an external writer, per the same repro), so a stale sidecar
+    # can never sit next to a freshly-published, already-verified index.
+    _cleanup(
+        db_path.with_name(db_path.name + "-wal"),
+        db_path.with_name(db_path.name + "-shm"),
+        db_path.with_name(db_path.name + "-journal"),
+    )
     _cleanup(backup)
     return ReindexReport(
         decision=allow("reindex"),
@@ -784,3 +814,11 @@ class _StagingSubstituted(OSError):
     Codex#2 (round 10, 2026-09-13) comment where this is raised. An
     OSError subclass so it is caught by the same publish-failure handling
     as any other OSError during the swap."""
+
+
+class _RevisionMismatch(OSError):
+    """The revision visible through a fresh post-swap connection does not
+    match what build_index() just reported publishing - see the Codex#1
+    (round 19, 2026-09-14) comment where this is raised. An OSError
+    subclass so it is caught by the same publish-failure handling
+    (restore the previous index) as any other post-swap failure."""
