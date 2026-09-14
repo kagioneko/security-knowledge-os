@@ -53,6 +53,66 @@ def test_tampered_index_produces_a_policy_blocked_report_not_empty_findings(
     assert report.policy_decision.outcome is PolicyOutcome.POLICY_BLOCKED
 
 
+def test_a_classification_leak_produces_a_policy_blocked_report_not_a_raw_500(
+    tmp_path: Path,
+    corpus_root: Path,
+    catalogue: RuleCatalogue,
+    load_assessment: Loader,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for Antigravity NIT-ADV-01 (round 16, 2026-09-14),
+    reproduced exactly as reported: PolicyBlocked (raised by Bm25Retriever
+    ._enforce_classification() as the defence-in-depth check if SQL ever
+    returns a non-public chunk in PUBLIC mode) inherits from plain
+    Exception, not PolicyStop, so it escaped build_report() entirely - an
+    unhandled HTTP 500 instead of the documented structured
+    POLICY_BLOCKED report. Fail-closed was still maintained (the
+    confidential content was never actually returned to the caller), but
+    the API crashed instead of returning the normal policy-blocked
+    contract."""
+    import app.reviewer.assess as assess_module
+    from app.models.knowledge import Classification, KnowledgeCategory
+    from app.models.retrieval import Chunk
+    from app.retrieval.bm25 import Bm25Retriever
+
+    internal_chunk = Chunk(
+        chunk_id="KU-X#000",
+        knowledge_id="KU-X",
+        title="leak canary",
+        source_ref="ref",
+        classification=Classification.INTERNAL,
+        category=KnowledgeCategory.METHODOLOGY,
+        version="0.1",
+        section="S",
+        text="leak canary text",
+        hash="h",
+    )
+
+    class LeakyRetriever(Bm25Retriever):
+        def _search(self, match_query, allowed, categories):  # type: ignore[override,no-untyped-def]
+            return [(internal_chunk, -1.0)]
+
+    monkeypatch.setattr(assess_module, "Bm25Retriever", LeakyRetriever)
+
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        report = build_report(
+            load_assessment("S-001-prompt-only"),
+            catalogue,
+            settings=Settings(mode=Mode.PUBLIC),
+            index_conn=conn,
+        )
+    finally:
+        conn.close()
+
+    assert report.status is ReportStatus.POLICY_BLOCKED
+    assert report.result is None  # NOT a raw 500 / crash
+    assert report.policy_decision is not None
+    assert report.policy_decision.outcome is PolicyOutcome.POLICY_BLOCKED
+
+
 def test_report_shape_is_enforced() -> None:
     with pytest.raises(ValueError):
         AssessmentReport(status=ReportStatus.COMPLETED)

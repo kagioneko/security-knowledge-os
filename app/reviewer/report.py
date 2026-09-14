@@ -9,8 +9,9 @@ import sqlite3
 from app.config import Settings
 from app.llm.base import LLMClient
 from app.models.assessment import AssessmentInput, SafeTest
-from app.models.policy_outcome import PolicyStop
+from app.models.policy_outcome import PolicyOutcome, PolicyStop, stop
 from app.models.report import AssessmentReport
+from app.policy.classification import PolicyBlocked
 from app.reviewer.assess import assess
 from app.reviewer.rule_loader import RuleCatalogue
 
@@ -33,8 +34,24 @@ def build_report(
             index_conn=index_conn,
             safe_tests=safe_tests,
         )
-    except PolicyStop as stop:
-        return AssessmentReport.blocked(stop.decision)
+    except PolicyStop as exc:
+        return AssessmentReport.blocked(exc.decision)
+    except PolicyBlocked as exc:
+        # Antigravity NIT-ADV-01 (round 16, 2026-09-14), reproduced exactly
+        # as reported: PolicyBlocked (raised by Bm25Retriever._enforce_
+        # classification() if SQL ever returns a non-public chunk in
+        # PUBLIC mode) inherits from plain Exception, not PolicyStop, so it
+        # escaped this function entirely - an HTTP 500 instead of the
+        # documented structured POLICY_BLOCKED report (HTTP 422).
+        # Fail-closed was still maintained (the confidential content was
+        # never returned), but callers got an unhandled server error
+        # instead of the normal policy-blocked contract every other stop
+        # path here returns. Wrapped into a PolicyDecision here, at this
+        # one call site, rather than changing PolicyBlocked's own class
+        # hierarchy - that would ripple into its other two raise sites
+        # (app/policy/classification.py, app/ingestion/loader.py) and the
+        # tests that check for it directly by type.
+        return AssessmentReport.blocked(stop(PolicyOutcome.POLICY_BLOCKED, "retrieval", str(exc)))
     return AssessmentReport.completed(result)
 
 
