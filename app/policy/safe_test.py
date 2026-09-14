@@ -114,8 +114,21 @@ def _scan_text(parts: list[str]) -> list[str]:
     # the authority at the first ":" - urlsplit correctly separates
     # userinfo ("user:pass@"), a port, and bracketed IPv6 from the actual
     # host regardless of which of those are present.
+    #
+    # Codex#4 / Antigravity SKOS-ADV-19 (round 17, 2026-09-14), reproduced
+    # exactly as reported: urlsplit(...).hostname raises ValueError for a
+    # malformed bracketed IPv6 authority (e.g. "http://[:::]"), uncaught
+    # here - validate_safe_test() raised instead of returning the
+    # documented fail-closed PolicyDecision, surfacing as an untyped 500
+    # from any API path that reaches it. A destination this module cannot
+    # even PARSE is exactly the kind of thing it should refuse to pass
+    # silently on - treated as its own blocking finding, not skipped.
     for match in _URI_AUTHORITY.finditer(text):
-        hostname = urlsplit(match.group(0)).hostname
+        try:
+            hostname = urlsplit(match.group(0)).hostname
+        except ValueError:
+            reasons.append(f"contains a malformed destination authority '{match.group(0)}'")
+            continue
         if hostname:
             _flag_host(hostname, seen, reasons)
 

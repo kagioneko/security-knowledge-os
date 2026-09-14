@@ -110,6 +110,18 @@ def test_bare_ipv6_loopback_is_allowed_like_127_0_0_1() -> None:
     assert decision.outcome is PolicyOutcome.ALLOWED
 
 
+def test_malformed_bracketed_ipv6_authority_fails_closed_not_a_raw_valueerror() -> None:
+    """Regression for Codex#4 / Antigravity SKOS-ADV-19 (round 17,
+    2026-09-14), reproduced exactly as reported: `urlsplit(...).hostname`
+    raises `ValueError` for a malformed bracketed IPv6 authority (e.g.
+    "http://[:::]") - uncaught here, `validate_safe_test()` raised
+    instead of returning the documented fail-closed `PolicyDecision`,
+    surfacing as an untyped 500 from any API path that reaches it."""
+    decision = validate_safe_test(_base(steps=["visit http://[:::] for the check"]))
+    assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert any("malformed" in reason for reason in decision.reasons)
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
