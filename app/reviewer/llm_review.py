@@ -237,6 +237,17 @@ def _extract_json(text: str) -> str:
 
 
 def _try_parse(raw: str) -> tuple[ReviewerObservations | None, str | None]:
+    # Codex#2 (round 16, 2026-09-14), reproduced exactly as reported: this
+    # assumed `raw` was always a `str` - a custom/misbehaving LLMClient
+    # returning `None` (or any non-str) made `raw.encode("utf-8")` raise a
+    # raw AttributeError, escaping the LLM_PARSE_ERROR contract entirely
+    # (an API 500 instead of the documented fail-closed result). Callers
+    # now route every `client.complete()` result through `_safe_complete()`
+    # below, which already guarantees a `str` here - this check is
+    # defense in depth, matching this module's existing posture of never
+    # relying on a single boundary.
+    if not isinstance(raw, str):
+        return None, f"adapter returned {type(raw).__name__}, not str"
     try:
         # Codex#7 (round 7, 2026-09-12), reproduced exactly as reported:
         # this size check used to run BEFORE the try block - a provider
@@ -288,6 +299,44 @@ def _error_category(exc: LLMError) -> str:
     return type(cause).__name__ if cause is not None else type(exc).__name__
 
 
+def _safe_complete(
+    client: LLMClient, messages: list[Message], *, repairs: int
+) -> tuple[str | None, LLMReviewResult | None]:
+    """Call `client.complete()`, converting ANY exception - not just
+    `LLMError` - and a non-`str` return value into a safe, type-name-only
+    `LLM_PARSE_ERROR` result. Codex#2 (round 16, 2026-09-14), reproduced
+    exactly as reported: a pluggable `LLMClient` is untrusted code from
+    this app's own trust-boundary perspective - `except LLMError` alone
+    let an unexpected exception (or `None`/non-str return) from a
+    custom/misbehaving adapter escape `run_llm_review()` as a raw
+    exception (an API 500) instead of the documented fail-closed
+    contract. Reuses `_error_category()`'s own reasoning for exceptions:
+    only the exception's TYPE NAME is safe to surface, never `str(exc)`,
+    which could carry a response body or credential-bearing diagnostic
+    text from the provider.
+
+    Returns `(raw, None)` on success (`raw` is guaranteed `str`) or
+    `(None, result)` with a ready-to-return `LLMReviewResult` on failure.
+    """
+    try:
+        raw = client.complete(messages)
+    except LLMError as exc:
+        return None, LLMReviewResult(
+            parse_status=ParseStatus.LLM_PARSE_ERROR, error=_error_category(exc), repairs=repairs
+        )
+    except Exception as exc:  # noqa: BLE001 - untrusted adapter call, must never escape
+        return None, LLMReviewResult(
+            parse_status=ParseStatus.LLM_PARSE_ERROR, error=type(exc).__name__, repairs=repairs
+        )
+    if not isinstance(raw, str):
+        return None, LLMReviewResult(
+            parse_status=ParseStatus.LLM_PARSE_ERROR,
+            error=f"adapter returned {type(raw).__name__}, not str",
+            repairs=repairs,
+        )
+    return raw, None
+
+
 def run_llm_review(
     client: LLMClient | None,
     *,
@@ -306,10 +355,10 @@ def run_llm_review(
         Message("user", payload.model_dump_json(indent=2)),
     ]
 
-    try:
-        raw = client.complete(messages)
-    except LLMError as exc:
-        return LLMReviewResult(parse_status=ParseStatus.LLM_PARSE_ERROR, error=_error_category(exc))
+    raw, err_result = _safe_complete(client, messages, repairs=0)
+    if err_result is not None:
+        return err_result
+    assert raw is not None  # guaranteed by _safe_complete's (raw, err) contract
 
     parsed, err = _try_parse(raw)
     if parsed is not None:
@@ -338,12 +387,10 @@ def run_llm_review(
             "Reply with ONLY a JSON object matching the schema, nothing else.",
         ),
     ]
-    try:
-        raw2 = client.complete(messages)
-    except LLMError as exc:
-        return LLMReviewResult(
-            parse_status=ParseStatus.LLM_PARSE_ERROR, error=_error_category(exc), repairs=1
-        )
+    raw2, err_result = _safe_complete(client, messages, repairs=1)
+    if err_result is not None:
+        return err_result
+    assert raw2 is not None  # guaranteed by _safe_complete's (raw, err) contract
 
     parsed, err = _try_parse(raw2)
     if parsed is not None:

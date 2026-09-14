@@ -228,6 +228,66 @@ def test_llm_error_category_prefers_the_chained_causes_type_name() -> None:
     assert result.error == "_AuthenticationError"
 
 
+class _NoneReturningClient:
+    """A misbehaving adapter that returns None instead of a str."""
+
+    name = "x"
+
+    def complete(self, messages: list[Message]) -> str:
+        return None  # type: ignore[return-value]
+
+
+def test_a_client_returning_none_fails_closed_not_a_raw_attributeerror() -> None:
+    """Regression for Codex#2 (round 16, 2026-09-14), reproduced exactly
+    as reported: `_try_parse()` assumed `raw` was always a `str` -
+    `raw.encode("utf-8")` on a `None` return raised a raw AttributeError,
+    escaping the documented LLM_PARSE_ERROR fail-closed contract entirely
+    (an API 500 instead)."""
+    result = _review(_NoneReturningClient())
+    assert result.parse_status is ParseStatus.LLM_PARSE_ERROR
+    assert result.observations.observations == []
+
+
+class _UnexpectedlyRaisingClient:
+    """A misbehaving adapter raising something other than LLMError."""
+
+    name = "x"
+
+    def complete(self, messages: list[Message]) -> str:
+        raise RuntimeError("boom: internal endpoint http://10.0.0.5/secret-path")
+
+
+def test_an_unexpected_non_llmerror_exception_fails_closed_with_a_safe_category() -> None:
+    """Regression for Codex#2 (round 16, 2026-09-14), reproduced exactly
+    as reported: `run_llm_review()` only ever caught `LLMError` around
+    `client.complete()` - any OTHER exception from a custom/misbehaving
+    adapter escaped uncaught (an API 500) instead of the documented
+    fail-closed contract. The category must still be safe (type name
+    only), matching `_error_category()`'s own reasoning for LLMError -
+    an arbitrary exception's message can carry a response body or an
+    internal endpoint, exactly as this repro's message does."""
+    result = _review(_UnexpectedlyRaisingClient())
+    assert result.parse_status is ParseStatus.LLM_PARSE_ERROR
+    assert result.error == "RuntimeError"
+    assert result.error is not None
+    assert "10.0.0.5" not in result.error
+    assert "secret-path" not in result.error
+
+    finding = degraded_review_finding(result)
+    assert finding is not None
+    assert "10.0.0.5" not in finding.reasoning_summary
+    assert "secret-path" not in finding.reasoning_summary
+
+
+def test_a_repair_call_returning_none_fails_closed_not_a_raw_attributeerror() -> None:
+    """Same class of gap as the first-call case above, but for the SECOND
+    (repair) call to client.complete() - a client that returns a
+    malformed string first, then None on repair."""
+    result = _review(MockClient(["not json", None]))  # type: ignore[list-item]
+    assert result.parse_status is ParseStatus.LLM_PARSE_ERROR
+    assert result.repairs == 1
+
+
 def test_oversized_first_response_is_rejected_without_ever_being_parsed() -> None:
     """Regression for Codex#11 (round 5, 2026-09-12), reproduced exactly as
     reported: valid JSON containing tens of thousands of observations used
