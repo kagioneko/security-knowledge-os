@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `b572b3c` (round-16 fixes, **not yet pushed**)
+- Commit: `382bb55` (round-17 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **212**
-- Tests: **655** items (654 pass, 1 skip = JA-R02)
+- Tracked files: **213**
+- Tests: **663** items (662 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -15,7 +15,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **sixteen rounds**, 2026-09-11 -- 2026-09-14. Rounds 1-2
+  audit), **seventeen rounds**, 2026-09-11 -- 2026-09-14. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -383,9 +383,54 @@ review; regenerate with `git ls-files` after any change.
   finding #4's fix accidentally deleted the round's own real Codex
   review transcript (`reviews/` is gitignored, unrecoverable) - the
   findings had already been read and recorded before the file was lost,
-  so nothing substantive is missing, only the raw transcript. A
-  seventeenth round re-reviewing everything through this commit is the
-  next step before push.
+  so nothing substantive is missing, only the raw transcript.
+
+  Round 17 (2026-09-14, audited commit `2dc6bd1`): Codex **CHANGES-
+  REQUIRED** again (9 findings: 6 new + 3 re-confirmations of already-
+  accepted round-15/16 risks), and Antigravity independently found 4 of
+  the same 6 new ones (`SKOS-ADV-18` through `-21`) plus no new items of
+  its own this round: 2 MEDIUM — `_MaxBodySizeMiddleware` retained every
+  individual ASGI `receive()` message in a list, one per frame -
+  `_MAX_BODY_BYTES` bounded total bytes but not the NUMBER of frames, so
+  a body of at most 1 MB split into a million one-byte frames stayed
+  within the byte cap while the list grew to a million dict objects
+  (hundreds of MB for a "1 MB" request); and the round-16 per-key
+  `/answers` waiter cap bounded worst-case thread occupancy for ONE
+  assessment ID, but nothing bounded how many DISTINCT keys could each
+  hit that cap at once (four slow assessments × ten callers = 40
+  threads, a typical worker pool's entirety); 2 MEDIUM (Antigravity
+  independently, `SKOS-ADV-18`/`-20`) — `.mkdir(parents=True,
+  exist_ok=True)` resolved and created directories through an EXISTING,
+  pre-planted symlink ancestor BEFORE any trust check ran (fail-closed
+  on the eventual WRITE, not on the side effect of having created a
+  directory through the attacker's symlink at all - reproduced with
+  Codex's own exploit shape); and the round-16 verdict-gate fix only
+  ever asked "does a verdict line exist", never WHICH verdict, so a
+  completed `CHANGES-REQUIRED` review satisfied it exactly like `PASS`
+  does and the scheduled wrapper labeled that run "成功"; 1 LOW
+  (Antigravity independently, `SKOS-ADV-19`) — `urlsplit(...).hostname`
+  raises `ValueError` for a malformed bracketed IPv6 authority (e.g.
+  `http://[:::]`), uncaught, surfacing as an untyped 500; 1 LOW
+  (Antigravity independently, `SKOS-ADV-21`) — `AssessmentInput.name`
+  was the only free-text field on that model without a
+  `reject_credential_shapes` validator. **All 6 new findings fixed**
+  with regression tests confirmed to fail against the pre-fix code via
+  `git stash`/`git checkout`; the remaining 3 (danger-full-access,
+  `AnswerPatch` opaque secrets, dependency hash-pinning) were
+  re-confirmations of already-accepted round-15/16 trade-offs, no new
+  action — see `git log` commit messages ("fix round-17 Codex#…") for
+  the itemized mapping. While investigating the symlink-mkdir finding,
+  found and fixed a latent test-isolation bug in two EXISTING round-16
+  tests: forging `os.geteuid()` globally also made `tmp_path`'s own real
+  ancestors (e.g. `/tmp/pytest-of-<user>`, owned by the test's real uid,
+  not root) look foreign-owned to the same ownership check, which
+  rejected the chain THERE first - both tests' assertions passed anyway,
+  but only because the intended target's path string happened to be a
+  substring of the unrelated rejection's generic trailing clause, not
+  because the intended code path fired; rewritten to fake only the
+  specific target's own stat/lstat result instead. An eighteenth round
+  re-reviewing everything through this commit is the next step before
+  push.
 
 ## Tracked files by area
 
@@ -397,7 +442,7 @@ check enforces (total tracked files, total tests) are kept current above.
 | area | files | notes |
 | --- | --- | --- |
 | `app/` | 58 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
-| `tests/` | 79 | 48 test modules + fixtures |
+| `tests/` | 80 | 49 test modules + fixtures |
 | `knowledge/` | 24 | 14 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
 | `rules/` | 13 | 7 rule YAMLs + category `.gitkeep`s |
 | `safe_tests/` | 4 | 4 vetted templates |
