@@ -1149,6 +1149,48 @@ def test_reindex_rejects_a_malformed_origin_with_403_not_500(
         assert resp.status_code == 403, origin
 
 
+def test_reindex_rejects_a_malformed_host_with_403_not_500(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#3 (round 19, 2026-09-14), reproduced exactly as
+    reported, plus one adjacent crash found while verifying the fix:
+
+    - `Host: localhost:99999` (out-of-range numeric port): `_is_local_
+      origin`'s port comparison used to call the un-guarded
+      `request.url.port`, which re-parses the client-supplied Host header
+      the same way `urlsplit(origin).port` above it already parses
+      Origin, and raises the identical raw ValueError for an out-of-range
+      port. Codex's exact repro.
+
+    - `Host: [:::]:80` (an invalid bracketed IPv6 literal): Starlette's
+      own `_HOST_RE` in `starlette.datastructures.URL` only loosely
+      validates a bracketed authority - the actual IPv6-validity check
+      happens lazily inside `urlsplit()` on first access to ANY URL
+      component, so `request.url.path` (the very first attribute
+      `_local_origin_gate` reads, one property earlier than the `.port`
+      access above) raised the same raw ValueError before
+      `_is_local_origin` was ever reached. Found empirically while
+      testing this finding: `Host: localhost:bad` (a non-numeric port)
+      does NOT reach either code path at all, confirmed via
+      `starlette.datastructures._HOST_RE` - a non-digit port fails that
+      regex outright, so Starlette silently falls back to the ASGI
+      transport's own server address instead of ever using the header,
+      and no exception occurs; it is intentionally not included below as
+      it is not an exploitable case for this class of bug.
+
+    Both shapes used to reach the client as a generic 500; both must
+    fail closed with the same 403 every other untrusted-origin shape
+    already gets."""
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(REPO / "tests" / "fixtures" / "corpus_alt"))
+    monkeypatch.setenv("SKOS_DB_PATH", str(tmp_path / "idx.sqlite"))
+    for host in ("localhost:99999", "[:::]:80"):
+        resp = client.post(
+            "/v1/knowledge/reindex",
+            headers={"Origin": "http://localhost", "Host": host},
+        )
+        assert resp.status_code == 403, host
+
+
 def test_reindex_rejects_a_forged_localhost_host_from_a_remote_peer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -572,9 +572,24 @@ def _is_local_origin(request: Request) -> bool:
                 return False
             if hostname not in _ALLOWED_HOSTS:
                 return False
+            # Codex#3 (round 19, 2026-09-14), reproduced exactly as
+            # reported: `request.url.port` was accessed OUTSIDE this
+            # guard - it re-parses the (equally client-supplied) `Host`
+            # header the same way `urlsplit(value).port` above does, and
+            # raises the identical raw `ValueError` for the identical
+            # reason (an out-of-range or non-numeric port, e.g.
+            # `Host: localhost:99999`), just from a different header.
+            # Reading it inside the same try/except this function already
+            # uses for the Origin/Referer authority closes the gap the
+            # same way: a malformed Host is exactly as untrusted as one
+            # naming a different host outright.
+            try:
+                request_port = request.url.port
+            except ValueError:
+                return False
             return parts.scheme == request.url.scheme and _effective_port(
                 parts.scheme, port
-            ) == _effective_port(request.url.scheme, request.url.port)
+            ) == _effective_port(request.url.scheme, request_port)
     host = _hostname_only(request.headers.get("host") or "")
     return host in _ALLOWED_HOSTS
 
@@ -611,9 +626,28 @@ def _peer_is_loopback(request: Request) -> bool:
 # add to the next new route.
 @app.middleware("http")
 async def _local_origin_gate(request: Request, call_next):  # type: ignore[no-untyped-def]
-    if request.url.path != "/health" and not (
-        _peer_is_loopback(request) and _is_local_origin(request)
-    ):
+    try:
+        # Codex#3 (round 19, 2026-09-14): found while testing that finding
+        # against an invalid bracketed-IPv6 Host (e.g. `Host: [:::]:80`) -
+        # `request.url.path` ITSELF (the very first attribute accessed
+        # here, before `_is_local_origin`'s own now-guarded `.port` access
+        # is ever reached) re-parses the Host header via `urlsplit()` and
+        # raises the identical class of raw ValueError one property
+        # earlier. `_is_local_origin`'s internal try/except (below) still
+        # catches every malformed-Host shape that reaches it, but this
+        # outer catch is the backstop for a malformed value that Starlette
+        # itself only partially validates (`_HOST_RE` in
+        # `starlette.datastructures.URL` accepts a bracketed group loosely
+        # enough that the actual IPv6 validity check happens lazily, on
+        # first component access, inside `urlsplit()`). Any component of
+        # this request's own URL failing to parse is exactly as untrusted
+        # as an outright foreign Host - fail closed the same way.
+        is_local = request.url.path == "/health" or (
+            _peer_is_loopback(request) and _is_local_origin(request)
+        )
+    except ValueError:
+        is_local = False
+    if not is_local:
         return JSONResponse(
             {"detail": "this endpoint only serves local clients"}, status_code=403
         )
