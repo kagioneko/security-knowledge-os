@@ -236,6 +236,27 @@ def _extract_json(text: str) -> str:
     return stripped[start : end + 1] if start != -1 and end != -1 else stripped
 
 
+_UNTRUSTED_LOC_ERROR_TYPES = frozenset({"extra_forbidden"})
+
+
+def _sanitize_pydantic_errors(exc: ValidationError) -> str:
+    """See the call site's own comment (Codex#4 / Antigravity SKOS-ADV-22,
+    round 18, 2026-09-14) for the full story: `exc.errors(include_input=
+    False, ...)` hides the rejected VALUE but not the rejected KEY - for
+    an `extra_forbidden` violation, `loc` IS the untrusted extra property
+    name an attacker-influenced LLM response supplied. Replaces `loc`
+    with a fixed placeholder for exactly that error type; every other
+    type's `loc` names a fixed path in this project's own schema and is
+    left as-is."""
+    sanitized = [
+        {**error, "loc": ("<unexpected field>",)}
+        if error.get("type") in _UNTRUSTED_LOC_ERROR_TYPES
+        else error
+        for error in exc.errors(include_input=False, include_url=False)
+    ]
+    return str(sanitized)
+
+
 def _try_parse(raw: str) -> tuple[ReviewerObservations | None, str | None]:
     # Codex#2 (round 16, 2026-09-14), reproduced exactly as reported: this
     # assumed `raw` was always a `str` - a custom/misbehaving LLMClient
@@ -274,7 +295,21 @@ def _try_parse(raw: str) -> tuple[ReviewerObservations | None, str | None]:
         # the public LLM-OBS-00000 finding via degraded_review_finding().
         # errors(include_input=False, include_url=False) gives the same
         # loc/type/msg diagnostic with the rejected value itself omitted.
-        return None, str(exc.errors(include_input=False, include_url=False))
+        #
+        # Codex#4 / Antigravity SKOS-ADV-22 (round 18, 2026-09-14),
+        # reproduced exactly as reported: hiding the rejected VALUE is not
+        # enough - for an `extra_forbidden` violation (this schema uses
+        # extra="forbid" throughout), `loc` IS the untrusted extra
+        # property NAME itself. A response like
+        # {"LEAKED_INTERNAL_SECRET": 1} makes pydantic's own `loc` read
+        # ("LEAKED_INTERNAL_SECRET",) - an attacker controlling the LLM's
+        # output (via prompt injection) can put anything there, and it
+        # flowed into the repair prompt and, if repair also failed, into
+        # the public LLM-OBS-00000 finding verbatim, unlike every OTHER
+        # error type's `loc`, which names a fixed field path in this
+        # project's own ReviewerObservations schema (e.g.
+        # "observations.0.level") and is safe to disclose.
+        return None, _sanitize_pydantic_errors(exc)
     except (json.JSONDecodeError, ValueError) as exc:
         # a JSON/extraction failure's message is about the STRUCTURE of
         # `raw` (an unterminated string, a stray comma, "not JSON at all")

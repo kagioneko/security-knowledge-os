@@ -377,6 +377,27 @@ def test_pydantic_parse_error_never_leaks_the_rejected_value() -> None:
     assert "SUPERSECRET_CANARY_987654321" not in finding.reasoning_summary
 
 
+def test_pydantic_parse_error_never_leaks_the_rejected_property_name() -> None:
+    """Regression for Codex#4 / Antigravity SKOS-ADV-22 (round 18,
+    2026-09-14), reproduced exactly as reported: round 6's fix
+    (include_input=False) hides the rejected VALUE but not the rejected
+    KEY - for an extra_forbidden violation, pydantic's own `loc` IS the
+    untrusted extra property name itself. A response with an attacker-
+    chosen property name (not value) used to put that name into both
+    LLMReviewResult.error and the reported finding's reasoning_summary
+    after the repair attempt also failed."""
+    bad = '{"observations": [], "LEAKED_INTERNAL_SECRET_CANARY": 1}'
+    client = MockClient([bad, bad])
+    result = _review(client)
+    assert result.parse_status is ParseStatus.LLM_PARSE_ERROR
+    assert result.error is not None
+    assert "LEAKED_INTERNAL_SECRET_CANARY" not in result.error
+
+    finding = degraded_review_finding(result)
+    assert finding is not None
+    assert "LEAKED_INTERNAL_SECRET_CANARY" not in finding.reasoning_summary
+
+
 def test_oversized_response_is_not_forwarded_intact_during_repair() -> None:
     """Regression for Codex#7 (round 6, 2026-09-12), reproduced exactly as
     reported: the 200KB check prevents PARSING an oversized response, but
