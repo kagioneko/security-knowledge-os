@@ -133,8 +133,27 @@ CODEX_MAX_FILE_SIZE_BLOCKS="${CODEX_MAX_FILE_SIZE_BLOCKS:-2097152}"  # 512-byte 
 # for exactly that line (anywhere in the file - a reviewer's transcript
 # can be long, but the declaration format itself is what makes it
 # unambiguous, not its position) rather than the bare word anywhere.
-_has_verdict() {
-  grep -qE "^Overall verdict for commit ${COMMIT}: (PASS-with-nits|PASS|CHANGES-REQUIRED)[[:space:]]*\$" "$1"
+# Codex#5 / Antigravity SKOS-ADV-20 (round 17, 2026-09-14), reproduced
+# exactly as reported by both reviewers independently: the round-16 fix
+# above only ever asked "did a verdict line exist" - it never asked
+# WHICH verdict. A reviewer ending with `CHANGES-REQUIRED` satisfies
+# `_has_verdict()` exactly as well as `PASS` does, so `run_codex()`/
+# `run_antigravity()` returned SUCCESS (exit 0) for a review that
+# explicitly said publication must be blocked - and `_scheduled_cross_
+# review.sh` then labeled that run "成功" (success) in HANDOFF.md.
+# "the reviewer ran to completion" and "the reviewer said PASS" are two
+# different questions; conflating them is exactly the ambiguity a
+# publication gate cannot afford. `_verdict_of()` now extracts the exact
+# word instead of just checking existence, so callers can tell all three
+# outcomes apart: no verdict at all (still a hard failure, unchanged),
+# PASS/PASS-with-nits (success), and CHANGES-REQUIRED (the reviewer DID
+# complete and DID answer, but the answer was "not yet publishable" -
+# distinct from a failure, but not success either).
+_verdict_of() {
+  grep -oE "^Overall verdict for commit ${COMMIT}: (PASS-with-nits|PASS|CHANGES-REQUIRED)[[:space:]]*\$" "$1" \
+    | tail -1 \
+    | sed -E 's/^Overall verdict for commit [^:]*: *//' \
+    | tr -d '[:space:]'
 }
 
 run_codex() {
@@ -173,11 +192,17 @@ run_codex() {
     echo "!! codex exec failed or timed out (exit $codex_exit)" | tee -a "$f"
     return 1
   fi
-  if ! _has_verdict "$f"; then
+  local verdict
+  verdict="$(_verdict_of "$f")"
+  if [ -z "$verdict" ]; then
     echo "!! codex exec exited 0 but no PASS/PASS-with-nits/CHANGES-REQUIRED verdict was found in $f" | tee -a "$f"
     return 1
   fi
-  echo "   done: $f"
+  if [ "$verdict" = "CHANGES-REQUIRED" ]; then
+    echo "   review completed: CHANGES-REQUIRED (publication blocked) -> $f"
+    return 2
+  fi
+  echo "   done: $f ($verdict)"
 }
 
 run_antigravity() {
@@ -210,21 +235,52 @@ run_antigravity() {
     echo "!! agy failed or timed out (exit $agy_exit)" | tee -a "$f"
     return 1
   fi
-  if ! _has_verdict "$f"; then
+  local verdict
+  verdict="$(_verdict_of "$f")"
+  if [ -z "$verdict" ]; then
     echo "!! agy exited 0 but no PASS/PASS-with-nits/CHANGES-REQUIRED verdict was found in $f" | tee -a "$f"
     return 1
   fi
-  echo "   done: $f"
+  if [ "$verdict" = "CHANGES-REQUIRED" ]; then
+    echo "   review completed: CHANGES-REQUIRED (publication blocked) -> $f"
+    return 2
+  fi
+  echo "   done: $f ($verdict)"
 }
 
+# Exit code convention (Codex#5 / Antigravity SKOS-ADV-20, round 17):
+#   0 = every requested reviewer completed AND said PASS/PASS-with-nits
+#   1 = at least one reviewer failed, timed out, or produced no verdict
+#       at all (worse than a real verdict - we don't even know the
+#       outcome); takes priority over 2 below if both occur
+#   2 = every requested reviewer completed, but at least one said
+#       CHANGES-REQUIRED - not a failure of the REVIEW PROCESS, but
+#       publication is explicitly blocked
 overall_exit=0
+_note_result() {
+  local status="$1"
+  if [ "$status" -eq 1 ]; then
+    overall_exit=1
+  elif [ "$status" -eq 2 ] && [ "$overall_exit" -eq 0 ]; then
+    overall_exit=2
+  fi
+}
+
 case "$WHICH" in
-  codex)        run_codex || overall_exit=1 ;;
-  antigravity)  run_antigravity || overall_exit=1 ;;
+  codex)
+    if run_codex; then codex_result=0; else codex_result=$?; fi
+    _note_result "$codex_result"
+    ;;
+  antigravity)
+    if run_antigravity; then agy_result=0; else agy_result=$?; fi
+    _note_result "$agy_result"
+    ;;
   both)
-    run_codex || overall_exit=1
+    if run_codex; then codex_result=0; else codex_result=$?; fi
+    _note_result "$codex_result"
     echo
-    run_antigravity || overall_exit=1
+    if run_antigravity; then agy_result=0; else agy_result=$?; fi
+    _note_result "$agy_result"
     ;;
   *) echo "usage: $0 [codex|antigravity|both]"; exit 2 ;;
 esac
