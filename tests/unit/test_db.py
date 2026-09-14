@@ -225,6 +225,44 @@ def test_connect_does_not_mutate_a_foreign_wal_database_before_rejecting_it(
     foreign.close()
 
 
+def test_connect_rejects_a_schema_empty_database_with_a_foreign_application_id(
+    tmp_path: Path,
+) -> None:
+    """Regression for Codex#1 / Antigravity SKOS-ADV-31 (round 21,
+    2026-09-15), reproduced exactly as reported: "no tables/views" was
+    treated as sufficient proof a file was safe to claim as a fresh
+    index - but a file with an EMPTY schema can already carry a foreign,
+    nonzero application_id (an external application that stamped its own
+    ID before ever creating a table). connect() used to overwrite that ID
+    and build the SKOS schema into it instead of raising
+    ForeignDatabaseError, silently hijacking a database that was never
+    ours to take."""
+    import sqlite3
+
+    db_path = tmp_path / "foreign.sqlite"
+    foreign = sqlite3.connect(str(db_path))
+    foreign.execute("PRAGMA application_id = 305419896")  # 0x12345678, some OTHER app's ID
+    foreign.commit()
+    foreign.close()
+
+    with pytest.raises(ForeignDatabaseError):
+        connect(db_path)
+
+    check = sqlite3.connect(str(db_path))
+    try:
+        assert check.execute("PRAGMA application_id").fetchone()[0] == 305419896, (
+            "a rejected foreign database's application_id must be untouched"
+        )
+        assert (
+            check.execute(
+                "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') LIMIT 1"
+            ).fetchone()
+            is None
+        ), "a rejected foreign database must not have the SKOS schema installed"
+    finally:
+        check.close()
+
+
 def test_untrusted_ancestor_chain_flags_a_world_writable_ancestor_without_sticky(
     tmp_path: Path,
 ) -> None:

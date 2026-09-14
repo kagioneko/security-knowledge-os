@@ -608,7 +608,26 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
         if has_existing_content:
             verify_application_id(conn, db_path)
         else:
-            # a genuinely fresh file (or an existing empty one) - safe to claim.
+            # Codex#1 / Antigravity SKOS-ADV-31 (round 21, 2026-09-15),
+            # reproduced exactly as reported: "no tables/views" used to be
+            # treated as sufficient proof this file was safe to claim as
+            # a fresh index - but a file with an EMPTY schema can still
+            # already carry a foreign, nonzero `application_id` (an
+            # external application that stamped its own ID before ever
+            # creating a table). Overwriting that ID and building the
+            # SKOS schema into it silently hijacked a database that was
+            # never ours to take. A genuinely fresh file's application_id
+            # is 0 (SQLite's own default when never set); anything else
+            # nonzero and not already ours is exactly as foreign as a
+            # populated database with the wrong ID, and must be rejected
+            # the same way.
+            app_id = conn.execute("PRAGMA application_id").fetchone()[0]
+            if app_id not in (0, _APPLICATION_ID):
+                raise ForeignDatabaseError(
+                    f"{db_path} has no tables but already carries a foreign "
+                    f"application_id={app_id} (expected 0 or {_APPLICATION_ID}); "
+                    "refusing to claim it as a fresh Security Knowledge OS index"
+                )
             conn.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
 
         # Codex#1 (round 19, 2026-09-14), reproduced exactly as reported:
