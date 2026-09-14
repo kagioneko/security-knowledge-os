@@ -1313,6 +1313,80 @@ def test_answer_lock_gives_up_instead_of_blocking_forever_when_contended() -> No
         holder.join(timeout=5)
 
 
+def test_answer_lock_rejects_a_caller_beyond_the_waiter_cap_immediately() -> None:
+    """Regression for Codex#3 (round 16, 2026-09-14), reproduced exactly
+    as reported: the round-15 timeout above bounds each INDIVIDUAL wait,
+    but not how MANY duplicate requests can be waiting on one key at
+    once - a slow first assessment plus roughly one worker-pool's worth
+    of duplicate requests for its assessment ID could still occupy every
+    synchronous worker thread for repeated 30-second intervals, stalling
+    unrelated endpoints (including /health) the whole time. A caller
+    beyond the cap (1 holder + `_MAX_ANSWER_LOCK_WAITERS_PER_KEY - 1`
+    already-queued waiters) must now be rejected IMMEDIATELY - no worker
+    thread ever blocks waiting for it. The production cap (10) is
+    monkeypatched down to 2 here so the test needs only two threads and
+    runs fast/deterministically, the same pattern already used for
+    `_MAX_ANSWER_LOCKS` above."""
+    import threading
+    import time
+
+    import app.main as main_module
+
+    original_cap = main_module._MAX_ANSWER_LOCK_WAITERS_PER_KEY
+    main_module._MAX_ANSWER_LOCK_WAITERS_PER_KEY = 2  # 1 holder + 1 queued waiter
+    key = ("waiter-cap-test", "hash")
+    holder_in = threading.Event()
+    release_holder = threading.Event()
+    waiter_started = threading.Event()
+    release_waiter = threading.Event()
+
+    def _hold() -> None:
+        with main_module._answer_lock_for(key):
+            holder_in.set()
+            release_holder.wait(timeout=5)
+
+    def _wait_as_second_caller() -> None:
+        waiter_started.set()
+        with main_module._answer_lock_for(key, timeout=5):
+            release_waiter.wait(timeout=5)
+
+    holder = threading.Thread(target=_hold)
+    second_caller = threading.Thread(target=_wait_as_second_caller)
+    try:
+        holder.start()
+        assert holder_in.wait(timeout=5), "holder never entered"
+
+        second_caller.start()
+        assert waiter_started.wait(timeout=5), "second caller never started"
+        # No explicit signal exists for "the second caller has registered
+        # itself as a waiter" (only for "about to attempt to"); this short,
+        # bounded sleep narrows that race in the common case. The
+        # assertion below still checks the real outcome regardless.
+        time.sleep(0.1)
+
+        # Deliberately shorter than the holder's own 5s hold above but
+        # long enough to clearly distinguish "rejected immediately" (this
+        # test's claim) from "waited out its own timeout" (what pre-fix
+        # code does instead) - if the holder ever released early enough
+        # to let this call legitimately acquire the lock instead, that
+        # would only make this assertion harder to fail, never easier.
+        start = time.monotonic()
+        with pytest.raises(main_module._AnswerLockBusy), main_module._answer_lock_for(
+            key, timeout=2
+        ):
+            pass  # must never be reached - rejected before ever waiting
+        elapsed = time.monotonic() - start
+        assert elapsed < 1.0, (
+            f"third caller waited {elapsed:.2f}s instead of being rejected immediately"
+        )
+    finally:
+        main_module._MAX_ANSWER_LOCK_WAITERS_PER_KEY = original_cap
+        release_holder.set()
+        release_waiter.set()
+        holder.join(timeout=5)
+        second_caller.join(timeout=5)
+
+
 def test_answer_cache_put_is_thread_safe_under_concurrent_eviction() -> None:
     """Same race as `test_store_put_is_thread_safe_under_concurrent_eviction`,
     for `_ANSWER_CACHE` / `_ANSWER_CACHE_GUARD` (Codex#5, round 5,

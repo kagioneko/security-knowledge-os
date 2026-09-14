@@ -378,10 +378,33 @@ def _evict_unused_answer_locks_locked() -> None:
 # `_ANSWER_LOCK_TIMEOUT_SECONDS` instead of an indefinite thread hold.
 _ANSWER_LOCK_TIMEOUT_SECONDS = 30.0
 
+# Codex#3 (round 16, 2026-09-14), reproduced exactly as reported: the
+# round-15 timeout above bounds each INDIVIDUAL wait, but does not bound
+# how MANY duplicate requests can be waiting on one key at once - a slow
+# first assessment (over 30s) plus roughly one worker-pool's worth of
+# duplicate requests for its assessment ID can still occupy every
+# synchronous worker thread for repeated 30-second intervals, stalling
+# unrelated endpoints (including /health) the whole time. Capping the
+# number of callers ever allowed onto ONE key's lock (1 holder + this
+# many queued waiters) bounds worst-case thread occupancy per key to a
+# small constant regardless of how many duplicates arrive - anything
+# beyond the cap is rejected immediately (no worker thread ever blocks
+# for it) rather than queuing. This still preserves the lock's actual
+# purpose for the common case (a handful of legitimate concurrent
+# retries/tabs blocking briefly for a cheap cache hit - see the call
+# site's own comment); 10 is comfortably above realistic legitimate
+# concurrency for one assessment (a real client-retry burst is a
+# handful, not dozens) while still bounding worst-case abuse to a small
+# fraction of a typical worker pool (Starlette's default is 40) instead
+# of "as many as arrive".
+_MAX_ANSWER_LOCK_WAITERS_PER_KEY = 10  # 1 holder + at most 9 queued waiters
+
 
 class _AnswerLockBusy(Exception):
     """`_answer_lock_for` could not acquire its lock within
-    `_ANSWER_LOCK_TIMEOUT_SECONDS` - see that function's own docstring."""
+    `_ANSWER_LOCK_TIMEOUT_SECONDS`, or the key already has
+    `_MAX_ANSWER_LOCK_WAITERS_PER_KEY` callers on it - see that
+    function's own docstring."""
 
 
 @contextlib.contextmanager
@@ -394,6 +417,10 @@ def _answer_lock_for(
             entry = _RefCountedLock()
             _ANSWER_LOCKS[key] = entry
             _evict_unused_answer_locks_locked()
+        if entry.refcount >= _MAX_ANSWER_LOCK_WAITERS_PER_KEY:
+            raise _AnswerLockBusy(
+                f"too many callers ({entry.refcount}) already waiting for {key!r}"
+            )
         entry.refcount += 1
 
     def _release_refcount() -> None:
