@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `351fbc2` (round-19 fixes, **not yet pushed**)
+- Commit: `4423f19` (round-20 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **213**
-- Tests: **672** items (671 pass, 1 skip = JA-R02)
+- Tests: **676** items (675 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -15,7 +15,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **nineteen rounds**, 2026-09-11 -- 2026-09-14. Rounds 1-2
+  audit), **twenty rounds**, 2026-09-11 -- 2026-09-15. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -496,9 +496,41 @@ review; regenerate with `git ls-files` after any change.
   included as a repro, why `Host: localhost:bad` is not exploitable —
   Starlette's own `_HOST_RE` rejects a non-numeric port before either
   code path is ever reached). See `git log` commit messages ("fix
-  round-19 Codex#…") for the itemized mapping. A twentieth round
-  re-reviewing everything through this commit is the next step before
-  push.
+  round-19 Codex#…") for the itemized mapping.
+
+  Round 20 (2026-09-15, audited commit `386bf8b`): Codex **CHANGES-
+  REQUIRED** again (4 findings, all new) and Antigravity independently
+  found all 4 of them (`SKOS-ADV-25`..`-28`) — the strongest independent-
+  match round yet: 2 MEDIUM — the round-19 `journal_mode = DELETE` fix
+  itself ran BEFORE the foreign-database (`application_id`) check, so
+  `connect()` mutated (checkpointed, sidecar-deleted) ANY database it
+  opened in write mode, including one about to be rejected as foreign a
+  few lines later, and a LOCKED foreign database made this worse by
+  raising `sqlite3.OperationalError` instead of `ForeignDatabaseError`
+  entirely; and `_is_local_origin()` verified Origin's hostname was SOME
+  allowed loopback alias but never compared it against the hostname the
+  request actually arrived on, letting `localhost`/`127.0.0.1`/`::1`
+  silently substitute for each other — a page on IPv6 loopback could
+  CSRF this service on IPv4 loopback at the same port. 2 LOW — the
+  snapshot walk's stability RESCAN (unlike the round-19-fixed first
+  scan) still built its full `after_names` set before comparing it,
+  letting a concurrent writer force unbounded allocation there instead;
+  and `untrusted_directory_reason()`'s `Path.resolve(strict=False)`
+  raises `RuntimeError` (not `OSError`) for a self-referential symlink
+  loop, escaping every caller's `OSError`-only handling as a raw 500.
+  **All 4 fixed**, each with a regression test confirmed to fail against
+  the pre-fix code via `git stash`: the foreign-database fix's test
+  creates a real WAL-mode foreign database and commits without closing
+  it, naturally reproducing the lock contention that turned the wrong-
+  exception-type half of the bug into an observable pre-fix failure too;
+  the origin-gate fix's test sends `Origin: http://[::1]:80` against
+  `Host: 127.0.0.1:80`; the rescan fix's test monkeypatches `os.scandir`
+  to flood the second scan and counts how many entries are actually
+  consumed before aborting (10,000 pre-fix, 1 post-fix); the symlink-loop
+  fix's test creates a root that is a symlink to itself. See `git log`
+  commit messages ("fix round-20 Codex#…") for the itemized mapping. A
+  twenty-first round re-reviewing everything through this commit is the
+  next step before push.
 
 ## Tracked files by area
 
