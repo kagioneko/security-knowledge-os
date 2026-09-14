@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `382bb55` (round-17 fixes, **not yet pushed**)
+- Commit: `d6dc3e5` (round-18 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **213**
-- Tests: **663** items (662 pass, 1 skip = JA-R02)
+- Tests: **668** items (667 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -15,7 +15,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **seventeen rounds**, 2026-09-11 -- 2026-09-14. Rounds 1-2
+  audit), **eighteen rounds**, 2026-09-11 -- 2026-09-14. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -428,7 +428,42 @@ review; regenerate with `git ls-files` after any change.
   but only because the intended target's path string happened to be a
   substring of the unrelated rejection's generic trailing clause, not
   because the intended code path fired; rewritten to fake only the
-  specific target's own stat/lstat result instead. An eighteenth round
+  specific target's own stat/lstat result instead.
+
+  Round 18 (2026-09-14, audited commit `5ecaa36`): Codex **CHANGES-
+  REQUIRED** again (6 findings: 4 new + 2 re-confirmations of already-
+  accepted round-14/15 risk), and Antigravity independently found all 3
+  of the actionable new ones (`SKOS-ADV-22`/`-23`/`-24`): 1 MEDIUM (both
+  reviewers) — the `db-connection-string` credential-shape pattern only
+  matched a lowercase URI scheme, but a scheme is case-insensitive per
+  RFC 3986, so an uppercase-scheme connection string (otherwise a
+  perfectly valid, credential-bearing URI) evaded both the schema
+  validators and `scripts/secret_scan.py` (which imports the same shared
+  pattern dict);
+  1 LOW (both reviewers) — `MemoryInput.scope`, `ToolInput.permissions`,
+  `CredentialInput.storage`, and `CredentialInput.exposed_to_model` were
+  the only externally-supplied string fields on `AssessmentInput` still
+  missing `reject_credential_shapes`, the same class of gap fixed for
+  `name` itself one round earlier; 1 LOW (both reviewers) — round 6's
+  fix for `ValidationError` hid the REJECTED VALUE but not the rejected
+  KEY: for an `extra_forbidden` violation, pydantic's own `loc` IS the
+  untrusted extra property name an attacker-influenced LLM response
+  supplied, and it flowed into the repair prompt and the public
+  `LLM-OBS-00000` finding verbatim; 1 LOW (Codex only) — README.md,
+  REVIEW_PACKAGE.md, and docs/acceptance-criteria.md each separately
+  stated the fixture count (claimed 12, actually 14) and/or public-KU
+  count (claimed 13, actually 14) in prose, drifted from
+  `PUBLICATION_MANIFEST.md`'s own already-correct counts with nothing
+  checking them. **All 4 new findings fixed**, each with a regression
+  test confirmed to fail against the pre-fix code via `git stash`/`git
+  checkout`; the stale-count fix also added a new preflight check
+  (`_publication_docs_counts_match_reality()`) so this specific class of
+  drift cannot recur silently again — verified it actually catches the
+  drift by reverting the doc fixes and confirming all 7 stale
+  occurrences are reported, then reapplying. The remaining 2 (danger-
+  full-access, dependency hash-pinning) were re-confirmations of
+  already-accepted trade-offs — see `git log` commit messages ("fix
+  round-18 Codex#…") for the itemized mapping. A nineteenth round
   re-reviewing everything through this commit is the next step before
   push.
 
@@ -594,8 +629,8 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
 | Pack Manager (M9-M10) not in repo | out of scope; ZIP-import attack surface is future work |
 | `scripts/run_cross_review.sh` runs the Codex reviewer with `CODEX_SANDBOX=danger-full-access` (bwrap fails on this host's kernel config) - a prompt-injection string in any reviewed file could induce the reviewer to run arbitrary commands or write/exfiltrate outside this repo, not just audit it | accepted, mitigated — round-14 Codex#2, re-confirmed unchanged round-15 Codex#7: a full fix (disposable container/VM, read-only bind mount, no Vault/socket access, restricted network) was discussed with the user and deliberately deferred - it changes how the shared Codex review pipeline runs across every project on the host, needing the host's actual container/VM capabilities checked first. Applied instead: `ulimit`-based CPU-time and max-written-file-size caps scoped to the reviewer process alone (deliberately not a process-count limit, which is enforced per-UID system-wide on Linux and could starve unrelated services running as the same account) |
 | `AnswerPatch` free-text fields accept an opaque, unrecognized-shape value (no known credential pattern matches it) | accepted, documented — round-15 Codex#5: already an intentional, tested limitation (round-7); never reaches the external LLM regardless (round-14 structural anonymization); retained in the in-memory store for the entry's lifetime, same accepted unauthenticated-localhost scope as the store itself |
-| `constraints.txt` pins exact versions but not package hashes - the same version string could still come from an unintended index or a replaced artifact | accepted (documented in `constraints.txt` itself, out of scope for this MVP release process) — round-15 Codex#9 re-confirmed the same trade-off, no new action |
-| `scripts/run_cross_review.sh` and `_scheduled_cross_review.sh` (mitigated round-15) re-confirmed by Codex round-16 with no change requested | accepted, unchanged — round-16 Codex#7 (HIGH) is the same `danger-full-access` risk above, re-confirmed at that severity; no new mitigation was requested or applied this round |
+| `constraints.txt` pins exact versions but not package hashes - the same version string could still come from an unintended index or a replaced artifact | accepted (documented in `constraints.txt` itself, out of scope for this MVP release process) — round-15 Codex#9 re-confirmed the same trade-off, no new action; round-18 Codex#6 re-confirmed again, still unchanged |
+| `scripts/run_cross_review.sh` and `_scheduled_cross_review.sh` (mitigated round-15) re-confirmed by Codex round-16 with no change requested | accepted, unchanged — round-16 Codex#7 (HIGH) is the same `danger-full-access` risk above, re-confirmed at that severity; no new mitigation was requested or applied this round; round-18 Codex#1 re-confirmed again, still unchanged |
 | Antigravity NIT-ADV-02: possible TOCTOU in `load_corpus()`'s file re-enumeration (a local actor replacing a file with a symlink between `validate_tree()` completing and `iter_knowledge_files()` completing) | investigated, not applicable — round-16: the described two-step sequence does not match `load_corpus()`'s current implementation, which snapshots the ENTIRE knowledge root via a directory-fd no-follow walk (`app/ingestion/snapshot.py`, round 10) BEFORE any validation or file read, then validates and reads each file exactly once from that private, externally-immutable snapshot copy - there is no separate `validate_tree()`-then-`iter_knowledge_files()` sequence on the live tree for a local actor to race. No code change made; revisit if a future refactor reintroduces a two-pass read. |
 
 ## Cross-AI review — status
