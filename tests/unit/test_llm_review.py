@@ -288,6 +288,47 @@ def test_a_repair_call_returning_none_fails_closed_not_a_raw_attributeerror() ->
     assert result.repairs == 1
 
 
+class _MalformedThenRaisingClient:
+    """First call returns malformed JSON (triggers a repair attempt); the
+    repair call itself raises LLMError - distinct from EITHER of the two
+    cases already covered above (an LLMError on the FIRST call; a
+    non-string return on the repair call)."""
+
+    name = "x"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, messages: list[Message]) -> str:
+        self.calls += 1
+        if self.calls == 1:
+            return "not json at all"
+        raise LLMError("Authorization failed for token=SUPERSECRET")
+
+
+def test_a_repair_call_raising_llmerror_fails_closed_without_leaking_its_message() -> None:
+    """Regression for Codex#6 (round 21, 2026-09-15): existing coverage
+    exercised an LLMError on the FIRST call
+    (test_llm_error_message_never_reaches_the_reported_finding) and a
+    non-string return on the repair call (the test right above this
+    one), but not the repair call ITSELF raising LLMError - the exact
+    shape a real provider produces when the repair prompt specifically
+    (not just the original one) is rejected, rate-limited, or otherwise
+    fails after a first response that merely failed to parse."""
+    client = _MalformedThenRaisingClient()
+    result = _review(client)
+    assert result.parse_status is ParseStatus.LLM_PARSE_ERROR
+    assert result.repairs == 1
+    assert result.observations.observations == []
+    assert result.error == "LLMError"  # category only, never the message
+    assert result.error is not None
+    assert "SUPERSECRET" not in result.error
+
+    finding = degraded_review_finding(result)
+    assert finding is not None
+    assert "SUPERSECRET" not in finding.reasoning_summary
+
+
 def test_oversized_first_response_is_rejected_without_ever_being_parsed() -> None:
     """Regression for Codex#11 (round 5, 2026-09-12), reproduced exactly as
     reported: valid JSON containing tens of thousands of observations used
