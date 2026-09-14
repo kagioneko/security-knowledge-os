@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `6b15132` (round-15 fixes, **not yet pushed**)
+- Commit: `b572b3c` (round-16 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **212**
-- Tests: **646** items (645 pass, 1 skip = JA-R02)
+- Tests: **655** items (654 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -15,7 +15,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **fifteen rounds**, 2026-09-11 -- 2026-09-14. Rounds 1-2
+  audit), **sixteen rounds**, 2026-09-11 -- 2026-09-14. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -333,8 +333,59 @@ review; regenerate with `git ls-files` after any change.
   `timeout` actually treats `0` as "no timeout", so a real Codex
   invocation ran (and consumed real usage) before being caught and
   killed ~15s in — subsequent testing used a fake `codex`/`agy` shim in
-  a throwaway sandbox instead. A sixteenth round re-reviewing everything
-  through this commit is the next step before push.
+  a throwaway sandbox instead.
+
+  Round 16 (2026-09-14, audited commit `06e3007`): Codex
+  **CHANGES-REQUIRED** again (6 findings), and — for the first time this
+  project ran Antigravity alongside Codex in the SAME round since round
+  5 — Antigravity **independently found the same top two findings**
+  (`SKOS-ADV-16`/`SKOS-ADV-17`), plus two additional LOW/Nit items of its
+  own: 1 HIGH — `_untrusted_directory_stat_reason()` checked only CURRENT
+  write bits (group/other), never OWNERSHIP, so a directory owned by a
+  different, untrusted account but currently mode 0755 (no write bit at
+  all) passed outright even though that owner can chmod it writable or
+  replace its contents at any later time; separately, a symlink ENTRY's
+  own owner was never checked before following it, so an attacker's
+  symlink planted inside a shared sticky directory like `/tmp` (whose
+  sticky bit stops renaming/deleting an entry you don't own, but never
+  stops CREATING a new one) was followed unconditionally; 2 MEDIUM —
+  `_try_parse()`/`run_llm_review()` assumed a pluggable `LLMClient`'s
+  `complete()` always returns a `str` and never raises anything but
+  `LLMError`, so a misbehaving custom adapter returning `None` or
+  raising an unexpected exception escaped as a raw AttributeError/500
+  instead of the documented `LLM_PARSE_ERROR` fail-closed contract; and
+  the round-15 `/answers` lock timeout bounded each INDIVIDUAL wait but
+  not how MANY duplicates could queue on one key, so a slow first
+  assessment plus a worker-pool's worth of duplicates could still stall
+  `/health` for repeated 30-second intervals; 1 MEDIUM (both
+  reviewers, independently) — the round-15 `_has_verdict()` fix matched
+  `PASS`/`CHANGES-REQUIRED` UNANCHORED anywhere in the log, so a
+  reviewer that crashed after merely printing "preflight: PASS" (or
+  quoting `PUBLICATION_MANIFEST.md`'s own round-history prose, which
+  contains those words throughout) would still clear the publication
+  gate; plus Antigravity's own 2 LOW/Nit — `PolicyBlocked` (a
+  defence-in-depth check in `Bm25Retriever`) inherits from plain
+  `Exception`, not `PolicyStop`, so it escaped `build_report()` as a raw
+  HTTP 500 instead of a structured `POLICY_BLOCKED` report; and a TOCTOU
+  concern in `load_corpus()`'s re-enumeration, investigated and found to
+  describe a two-step `validate_tree()`-then-`iter_knowledge_files()`
+  sequence that does not match the current single-pass-over-snapshot
+  implementation (closed by round 10's `snapshot_tree()` design) — no
+  code change made for this one, noted as already mitigated. Codex's
+  remaining 2 LOW findings (`AnswerPatch` opaque-secret retention,
+  dependency hash-pinning) were re-confirmations of round-15's
+  already-accepted, already-documented trade-offs. **5 of 9 distinct
+  findings fixed outright** with regression tests confirmed to fail
+  against the pre-fix code via `git stash`/`git checkout`, the rest
+  re-confirmed-accepted or investigated-and-not-applicable — see
+  `git log` commit messages ("fix round-16 Codex#…" / "fix round-16
+  NIT-ADV-01") for the itemized mapping. A stray `rm -f` while testing
+  finding #4's fix accidentally deleted the round's own real Codex
+  review transcript (`reviews/` is gitignored, unrecoverable) - the
+  findings had already been read and recorded before the file was lost,
+  so nothing substantive is missing, only the raw transcript. A
+  seventeenth round re-reviewing everything through this commit is the
+  next step before push.
 
 ## Tracked files by area
 
@@ -499,6 +550,8 @@ AC-01 .. AC-20: all **done** (`docs/acceptance-criteria.md`).
 | `scripts/run_cross_review.sh` runs the Codex reviewer with `CODEX_SANDBOX=danger-full-access` (bwrap fails on this host's kernel config) - a prompt-injection string in any reviewed file could induce the reviewer to run arbitrary commands or write/exfiltrate outside this repo, not just audit it | accepted, mitigated — round-14 Codex#2, re-confirmed unchanged round-15 Codex#7: a full fix (disposable container/VM, read-only bind mount, no Vault/socket access, restricted network) was discussed with the user and deliberately deferred - it changes how the shared Codex review pipeline runs across every project on the host, needing the host's actual container/VM capabilities checked first. Applied instead: `ulimit`-based CPU-time and max-written-file-size caps scoped to the reviewer process alone (deliberately not a process-count limit, which is enforced per-UID system-wide on Linux and could starve unrelated services running as the same account) |
 | `AnswerPatch` free-text fields accept an opaque, unrecognized-shape value (no known credential pattern matches it) | accepted, documented — round-15 Codex#5: already an intentional, tested limitation (round-7); never reaches the external LLM regardless (round-14 structural anonymization); retained in the in-memory store for the entry's lifetime, same accepted unauthenticated-localhost scope as the store itself |
 | `constraints.txt` pins exact versions but not package hashes - the same version string could still come from an unintended index or a replaced artifact | accepted (documented in `constraints.txt` itself, out of scope for this MVP release process) — round-15 Codex#9 re-confirmed the same trade-off, no new action |
+| `scripts/run_cross_review.sh` and `_scheduled_cross_review.sh` (mitigated round-15) re-confirmed by Codex round-16 with no change requested | accepted, unchanged — round-16 Codex#7 (HIGH) is the same `danger-full-access` risk above, re-confirmed at that severity; no new mitigation was requested or applied this round |
+| Antigravity NIT-ADV-02: possible TOCTOU in `load_corpus()`'s file re-enumeration (a local actor replacing a file with a symlink between `validate_tree()` completing and `iter_knowledge_files()` completing) | investigated, not applicable — round-16: the described two-step sequence does not match `load_corpus()`'s current implementation, which snapshots the ENTIRE knowledge root via a directory-fd no-follow walk (`app/ingestion/snapshot.py`, round 10) BEFORE any validation or file read, then validates and reads each file exactly once from that private, externally-immutable snapshot copy - there is no separate `validate_tree()`-then-`iter_knowledge_files()` sequence on the live tree for a local actor to race. No code change made; revisit if a future refactor reintroduces a two-pass read. |
 
 ## Cross-AI review — status
 
