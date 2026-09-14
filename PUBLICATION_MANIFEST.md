@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `d6dc3e5` (round-18 fixes, **not yet pushed**)
+- Commit: `351fbc2` (round-19 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **213**
-- Tests: **668** items (667 pass, 1 skip = JA-R02)
+- Tests: **672** items (671 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -15,7 +15,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **eighteen rounds**, 2026-09-11 -- 2026-09-14. Rounds 1-2
+  audit), **nineteen rounds**, 2026-09-11 -- 2026-09-14. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -463,7 +463,40 @@ review; regenerate with `git ls-files` after any change.
   occurrences are reported, then reapplying. The remaining 2 (danger-
   full-access, dependency hash-pinning) were re-confirmations of
   already-accepted trade-offs — see `git log` commit messages ("fix
-  round-18 Codex#…") for the itemized mapping. A nineteenth round
+  round-18 Codex#…") for the itemized mapping.
+
+  Round 19 (2026-09-14, audited commit `5cdabb0`): Codex **CHANGES-
+  REQUIRED** again (3 findings, all new): 1 HIGH — `reindex_atomic()`
+  copies/replaces only db_path's MAIN sqlite file; a `-wal`/`-shm`
+  sidecar left by a prior writer (journal_mode is persisted INSIDE the
+  database file itself, so any writer with file access could leave one
+  behind) survives a reindex untouched, and `verify_chunk_hashes()`
+  alone can't catch it — a stale-but-internally-consistent revision is
+  still a real, valid index by that check's own definition, just not
+  the one just published; 2 LOW — `_walk_no_follow()`'s snapshot walk
+  materialized the full directory listing (`list(os.scandir(...))`)
+  before `_MAX_SNAPSHOT_FILES` had any chance to fire, and only FILES
+  (never directories) consumed that budget, so a wide fan-out of empty
+  subdirectories evaded the count limit entirely; and
+  `_is_local_origin()`'s port comparison read the un-guarded
+  `request.url.port`, raising a raw ValueError (-> generic 500 instead
+  of the established 403) for an out-of-range Host port — while
+  verifying that fix, testing also found an adjacent crash one property
+  earlier (`request.url.path`, for an invalid bracketed-IPv6 Host),
+  fixed in the same commit as the same class of bug. **All 3 fixed**,
+  each with a regression test confirmed to fail against the pre-fix
+  code via `git stash` — the WAL fix's test simulates the mismatch by
+  monkeypatching `ChunkRepository.knowledge_revision` to return the old
+  revision on its second in-process call (the documented post-swap
+  check site), deliberately avoiding real-WAL-internals trickery; the
+  snapshot fix adds both an oversized-single-directory and an
+  empty-directory-fanout test; the Host fix covers both the numeric
+  out-of-range port Codex reported and the bracketed-IPv6 case found
+  alongside it (and documents, via a third value deliberately NOT
+  included as a repro, why `Host: localhost:bad` is not exploitable —
+  Starlette's own `_HOST_RE` rejects a non-numeric port before either
+  code path is ever reached). See `git log` commit messages ("fix
+  round-19 Codex#…") for the itemized mapping. A twentieth round
   re-reviewing everything through this commit is the next step before
   push.
 
