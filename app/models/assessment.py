@@ -91,7 +91,13 @@ class CredentialInput(BaseModel):
 class AssessmentInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(max_length=500)
+    # Codex#6 / Antigravity SKOS-ADV-21 (round 17, 2026-09-14), reproduced
+    # exactly as reported: unlike every other free-text field on this
+    # model (system_prompt, developer_prompt below), `name` had no
+    # reject_credential_shapes validator - AssessmentInput(name="AKIA...")
+    # validated and was retained/returned in reports, while the identical
+    # value in system_prompt was correctly rejected.
+    name: Annotated[str, Field(max_length=500), AfterValidator(reject_credential_shapes)]
     system_prompt: (
         Annotated[str, Field(max_length=50_000), AfterValidator(reject_credential_shapes)] | None
     ) = None
