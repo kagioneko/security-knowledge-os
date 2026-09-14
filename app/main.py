@@ -584,8 +584,29 @@ def _is_local_origin(request: Request) -> bool:
             # same way: a malformed Host is exactly as untrusted as one
             # naming a different host outright.
             try:
+                request_hostname = (request.url.hostname or "").lower()
                 request_port = request.url.port
             except ValueError:
+                return False
+            # Codex#2 / Antigravity SKOS-ADV-25 (round 20, 2026-09-15),
+            # reproduced exactly as reported: `hostname not in
+            # _ALLOWED_HOSTS` only checked that Origin's hostname was
+            # SOME allowed loopback alias - it never compared that
+            # hostname against the hostname this REQUEST actually arrived
+            # on (`request.url.hostname`, from Host). Both sides being
+            # independently "some allowed alias" let `localhost`,
+            # `127.0.0.1`, and `::1` silently substitute for each other:
+            # a page served on IPv6 loopback (`Origin: http://[::1]:8000`)
+            # could CSRF this service running on IPv4 loopback at the
+            # same port (`Host: 127.0.0.1:8000`), even though a browser's
+            # own same-origin policy treats those as different origins.
+            # Comparing hostnames for EXACT equality (not "both happen to
+            # be in the allowlist") closes this without weakening what
+            # counts as a trusted alias in the first place - `hostname`
+            # must still pass the allowlist check above too, so a request
+            # can't satisfy this only by making Origin and Host agree on
+            # some UNtrusted hostname.
+            if hostname != request_hostname:
                 return False
             return parts.scheme == request.url.scheme and _effective_port(
                 parts.scheme, port

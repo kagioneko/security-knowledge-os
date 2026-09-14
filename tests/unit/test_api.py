@@ -1132,6 +1132,29 @@ def test_reindex_rejects_a_cross_port_localhost_origin(
     assert resp.status_code == 403
 
 
+def test_reindex_rejects_a_cross_host_same_port_loopback_origin(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#2 / Antigravity SKOS-ADV-25 (round 20,
+    2026-09-15), reproduced exactly as reported: `_is_local_origin` only
+    checked that Origin's hostname was SOME allowed loopback alias
+    (`localhost`/`127.0.0.1`/`::1`/`testserver`) - it never compared that
+    hostname against the hostname the request actually arrived on. A page
+    served on IPv6 loopback could therefore CSRF this service running on
+    IPv4 loopback at the same port: both hostnames independently pass the
+    allowlist, and the port comparison alone can't catch it since the
+    ports genuinely match. A browser's own same-origin policy treats
+    `127.0.0.1` and `[::1]` as different origins even at the same port -
+    this check must too."""
+    monkeypatch.setenv("SKOS_KNOWLEDGE_ROOT", str(REPO / "tests" / "fixtures" / "corpus_alt"))
+    monkeypatch.setenv("SKOS_DB_PATH", str(tmp_path / "idx.sqlite"))
+    resp = client.post(
+        "/v1/knowledge/reindex",
+        headers={"Origin": "http://[::1]:80", "Host": "127.0.0.1:80"},
+    )
+    assert resp.status_code == 403
+
+
 def test_reindex_rejects_a_malformed_origin_with_403_not_500(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
