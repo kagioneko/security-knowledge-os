@@ -819,6 +819,89 @@ def test_chunked_oversized_body_to_a_bodyless_route_is_rejected() -> None:
     assert start["status"] == 413
 
 
+def test_a_flood_of_tiny_frames_within_the_byte_cap_is_still_rejected() -> None:
+    """Regression for Codex#1 (round 17, 2026-09-14), reproduced exactly
+    as reported: `_MaxBodySizeMiddleware` retained every individual
+    `receive()` message dict in a list - a body of at most
+    `_MAX_BODY_BYTES` split into a huge number of tiny frames stayed
+    within the byte cap while that list grew unboundedly (hundreds of MB
+    for a "1 MB" request). `_MAX_BODY_FRAMES` bounds the number of frames
+    the middleware will ever process, independent of the byte count -
+    this test sends one more frame than that cap allows, each carrying 0
+    bytes, so the byte-count check alone would never catch it."""
+    import asyncio
+
+    import app.main as main_module
+
+    scope = {"type": "http", "method": "POST", "path": "/v1/knowledge/reindex", "headers": []}
+    frames_to_send = main_module._MAX_BODY_FRAMES + 1
+    remaining = frames_to_send
+
+    async def fake_receive() -> dict[str, object]:
+        nonlocal remaining
+        remaining -= 1
+        return {"type": "http.request", "body": b"", "more_body": remaining > 0}
+
+    downstream_called = False
+
+    async def downstream_app(scope: object, receive: object, send: object) -> None:
+        nonlocal downstream_called
+        downstream_called = True
+
+    sent: list[dict[str, object]] = []
+
+    async def fake_send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    middleware = main_module._MaxBodySizeMiddleware(downstream_app)
+    asyncio.run(middleware(scope, fake_receive, fake_send))
+
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 413
+    assert not downstream_called
+
+
+def test_many_small_frames_within_the_cap_are_correctly_reassembled() -> None:
+    """Mirror case: a LEGITIMATE multi-frame body (well under both the
+    byte cap and the new frame-count cap) must still be correctly
+    reassembled and delivered to the downstream handler as a single
+    consolidated body - the fix must not just reject floods, it must
+    still work for real chunked uploads."""
+    import asyncio
+
+    import app.main as main_module
+
+    scope = {"type": "http", "method": "POST", "path": "/v1/assessments", "headers": []}
+    parts = [b"chunk-%d;" % i for i in range(50)]
+    expected_body = b"".join(parts)
+    remaining = list(parts)
+
+    async def fake_receive() -> dict[str, object]:
+        chunk = remaining.pop(0)
+        return {"type": "http.request", "body": chunk, "more_body": bool(remaining)}
+
+    received_body = b""
+
+    async def downstream_app(scope: object, receive: object, send: object) -> None:
+        nonlocal received_body
+        message = await receive()  # type: ignore[misc]
+        received_body = message["body"]
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    sent: list[dict[str, object]] = []
+
+    async def fake_send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    middleware = main_module._MaxBodySizeMiddleware(downstream_app)
+    asyncio.run(middleware(scope, fake_receive, fake_send))
+
+    assert received_body == expected_body
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 200
+
+
 def test_reindex_rejects_an_oversized_body_despite_taking_no_body_param(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

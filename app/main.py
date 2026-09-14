@@ -62,6 +62,20 @@ _logger = logging.getLogger(__name__)
 # body regardless of what it deserializes to.
 _MAX_BODY_BYTES = 1_000_000
 
+# Codex#1 (round 17, 2026-09-14), reproduced exactly as reported:
+# `_MaxBodySizeMiddleware` retained every individual `receive()` message
+# dict in `buffered`, one per ASGI frame - `_MAX_BODY_BYTES` bounds total
+# BYTES but not the number of frames a client sends to deliver them. A
+# body of at most 1 MB split into a million one-byte `http.request`
+# frames (each with `more_body=True`) stayed within the byte cap while
+# `buffered` grew to a million small dict objects - hundreds of MB of
+# real memory for a request that "should" cost ~1 MB. Bounding the
+# number of frames this loop will ever process, independent of the byte
+# cap, closes the same class of amplification a flood of ZERO-byte
+# frames would otherwise cause too (0 bytes counted, but still one dict
+# retained and one loop iteration spent per frame).
+_MAX_BODY_FRAMES = 10_000
+
 
 class _MaxBodySizeMiddleware:
     """Raw ASGI middleware: reject a request body over `_MAX_BODY_BYTES`
@@ -130,26 +144,49 @@ class _MaxBodySizeMiddleware:
         # for every request, before the app ever runs, removes that
         # dependency entirely - it works the same whether the client used
         # Content-Length or chunked encoding, and whether or not the
-        # handler underneath ever reads the body. The drained messages are
-        # buffered and replayed through a substitute `receive()` so a
-        # handler that DOES read the body still sees it normally.
-        buffered: list[Any] = []
-        seen = 0
+        # handler underneath ever reads the body.
+        #
+        # Codex#1 (round 17, 2026-09-14), reproduced exactly as reported:
+        # this used to append every individual message dict to a
+        # `buffered` list and replay them one at a time - a body of at
+        # most `_MAX_BODY_BYTES` split into a huge number of tiny frames
+        # stayed within the byte cap while `buffered` grew unboundedly
+        # (see `_MAX_BODY_FRAMES`'s own comment above). Accumulating body
+        # bytes into ONE bounded `bytearray` and replaying a SINGLE
+        # consolidated `http.request` message (any trailing non-request
+        # message, e.g. `http.disconnect`, is preserved and replayed
+        # after it) bounds memory to the body itself, O(1) message
+        # objects, regardless of how many frames the client used to
+        # deliver it. A handler that DOES read the body still sees it
+        # normally, just reassembled into fewer, larger messages.
+        body = bytearray()
+        frame_count = 0
+        trailing_message: dict[str, Any] | None = None
         while True:
             message = await receive()
-            buffered.append(message)
             if message["type"] != "http.request":
+                trailing_message = message
                 break
-            seen += len(message.get("body") or b"")
-            if seen > _MAX_BODY_BYTES:
+            frame_count += 1
+            if frame_count > _MAX_BODY_FRAMES:
+                await self._reject_413(send)
+                return
+            body += message.get("body") or b""
+            if len(body) > _MAX_BODY_BYTES:
                 await self._reject_413(send)
                 return
             if not message.get("more_body", False):
                 break
 
+        replayed: list[dict[str, Any]] = [
+            {"type": "http.request", "body": bytes(body), "more_body": False}
+        ]
+        if trailing_message is not None:
+            replayed.append(trailing_message)
+
         async def _replay_receive() -> Any:
-            if buffered:
-                return buffered.pop(0)
+            if replayed:
+                return replayed.pop(0)
             return await receive()
 
         await self.app(scope, _replay_receive, send)
