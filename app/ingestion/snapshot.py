@@ -110,7 +110,7 @@ def _check_identity_unchanged(scanned: os.stat_result, opened: os.stat_result, w
 
 def _copy_file_no_follow(
     entry: os.DirEntry[str], dir_fd: int, dest: Path, budget: _Budget
-) -> None:
+) -> tuple[int, int, int, int]:
     scanned = entry.stat(follow_symlinks=False)
     fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
     try:
@@ -185,6 +185,11 @@ def _copy_file_no_follow(
             after.st_size,
         ):
             raise SnapshotError(f"{dest.name}: changed while being copied")
+        # Codex#2 / Antigravity SKOS-ADV-30 (round 21, 2026-09-15): the
+        # caller records this alongside every other copied file's - see
+        # its own comment on why a LATER re-check (after the whole
+        # directory, not just this one file's copy) is needed too.
+        return (after.st_ino, after.st_mtime_ns, after.st_ctime_ns, after.st_size)
     finally:
         with contextlib.suppress(OSError):
             os.close(fd)
@@ -203,6 +208,10 @@ def _walk_no_follow(
         )
     dest.mkdir(exist_ok=True)
     before_names: set[str] = set()
+    # Codex#2 / Antigravity SKOS-ADV-30 (round 21, 2026-09-15): see the
+    # rescan below for why each copied FILE's post-copy (ino, mtime_ns,
+    # ctime_ns, size) is recorded here rather than just its name.
+    recorded_files: dict[str, tuple[int, int, int, int]] = {}
     for entry in os.scandir(src_dir_fd):
         before_names.add(entry.name)
         budget.entries += 1
@@ -223,7 +232,9 @@ def _walk_no_follow(
             finally:
                 os.close(child_fd)
         elif entry.is_file(follow_symlinks=False):
-            _copy_file_no_follow(entry, src_dir_fd, dest / entry.name, budget)
+            recorded_files[entry.name] = _copy_file_no_follow(
+                entry, src_dir_fd, dest / entry.name, budget
+            )
         else:
             # Codex#3 (round 12, 2026-09-13), reproduced exactly as
             # reported: a FIFO, socket, or device file replacing a real
@@ -265,11 +276,59 @@ def _walk_no_follow(
     # time) - bounds the work to at most `len(before_names) + 1` entries
     # before raising, regardless of how many more names a concurrent
     # writer adds.
+    #
+    # Codex#2 / Antigravity SKOS-ADV-30 (round 21, 2026-09-15), reproduced
+    # exactly as reported: names-only comparison catches ADDED/REMOVED
+    # entries but not a file whose CONTENT changed in place while a
+    # DIFFERENT file at this same level (or a whole sibling subtree,
+    # recursed into inline, before this loop even reaches its own rescan)
+    # was still being copied - `a.yaml` copied first (old content), then
+    # BOTH `a.yaml` and `b.yaml` rewritten to a new version, then
+    # `b.yaml` copied (new content): no name ever changed, so the
+    # names-only check passed, but the resulting snapshot (a=old, b=new)
+    # never existed on the source tree at any single instant. Re-stating
+    # every copied FILE now too - through this SAME still-open
+    # directory fd, no-follow, so a renamed-in replacement is caught the
+    # same way the original open was protected - and comparing against
+    # the (ino, mtime_ns, ctime_ns, size) recorded right after that
+    # file's own copy finished catches a change any time between then
+    # and this directory's rescan, not just during the file's own
+    # narrow copy window. (A residual window remains between THIS
+    # rescan and the moment the whole multi-level walk finally returns
+    # to the caller - the same class of gap a full snapshot-without-
+    # locking approach can't close without the shared source-update
+    # lock or atomically-switched generation directories noted as the
+    # stronger alternative; re-verifying at every directory LEVEL, as
+    # soon as that level's own copying is done, keeps that residual
+    # window as small as the tree structure allows.)
     remaining = set(before_names)
     for entry in os.scandir(src_dir_fd):
         if entry.name not in remaining:
             raise SnapshotError(f"{display}: directory entries changed while being copied")
         remaining.discard(entry.name)
+        recorded = recorded_files.get(entry.name)
+        if recorded is not None:
+            try:
+                verify_fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=src_dir_fd)
+            except OSError as exc:
+                raise SnapshotError(
+                    f"{display}/{entry.name}: could not be re-verified after being "
+                    f"copied: {exc}"
+                ) from exc
+            try:
+                verify_stat = os.fstat(verify_fd)
+            finally:
+                os.close(verify_fd)
+            if (
+                verify_stat.st_ino,
+                verify_stat.st_mtime_ns,
+                verify_stat.st_ctime_ns,
+                verify_stat.st_size,
+            ) != recorded:
+                raise SnapshotError(
+                    f"{display}/{entry.name}: changed after being copied but before "
+                    "the snapshot finished; refusing to publish a mixed-time snapshot"
+                )
     if remaining:
         raise SnapshotError(f"{display}: directory entries changed while being copied")
 

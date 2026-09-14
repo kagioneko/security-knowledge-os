@@ -208,6 +208,45 @@ def test_rejects_a_directory_whose_entries_changed_during_the_walk(
         snapshot_tree(root)
 
 
+def test_rejects_a_file_mutated_after_being_copied_while_a_sibling_still_copies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#2 / Antigravity SKOS-ADV-30 (round 21,
+    2026-09-15), reproduced exactly as reported: `a.yaml` is copied
+    (old content); while `b.yaml` is still being copied, a concurrent
+    writer rewrites BOTH `a.yaml` and `b.yaml` to a new version. Neither
+    the per-file before/after check (each file's own copy window never
+    saw a change) nor the names-only rescan (no name was added or
+    removed) used to catch this - the resulting snapshot (a=old, b=new)
+    never existed on the source tree at any single instant. Whichever
+    file this test's fake filesystem activity copies FIRST is mutated
+    again immediately after - re-verifying every copied file's metadata
+    at the end of the directory's walk must now catch that, regardless
+    of which of the two is processed first."""
+    import app.ingestion.snapshot as snapshot_module
+
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "a.yaml").write_text("old_a", encoding="utf-8")
+    (root / "b.yaml").write_text("old_b", encoding="utf-8")
+
+    real_copy = snapshot_module._copy_file_no_follow
+    mutated = {"done": False}
+
+    def racy_copy(entry: os.DirEntry[str], dir_fd: int, dest: Path, budget: object):  # type: ignore[no-untyped-def]
+        result = real_copy(entry, dir_fd, dest, budget)
+        if not mutated["done"]:
+            mutated["done"] = True
+            (root / "a.yaml").write_text("new_a", encoding="utf-8")
+            (root / "b.yaml").write_text("new_b", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(snapshot_module, "_copy_file_no_follow", racy_copy)
+
+    with pytest.raises(SnapshotError, match="changed after being copied"):
+        snapshot_tree(root)
+
+
 def test_the_stability_rescan_stops_at_the_first_excess_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
