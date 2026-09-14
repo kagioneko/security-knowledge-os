@@ -150,6 +150,80 @@ def test_classification_flip_fails_closed(
         conn.close()
 
 
+def test_chunk_hash_delimiter_collision_no_longer_bypasses_classification(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex#3 / Antigravity SKOS-ADV-29 (round 21,
+    2026-09-15), reproduced exactly as reported: chunk_content_hash() used
+    to NUL-separate its fields (`value.encode() + b"\\x00"` per field),
+    which is not injective - a NUL byte embedded inside one field's own
+    content (YAML permits it in a quoted scalar) is indistinguishable,
+    once hashed, from the separator NUL between two DIFFERENT fields.
+    Rewriting a confidential chunk's source_ref/classification/category/
+    version so the excess bytes shift into the next field reproduces the
+    EXACT SAME digest under the old scheme, while genuinely rebinding the
+    row from confidential to public - verify_chunk_hashes() used to
+    report this as ALLOWED, a complete silent bypass of the classification
+    gate this hash is the sole integrity guard for."""
+    from app.models.retrieval import chunk_content_hash
+
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+
+    conn = connect(db)
+    try:
+        row = conn.execute(
+            "SELECT chunk_id, knowledge_id, title, section, text FROM chunks WHERE rowid = 1"
+        ).fetchone()
+        # A hash-function-level proof the collision is closed: these two
+        # field tuples used to hash to the IDENTICAL digest.
+        before_hash = chunk_content_hash(
+            chunk_id=row["chunk_id"],
+            knowledge_id=row["knowledge_id"],
+            title=row["title"],
+            source_ref="x\x00public\x00rag-security",
+            classification="confidential",
+            category="agent-security",
+            version="1",
+            section=row["section"],
+            text=row["text"],
+        )
+        after_hash = chunk_content_hash(
+            chunk_id=row["chunk_id"],
+            knowledge_id=row["knowledge_id"],
+            title=row["title"],
+            source_ref="x",
+            classification="public",
+            category="rag-security",
+            version="\x00".join(["confidential", "agent-security", "1"]),
+            section=row["section"],
+            text=row["text"],
+        )
+        assert before_hash != after_hash
+
+        # Legitimately store the "before" shape (a real confidential chunk
+        # with an embedded-NUL source_ref), then apply the attack: rebind
+        # classification to public, shifting the excess NUL-separated
+        # bytes into `version`, WITHOUT touching the stored hash - exactly
+        # what an attacker exploiting the old collision would do.
+        conn.execute(
+            "UPDATE chunks SET source_ref = ?, classification = ?, category = ?, "
+            "version = ?, hash = ? WHERE rowid = 1",
+            ("x\x00public\x00rag-security", "confidential", "agent-security", "1", before_hash),
+        )
+        conn.commit()
+        conn.execute(
+            "UPDATE chunks SET source_ref = ?, classification = ?, category = ?, "
+            "version = ? WHERE rowid = 1",
+            ("x", "public", "rag-security", "\x00".join(["confidential", "agent-security", "1"])),
+        )
+        conn.commit()
+
+        assert verify_chunk_hashes(conn).outcome is PolicyOutcome.POLICY_BLOCKED
+    finally:
+        conn.close()
+
+
 def test_missing_revision_meta_fails_closed(tmp_path: Path, corpus_root: Path) -> None:
     db = tmp_path / "idx.sqlite"
     build_index(corpus_root, db)
