@@ -71,7 +71,13 @@ def test_reindex_refuses_a_state_directory_not_owned_by_this_process(
 ) -> None:
     """Same protection as above, for the ownership half of the check -
     simulated via monkeypatching os.geteuid() since a real ownership
-    mismatch needs a second local account."""
+    mismatch needs a second local account. Forging our OWN euid also
+    makes every EXISTING ancestor look foreign-owned, so round-17's
+    earlier existing_ancestors_untrusted_reason() pre-check (Codex#3 /
+    SKOS-ADV-18) now catches this before untrusted_state_dir_reason()'s
+    own later check on state_dir itself ever runs - both are ownership
+    rejections, just from different call sites, so the assertion checks
+    for "owned" generically rather than either one's exact wording."""
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     db = state_dir / "idx.sqlite"
@@ -83,8 +89,60 @@ def test_reindex_refuses_a_state_directory_not_owned_by_this_process(
 
     assert not report.ok
     assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
-    assert "not owned" in " ".join(report.decision.reasons)
+    assert "owned" in " ".join(report.decision.reasons)
     assert not db.exists()
+
+
+def test_reindex_does_not_create_directories_through_an_untrusted_symlink_ancestor(
+    tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#3 / Antigravity SKOS-ADV-18 (round 17,
+    2026-09-14), reproduced exactly as reported: `.parent.mkdir(parents=
+    True, exist_ok=True)` resolves and creates through an EXISTING
+    symlink exactly like a normal `mkdir -p` would - an attacker-owned
+    symlink ancestor got a directory CREATED on the other side of it
+    before the trust check ever ran and refused to WRITE there. Fail-
+    closed on the write, but not on the side effect of having created a
+    directory outside the intended lexical path at all - this test's
+    real assertion is that `victim/new` is never created, not just that
+    reindex_atomic() eventually reports POLICY_BLOCKED.
+
+    Only the symlink's own `.lstat()` result is faked to look foreign-
+    owned (leaving `os.geteuid()` and every other path's real stat
+    untouched) - see the identical technique and its own rationale in
+    tests/unit/test_db.py's sibling test for connect()."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    os.chmod(victim, 0o700)
+
+    link = tmp_path / "skos-link"
+    link.symlink_to(victim, target_is_directory=True)
+
+    real_lstat = Path.lstat
+
+    class _FakeForeignLstat:
+        def __init__(self, real: os.stat_result) -> None:
+            self.st_uid = real.st_uid + 12345
+            self.st_mode = real.st_mode
+            self.st_gid = real.st_gid
+
+    def _fake_lstat(self: Path, *args: object, **kwargs: object) -> object:
+        result = real_lstat(self, *args, **kwargs)
+        if self == link:
+            return _FakeForeignLstat(result)
+        return result
+
+    monkeypatch.setattr(Path, "lstat", _fake_lstat)
+
+    db = link / "new" / "index.sqlite"
+    report = reindex_atomic(corpus_alt_root, db)
+
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert not (victim / "new").exists(), (
+        "reindex_atomic() must not create ANY directory through an untrusted symlink "
+        "ancestor, even one it ultimately refuses to write into"
+    )
 
 
 def test_reindex_replaces_and_reports_old_revision(tmp_path: Path, corpus_alt_root: Path) -> None:

@@ -201,11 +201,40 @@ def untrusted_ancestor_chain_reason(path: Path) -> str | None:
     return reason
 
 
+def existing_ancestors_untrusted_reason(path: Path) -> str | None:
+    """Codex#3 / Antigravity SKOS-ADV-18 (round 17, 2026-09-14),
+    reproduced exactly as reported: `connect()`/`reindex_atomic()` called
+    `path.parent.mkdir(parents=True, exist_ok=True)` to create any
+    missing ancestor directories BEFORE `untrusted_state_dir_reason()`
+    ever ran - `mkdir(parents=True)` resolves and creates through an
+    EXISTING symlink exactly like a normal `mkdir -p` would, so an
+    attacker-owned `/tmp/skos-link -> /home/victim` with a configured db
+    path of `/tmp/skos-link/new/index.sqlite` got `/home/victim/new`
+    CREATED before the later trust check ever ran and refused to WRITE
+    there - fail-closed on the write, but not on the side effect of
+    having created a directory outside the intended lexical path at all.
+
+    Callers use this to validate whatever CURRENTLY EXISTS along `path`'s
+    ancestor chain is trustworthy BEFORE calling `mkdir(parents=True,
+    exist_ok=True)` to create the rest - unlike
+    `untrusted_ancestor_chain_reason()` above, a component that does not
+    exist YET is not a failure here (there is nothing there yet for an
+    attacker to have planted), it simply ends the walk at that boundary;
+    everything that DOES already exist is still checked exactly the same
+    way (ownership, write bits, symlink-entry ownership).
+    """
+    components = [p for p in path.absolute().parts[1:] if p != ""]
+    _, reason = _walk_lexical_ancestors(
+        components[:-1], origin=path, hops=0, stop_at_missing=True
+    )
+    return reason
+
+
 _MAX_SYMLINK_HOPS = 40  # matches a typical kernel ELOOP bound
 
 
 def _walk_lexical_ancestors(
-    components: list[str], *, origin: Path, hops: int
+    components: list[str], *, origin: Path, hops: int, stop_at_missing: bool = False
 ) -> tuple[Path, str | None]:
     """Walk `components` (absolute, from the filesystem root) one entry at
     a time using `lstat` - never `.resolve()` - checking every directory
@@ -217,10 +246,15 @@ def _walk_lexical_ancestors(
     passes the check; its target's own components are then walked the
     same way, recursively, bounded by `_MAX_SYMLINK_HOPS` the same way the
     kernel bounds a resolution loop (ELOOP). A component that cannot be
-    stat'd (including "does not exist yet") fails CLOSED, matching
-    `_untrusted_directory_stat_reason`'s own OSError handling below -
-    returning None here would let an unverifiable/about-to-be-created
-    ancestor pass silently.
+    stat'd fails CLOSED, matching `_untrusted_directory_stat_reason`'s own
+    OSError handling below - returning None here would let an
+    unverifiable ancestor pass silently - UNLESS `stop_at_missing` is set
+    and the failure is specifically "does not exist yet"
+    (`FileNotFoundError`), in which case the walk stops cleanly at that
+    boundary instead of failing (see `existing_ancestors_untrusted_reason`
+    above for why: nothing exists there yet for an attacker to have
+    planted). Any OTHER stat failure (permission denied, not a directory,
+    ...) still fails closed even with `stop_at_missing` set.
     """
     if hops > _MAX_SYMLINK_HOPS:
         return Path("/"), f"too many levels of symbolic links resolving {origin}"
@@ -234,6 +268,10 @@ def _walk_lexical_ancestors(
         candidate = current / name
         try:
             st = candidate.lstat()
+        except FileNotFoundError as exc:
+            if stop_at_missing:
+                return current, None
+            return candidate, f"could not verify ownership/permissions of {candidate}: {exc}"
         except OSError as exc:
             return candidate, f"could not verify ownership/permissions of {candidate}: {exc}"
         if stat.S_ISLNK(st.st_mode):
@@ -263,7 +301,7 @@ def _walk_lexical_ancestors(
             else:
                 target_components = [p for p in (current / link_target).parts[1:] if p != ""]
             resolved, reason = _walk_lexical_ancestors(
-                target_components, origin=origin, hops=hops + 1
+                target_components, origin=origin, hops=hops + 1, stop_at_missing=stop_at_missing
             )
             if reason is not None:
                 return resolved, reason
@@ -448,6 +486,21 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
         # non-directory) is ever in that spot, the open itself fails
         # instead of chmod silently following it.
         parent = Path(db_path).parent
+        # Codex#3 / Antigravity SKOS-ADV-18 (round 17, 2026-09-14),
+        # reproduced exactly as reported: `parent.parent.mkdir(parents=
+        # True, exist_ok=True)` resolves and creates through an EXISTING
+        # symlink exactly like a normal `mkdir -p` would - an attacker-
+        # owned `/tmp/skos-link -> /home/victim` with db_path configured
+        # as `/tmp/skos-link/new/index.sqlite` got `/home/victim/new`
+        # CREATED before `untrusted_state_dir_reason()` below ever ran and
+        # refused to WRITE there. Fail-closed on the write, but not on the
+        # side effect of having created a directory outside the intended
+        # lexical path. Validating whatever currently EXISTS along the
+        # ancestor chain first - before creating anything - closes this:
+        # a pre-planted symlink is caught here, before mkdir ever touches it.
+        untrusted = existing_ancestors_untrusted_reason(parent)
+        if untrusted is not None:
+            raise UntrustedStateDirectoryError(untrusted)
         parent.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.mkdir(parent, 0o700)

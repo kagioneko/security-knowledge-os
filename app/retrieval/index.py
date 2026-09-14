@@ -30,6 +30,7 @@ from app.storage.db import (
     FTS5Unavailable,
     UntrustedStateDirectoryError,
     connect,
+    existing_ancestors_untrusted_reason,
     open_no_follow,
     untrusted_state_dir_reason,
     verify_application_id,
@@ -247,6 +248,21 @@ def reindex_atomic(
         # version of this same bug (Codex#2, round 15): atomic `os.mkdir`
         # (EEXIST for a symlink too - no exist_ok to swallow that) and
         # chmod only ever through an fd opened O_DIRECTORY|O_NOFOLLOW.
+        #
+        # Codex#3 / Antigravity SKOS-ADV-18 (round 17, 2026-09-14),
+        # reproduced exactly as reported: `.parent.mkdir(parents=True,
+        # exist_ok=True)` resolves and creates through an EXISTING
+        # symlink exactly like a normal `mkdir -p` would - an attacker-
+        # owned symlink ancestor got a directory CREATED through it
+        # before the trust check below ever ran and refused to WRITE
+        # there. Validating whatever currently EXISTS along the ancestor
+        # chain first - before creating anything - catches a pre-planted
+        # symlink here, before mkdir ever touches it.
+        untrusted = existing_ancestors_untrusted_reason(db_path.parent)
+        if untrusted is not None:
+            return ReindexReport(
+                decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", untrusted)
+            )
         db_path.parent.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.mkdir(db_path.parent, 0o700)
