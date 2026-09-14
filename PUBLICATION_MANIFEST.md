@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `4423f19` (round-20 fixes, **not yet pushed**)
+- Commit: `83a58ef` (round-21 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **213**
-- Tests: **676** items (675 pass, 1 skip = JA-R02)
+- Tests: **682** items (681 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -15,7 +15,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **twenty rounds**, 2026-09-11 -- 2026-09-15. Rounds 1-2
+  audit), **twenty-one rounds**, 2026-09-11 -- 2026-09-15. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -528,9 +528,48 @@ review; regenerate with `git ls-files` after any change.
   to flood the second scan and counts how many entries are actually
   consumed before aborting (10,000 pre-fix, 1 post-fix); the symlink-loop
   fix's test creates a root that is a symlink to itself. See `git log`
-  commit messages ("fix round-20 Codex#…") for the itemized mapping. A
-  twenty-first round re-reviewing everything through this commit is the
-  next step before push.
+  commit messages ("fix round-20 Codex#…") for the itemized mapping.
+
+  Round 21 (2026-09-15, audited commit `31d5fed`): Codex **CHANGES-
+  REQUIRED** again (6 findings, all new) and Antigravity independently
+  found 4 of them (`SKOS-ADV-29`..`-32`; the other 2 are LOW/Nit,
+  Codex-only) — 3 MEDIUM (Antigravity rated the first as HIGH; treated
+  as the higher severity here): chunk_content_hash() NUL-separated its
+  fields, which is not injective - an embedded NUL inside one field's
+  own content (YAML permits it in a quoted scalar) is indistinguishable
+  from the separator between two DIFFERENT fields, so a local attacker
+  with write access to the index file could rebind a CONFIDENTIAL
+  chunk's classification to `public` while shifting the excess bytes
+  into an adjacent field, producing the EXACT SAME hash and a complete,
+  silent bypass of the classification gate; the snapshot walk's
+  per-file before/after check and names-only rescan together still
+  missed a file mutated in place AFTER being copied while a sibling (or
+  a whole sibling subtree) was still being processed, producing a
+  composite snapshot state that never existed on the source tree at any
+  single instant; and connect() treated "no tables/views" as sufficient
+  proof a database was safe to claim as fresh, without checking whether
+  its application_id was already a foreign, nonzero value stamped by
+  some OTHER application before it ever created a table. 3 LOW — a
+  non-text (BLOB) stored `knowledge_revision` value could crash
+  `reindex_atomic()` with a raw Pydantic ValidationError, confirmed by
+  this fix's own regression test to happen AFTER a successful publish
+  (misrepresenting success as failure); round 20's connection-closing
+  fix only covered setup steps from the has_existing_content check
+  onward, leaving the identity-verification and FTS5-probe steps just
+  above it still able to leak the connection on an unanticipated
+  failure; and a repair-call-raises-LLMError shape (distinct from both
+  already-covered repair-call cases) lacked test coverage, closed with
+  a test alone since the existing shared code path already handled it
+  correctly. **All 6 addressed**, each with a regression test (the
+  Codex#6 coverage gap needed a test only, no source change; the other
+  5 confirmed failing against the pre-fix code via `git stash` and
+  passing post-fix). Changing the chunk-hash encoding invalidates any
+  previously-built index (no migration path; this project has never
+  shipped a released index, so only a local `var/index.sqlite` dev
+  artifact needed rebuilding). See `git log` commit messages ("fix
+  round-21 Codex#…") for the itemized mapping. A twenty-second round
+  re-reviewing everything through this commit is the next step before
+  push.
 
 ## Tracked files by area
 
