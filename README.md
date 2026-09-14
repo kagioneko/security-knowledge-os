@@ -72,7 +72,7 @@ treated as data, never as a control instruction. Details in
 | **M4 — LLM Adapter + Reviewer** | done | `app/llm/{base,mock,anthropic_client,factory}.py`, `app/models/{reviewer_output,llm_io}.py`, `app/reviewer/{llm_review,questions}.py`, `assess()` full, `scripts/assess.py` |
 | **M5 — Safe Test + Human Gate** | done | `app/models/policy_outcome.py`, `app/policy/{human_gate,knowledge_guard,safe_test}.py`, `app/storage/integrity.py`, `safe_tests/**` (4 templates), `scripts/validate_safe_tests.py` |
 | **M6 — Orchestrator + CLI + API** | done | `app/models/report.py`, `app/reviewer/report.py`, `app/cli.py` (`skos`), `app/main.py` (FastAPI), `app/retrieval/index.py::reindex_atomic` |
-| **M7 — Fixtures + Evaluation + starter KUs** | done | `knowledge/public/**` (13 KUs), `tests/fixtures/assessments/{safe,vulnerable,unknown}/`, `app/eval/metrics.py`, `scripts/evaluate.py`, JA retrieval (trigram) |
+| **M7 — Fixtures + Evaluation + starter KUs** | done | `knowledge/public/**` (14 KUs), `tests/fixtures/assessments/{safe,vulnerable,unknown}/`, `app/eval/metrics.py`, `scripts/evaluate.py`, JA retrieval (trigram) |
 | **M8 — Docs + hardening** | done | Security disclaimer (AC-15–18), KU `provenance` schema, `docs/{attribution,threat-model,architecture}.md`, `sbom.json`, `scripts/{secret_scan,generate_sbom,preflight}.py` |
 
 ## Quickstart (M1)
@@ -94,7 +94,7 @@ python3.12 -m venv .venv
 
 # Run an assessment (provider=none by default: the deterministic engine does the work)
 .venv/bin/skos assess tests/fixtures/assessments/V-001-indirect-injection-auto-email.yaml
-.venv/bin/skos test          # run all 12 fixtures as a smoke test
+.venv/bin/skos test          # run all 14 fixtures as a smoke test
 
 # Rebuild the FTS index (atomic + fail-closed; never touches knowledge content)
 .venv/bin/skos reindex knowledge --db var/index.sqlite
@@ -117,7 +117,7 @@ unit carries `provenance` (source title, URL, version, licence, derivation
 status, last-verified date). See `docs/knowledge-corpus.md` and
 `docs/attribution.md`.
 
-**Internal fixture evaluation** (`scripts/evaluate.py`, 12 artificial fixtures ×
+**Internal fixture evaluation** (`scripts/evaluate.py`, 14 artificial fixtures ×
 14 indexed KUs):
 
 ```

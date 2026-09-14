@@ -427,6 +427,80 @@ def _no_stale_license_undecided_text() -> bool:
     return ok
 
 
+# Codex#5 (round 18, 2026-09-14), reproduced exactly as reported: README.md,
+# REVIEW_PACKAGE.md, and docs/acceptance-criteria.md each separately state the
+# fixture count and/or public-KU count in prose, and drifted out of sync with
+# reality (12 fixtures claimed, 14 present; 13 KUs claimed, 14 present) -
+# unlike PUBLICATION_MANIFEST.md's own counts (`_publication_manifest_
+# matches_reality()` above), nothing checked these. Each entry below is
+# (relative path, regex with exactly one count group, human label, "fixtures"
+# or "kus" - which ground-truth number that group must equal). One regex per
+# occurrence rather than one shared pattern: each location phrases the count
+# differently in prose, so a single pattern would miss most of them.
+_DOC_COUNT_ASSERTIONS: list[tuple[str, str, str, str]] = [
+    ("README.md", r"\((\d+) KUs\)", "M7 milestone row", "kus"),
+    ("README.md", r"run all (\d+) fixtures as a smoke test", "quickstart `skos test`", "fixtures"),
+    ("README.md", r"(\d+) artificial fixtures", "fixture evaluation intro", "fixtures"),
+    (
+        "README.md",
+        r"artificial fixtures ×\s*\n(\d+) indexed KUs",
+        "fixture evaluation intro",
+        "kus",
+    ),
+    ("REVIEW_PACKAGE.md", r"All (\d+) shipped Knowledge Units", "§8 classification note", "kus"),
+    ("REVIEW_PACKAGE.md", r"fine for (\d+) KUs", "§9 known-limitations table", "kus"),
+    (
+        "docs/acceptance-criteria.md",
+        r"All (\d+) fixtures process end to end",
+        "AC-04",
+        "fixtures",
+    ),
+    (
+        "docs/acceptance-criteria.md",
+        r"over the (\d+) labelled fixtures",
+        "§24 heading",
+        "fixtures",
+    ),
+    (
+        "docs/acceptance-criteria.md",
+        r"labelled fixtures \+ (\d+) indexed KUs",
+        "§24 heading",
+        "kus",
+    ),
+]
+
+
+def _actual_fixture_and_ku_counts(root: Path) -> tuple[int, int]:
+    fixtures = len(list((root / "tests" / "fixtures" / "assessments").rglob("*.yaml")))
+    kus = len(list((root / "knowledge" / "public").rglob("KU-*.md")))
+    return fixtures, kus
+
+
+def _publication_docs_counts_match_reality() -> bool:
+    actual_fixtures, actual_kus = _actual_fixture_and_ku_counts(ROOT)
+    expected = {"fixtures": actual_fixtures, "kus": actual_kus}
+    mismatches = []
+    for rel, pattern, label, kind in _DOC_COUNT_ASSERTIONS:
+        path = ROOT / rel
+        if not path.exists():
+            mismatches.append(f"{rel} ({label}): file missing")
+            continue
+        match = re.search(pattern, path.read_text(encoding="utf-8"))
+        if match is None:
+            mismatches.append(f"{rel} ({label}): pattern not found - wording changed?")
+            continue
+        claimed = int(match.group(1))
+        if claimed != expected[kind]:
+            mismatches.append(
+                f"{rel} ({label}): says {claimed}, actual {kind} count is {expected[kind]}"
+            )
+    ok = not mismatches
+    print(f"[{'ok ' if ok else 'FAIL'}] publication docs' fixture/KU counts match reality")
+    for m in mismatches:
+        print(f"    {m}")
+    return ok
+
+
 def _quickstart_install_command_installs_every_extra() -> bool:
     """Codex#9 (round 11, 2026-09-13), reproduced exactly as reported: the
     documented quickstart command `pip install -e ".[dev]"` does not
@@ -564,6 +638,7 @@ def main() -> int:
         _constraints_pins_are_complete(),
         _publication_manifest_matches_reality(),
         _manifest_area_counts_match_reality(),
+        _publication_docs_counts_match_reality(),
         _no_stale_license_undecided_text(),
         _quickstart_install_command_installs_every_extra(),
     ]

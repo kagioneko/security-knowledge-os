@@ -133,7 +133,7 @@ secret/          OUTSIDE the repository. Never indexed, never sent to an LLM.
 - Retrieval filters by `is_retrievable(classification, mode, allow_confidential)`
   in SQL **and** re-checks each returned chunk (defence in depth); a leak raises
   `PolicyBlocked`.
-- All 13 shipped Knowledge Units are `classification: public`.
+- All 14 shipped Knowledge Units are `classification: public`.
 - `PolicyOutcome` enum: `ALLOWED` / `HUMAN_APPROVAL_REQUIRED` / `POLICY_BLOCKED` /
   `READ_ONLY_VIOLATION` (typed, never a bare string).
 
@@ -148,7 +148,7 @@ secret/          OUTSIDE the repository. Never indexed, never sent to an LLM.
 | `retrieval/hybrid.py` | thin BM25 wrapper; embeddings / reranker are future work |
 | JA-R02 (cross-language retrieval) | out of MVP scope; test skipped |
 | Update Pack / Pack Manager | not in this codebase (M9-M10, separate track); the ZIP-import attack surface it introduces is future work |
-| trigram tokenizer | substring matching; can over-retrieve on a large corpus (fine for 13 KUs) |
+| trigram tokenizer | substring matching; can over-retrieve on a large corpus (fine for 14 KUs) |
 
 ## 10. How to run
 
