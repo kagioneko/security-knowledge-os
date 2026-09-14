@@ -722,6 +722,34 @@ def test_reindex_fails_closed_when_the_existing_index_is_corrupt(
     assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
 
 
+def test_reindex_fails_closed_on_a_non_text_stored_revision(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex#4 / Antigravity SKOS-ADV-32 (round 21,
+    2026-09-15), reproduced exactly as reported: `meta.value` is a
+    TEXT-affinity column, but a BLOB literal bypasses that affinity and is
+    stored (and read back) as raw `bytes`. That bytes value used to flow
+    through `_current_revision()` into `old_revision` untouched and only
+    surfaced much later as a raw, uncaught Pydantic `ValidationError` when
+    constructing the final `ReindexReport` - potentially AFTER a
+    successful publish, misrepresenting success as a crash."""
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    assert good.ok
+
+    conn = connect(db)
+    conn.execute("UPDATE meta SET value = X'FF' WHERE key = 'knowledge_revision'")
+    conn.commit()
+    conn.close()
+
+    report = reindex_atomic(corpus_alt_root, db)  # must not raise
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    # the existing (corrupted-metadata) index was never touched - this
+    # function never got far enough to build or swap anything.
+    assert _revision(db) == b"\xff"
+
+
 def test_reindex_converts_an_unexpected_ingestion_valueerror_to_policy_blocked(
     tmp_path: Path, corpus_alt_root: Path
 ) -> None:

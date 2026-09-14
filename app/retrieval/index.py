@@ -177,7 +177,32 @@ def _current_revision(db_path: Path) -> str | None:
         # on to atomically replace that unrelated file's content entirely.
         # verify_application_id() catches this before that decision is made.
         verify_application_id(conn, db_path)
-        return ChunkRepository(conn).knowledge_revision()
+        revision = ChunkRepository(conn).knowledge_revision()
+        # Codex#4 / Antigravity SKOS-ADV-32 (round 21, 2026-09-15),
+        # reproduced exactly as reported: `meta.value` is a TEXT-affinity
+        # column, but SQLite's type affinity only converts values it CAN
+        # convert - a BLOB literal (`UPDATE meta SET value=X'FF' WHERE
+        # key='knowledge_revision'`, corruption or a local attacker with
+        # write access to the index file) is stored and read back as raw
+        # `bytes`, even though `knowledge_revision()`'s return type says
+        # `str | None`. That bytes value used to flow all the way through
+        # `_current_revision()` into `old_revision` untouched, past every
+        # try/except in this function, and only blew up much later as a
+        # raw, uncaught Pydantic `ValidationError` when constructing the
+        # final `ReindexReport(old_revision=old_revision, ...)` -
+        # potentially AFTER a successful publish and backup cleanup, so
+        # the crash misrepresented a successful reindex as a failure to
+        # any caller. Rejecting a non-str revision HERE, as a ValueError -
+        # already caught by this function's own caller just below,
+        # converting it to a clean POLICY_BLOCKED report before any build
+        # or swap ever begins - fails closed at the earliest possible
+        # point instead of leaving a poisoned value to detonate later.
+        if revision is not None and not isinstance(revision, str):
+            raise ValueError(
+                f"{db_path}: stored knowledge_revision is not text (got "
+                f"{type(revision).__name__}); refusing to trust this index"
+            )
+        return revision
     finally:
         conn.close()
 
