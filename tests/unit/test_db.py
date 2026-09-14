@@ -263,6 +263,49 @@ def test_connect_rejects_a_schema_empty_database_with_a_foreign_application_id(
         check.close()
 
 
+def test_connect_closes_the_connection_on_an_unanticipated_post_connect_setup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#5 (round 21, 2026-09-15), reproduced exactly as
+    reported: the round-20 fix wrapped every write-path setup step from
+    the has_existing_content check ONWARD in a single try/except that
+    closes `conn` on any failure - but the identity-verification
+    `os.stat(opened_path)` call (and the `_has_fts5()` probe) just above
+    it were still OUTSIDE that guard, each only closing `conn` on the ONE
+    failure shape it anticipated by name. An unrelated, unanticipated
+    OSError from `os.stat(opened_path)` itself - the file vanishing
+    between `sqlite3.connect()` and this stat, say - propagated with
+    `conn` never closed."""
+    import sqlite3
+
+    import app.storage.db as db_module
+
+    db_path = tmp_path / "idx.sqlite"
+    real_stat = os.stat
+    real_connect = db_module.sqlite3.connect
+    connections: list[sqlite3.Connection] = []
+
+    def spy_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        conn = real_connect(*args, **kwargs)  # type: ignore[arg-type]
+        connections.append(conn)
+        return conn
+
+    def faulty_stat(path: object, *a: object, **kw: object) -> os.stat_result:
+        if str(path).endswith("idx.sqlite"):
+            raise OSError("simulated: vanished between connect() and identity check")
+        return real_stat(path, *a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(db_module.sqlite3, "connect", spy_connect)
+    monkeypatch.setattr(db_module.os, "stat", faulty_stat)
+
+    with pytest.raises(OSError, match="simulated"):
+        connect(db_path)
+
+    assert len(connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        connections[0].execute("SELECT 1")  # a closed connection raises on use
+
+
 def test_untrusted_ancestor_chain_flags_a_world_writable_ancestor_without_sticky(
     tmp_path: Path,
 ) -> None:

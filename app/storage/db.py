@@ -571,34 +571,46 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
-    if str(db_path) != ":memory:":
-        opened_path = conn.execute("PRAGMA database_list").fetchone()[2]
-        post_stat = os.stat(opened_path)
-        post_identity = (post_stat.st_dev, post_stat.st_ino)
-        if pre_identity != post_identity:
-            conn.close()
-            raise ForeignDatabaseError(
-                f"{db_path}: opened a different file than the one just verified "
-                "(possible symlink/file substitution between check and use)"
-            )
-    if not _has_fts5(conn):
-        conn.close()
-        raise FTS5Unavailable(
-            "SQLite FTS5 is required but not available in this Python build"
-        )
-
     # Codex#1 / Antigravity SKOS-ADV-26 (round 20, 2026-09-15): "close the
     # connection on every setup exception" - everything from here through
     # `conn.executescript(SCHEMA)` below used to leave `conn` open on any
-    # exception OTHER than the two explicitly-caught cases above and
-    # ForeignDatabaseError specifically (e.g. a locked file raising
-    # `sqlite3.OperationalError` out of the SELECT/PRAGMA calls below, or
-    # a corrupt/non-sqlite file raising `sqlite3.DatabaseError`) - a leaked
-    # open connection/file descriptor on ANY setup failure, not just the
-    # ones this function anticipated by name. A single try/except around
-    # the whole remaining write-path setup guarantees `conn` is always
-    # closed before a setup exception of any kind propagates.
+    # exception the code didn't anticipate by name (e.g. a locked file
+    # raising `sqlite3.OperationalError` out of a SELECT/PRAGMA call, or a
+    # corrupt/non-sqlite file raising `sqlite3.DatabaseError`).
+    #
+    # Codex#5 (round 21, 2026-09-15), reproduced exactly as reported: the
+    # round-20 fix only wrapped the has_existing_content check ONWARD -
+    # the identity-verification `os.stat(opened_path)` call and the
+    # `_has_fts5()` probe just above it (both added in earlier rounds,
+    # each with their OWN explicit `conn.close()` before their OWN
+    # anticipated raise) were still OUTSIDE any try/except: an unrelated,
+    # unanticipated OSError from `os.stat(opened_path)` itself (the file
+    # vanishing between connect() and this stat, say) propagated with
+    # `conn` never closed. Moving the try to start immediately after
+    # `sqlite3.connect()` covers the identity check and the FTS5 probe
+    # too - closing `conn` a second time (via the explicit closes those
+    # two checks already perform on their own anticipated failure) is a
+    # documented no-op in sqlite3, so nothing needs to change about them;
+    # this is now the single guarantee that ANY exception, anticipated by
+    # name or not, from ANY setup step after connect() closes `conn`
+    # before propagating.
     try:
+        if str(db_path) != ":memory:":
+            opened_path = conn.execute("PRAGMA database_list").fetchone()[2]
+            post_stat = os.stat(opened_path)
+            post_identity = (post_stat.st_dev, post_stat.st_ino)
+            if pre_identity != post_identity:
+                conn.close()
+                raise ForeignDatabaseError(
+                    f"{db_path}: opened a different file than the one just verified "
+                    "(possible symlink/file substitution between check and use)"
+                )
+        if not _has_fts5(conn):
+            conn.close()
+            raise FTS5Unavailable(
+                "SQLite FTS5 is required but not available in this Python build"
+            )
+
         has_existing_content = (
             conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') LIMIT 1"
