@@ -191,6 +191,57 @@ def test_rejects_a_directory_whose_entries_changed_during_the_walk(
         snapshot_tree(root)
 
 
+def test_the_stability_rescan_stops_at_the_first_excess_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#3 / Antigravity SKOS-ADV-27 (round 20,
+    2026-09-15), reproduced exactly as reported: unlike the streamed FIRST
+    scan (which checks `_MAX_SNAPSHOT_ENTRIES` per entry as it iterates
+    `os.scandir()` directly), the second "did anything change" rescan
+    used to build the full `after_names` set with a set comprehension -
+    consuming every name a concurrent writer added to the source
+    directory before ever comparing the result to `before_names`.
+    Instrumenting `os.scandir()`'s SECOND call (the rescan) to yield a
+    flood of names shows the fix consumes only the first one outside
+    `before_names` before aborting, instead of exhausting the whole
+    flood first."""
+    import app.ingestion.snapshot as snapshot_module
+
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "a.md").write_text("a", encoding="utf-8")
+    (root / "b.md").write_text("b", encoding="utf-8")
+
+    class _FakeEntry:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    real_scandir = os.scandir
+    calls = {"n": 0}
+    consumed = {"n": 0}
+
+    def flood(dir_fd: int):  # type: ignore[no-untyped-def]
+        for i in range(10_000):
+            consumed["n"] += 1
+            yield _FakeEntry(f"flood-{i}.md")
+
+    def fake_scandir(dir_fd: int):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return flood(dir_fd)
+        return real_scandir(dir_fd)
+
+    monkeypatch.setattr(snapshot_module.os, "scandir", fake_scandir)
+
+    with pytest.raises(SnapshotError, match="directory entries changed"):
+        snapshot_tree(root)
+
+    assert consumed["n"] <= 3, (
+        f"rescan consumed {consumed['n']} entries out of a 10,000-entry flood; "
+        "should abort at the first one outside before_names"
+    )
+
+
 def test_snapshot_is_a_private_copy_immune_to_later_source_mutation(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()

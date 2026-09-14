@@ -249,8 +249,28 @@ def _walk_no_follow(
     # directory fd after the loop and refusing to publish on any
     # difference at least surfaces that the source tree was not quiescent
     # during the copy.
-    after_names = {entry.name for entry in os.scandir(src_dir_fd)}
-    if before_names != after_names:
+    #
+    # Codex#3 / Antigravity SKOS-ADV-27 (round 20, 2026-09-15), reproduced
+    # exactly as reported: unlike the FIRST scan above (which streams
+    # `os.scandir()` directly and checks `_MAX_SNAPSHOT_ENTRIES` per
+    # entry), this rescan used to build the full `after_names` set with a
+    # set comprehension before ever comparing it to `before_names` - a
+    # concurrent writer that floods the source directory with far more
+    # names than `_MAX_SNAPSHOT_ENTRIES` while the copy is in progress
+    # made this second scan allocate unboundedly before the mismatch was
+    # ever detected. Streaming this comparison the same way the first
+    # scan is streamed - removing each observed name from a working copy
+    # of `before_names` and aborting the instant a name is NOT in it
+    # (a name that was never in `before_names`, or one seen a second
+    # time) - bounds the work to at most `len(before_names) + 1` entries
+    # before raising, regardless of how many more names a concurrent
+    # writer adds.
+    remaining = set(before_names)
+    for entry in os.scandir(src_dir_fd):
+        if entry.name not in remaining:
+            raise SnapshotError(f"{display}: directory entries changed while being copied")
+        remaining.discard(entry.name)
+    if remaining:
         raise SnapshotError(f"{display}: directory entries changed while being copied")
 
 
