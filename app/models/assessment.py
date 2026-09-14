@@ -57,11 +57,24 @@ class RagInput(BaseModel):
     sources: list[_Short] = Field(default_factory=list, max_length=200)
 
 
+# Codex#3 / Antigravity SKOS-ADV-24 (round 18, 2026-09-14), reproduced
+# exactly as reported: MemoryInput.scope, ToolInput.permissions,
+# CredentialInput.storage, and CredentialInput.exposed_to_model were the
+# only externally-supplied string fields on this model still missing
+# reject_credential_shapes - normalize.py maps an unrecognized value to
+# UNKNOWN before it reaches the LLM, but the RAW value is retained in
+# the in-memory _STORE regardless, contradicting this module's own
+# stated invariant that every free-text field gets shape validation.
+# `_Scalar` mirrors `_Text` above but stays at the shorter 100-char bound
+# these four fields already used.
+_Scalar = Annotated[str, Field(max_length=100), AfterValidator(reject_credential_shapes)]
+
+
 class MemoryInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool | None = None
     persistent: bool | None = None
-    scope: str | None = Field(default=None, max_length=100)
+    scope: _Scalar | None = None
 
 
 class ToolInput(BaseModel):
@@ -72,7 +85,7 @@ class ToolInput(BaseModel):
         AfterValidator(reject_credential_shapes),
         AfterValidator(reject_non_identifier_shapes),
     ]
-    permissions: str | None = Field(default=None, max_length=100)
+    permissions: _Scalar | None = None
     requires_approval: bool | None = None
 
 
@@ -84,8 +97,8 @@ class OutboundInput(BaseModel):
 
 class CredentialInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    storage: str | None = Field(default=None, max_length=100)
-    exposed_to_model: str | None = Field(default=None, max_length=100)  # "true"|"false"|"unknown"
+    storage: _Scalar | None = None
+    exposed_to_model: _Scalar | None = None  # "true"|"false"|"unknown"
 
 
 class AssessmentInput(BaseModel):
