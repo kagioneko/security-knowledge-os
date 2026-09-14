@@ -240,6 +240,23 @@ def _walk_lexical_ancestors(
             reason = _untrusted_directory_stat_reason(current)
             if reason is not None:
                 return candidate, f"{reason}; contains a symlink on the path to {origin}"
+            # Codex#1 / Antigravity SKOS-ADV-16 (round 16, 2026-09-14),
+            # reproduced exactly as reported: checking only the
+            # CONTAINING directory misses a symlink ENTRY an attacker
+            # planted themselves inside a shared STICKY directory (e.g.
+            # /tmp) - the sticky bit stops others from renaming/deleting
+            # an entry they do not own, but it never stops them from
+            # CREATING a new one, and says nothing about what a symlink
+            # someone else made actually points to. The symlink entry
+            # itself must be owned by this process or root too, checked
+            # via the same `lstat` already taken above (never re-stat'd
+            # through the link).
+            if st.st_uid not in (os.geteuid(), 0):
+                return candidate, (
+                    f"{candidate} is a symlink owned by uid {st.st_uid} (neither "
+                    "this process nor root); refusing to follow it, even inside "
+                    f"a sticky directory, on the path to {origin}"
+                )
             link_target = Path(os.readlink(candidate))
             if link_target.is_absolute():
                 target_components = [p for p in link_target.parts[1:] if p != ""]
@@ -263,15 +280,33 @@ def _walk_lexical_ancestors(
 
 def _untrusted_directory_stat_reason(directory: Path) -> str | None:
     """The single-directory half of `untrusted_ancestor_chain_reason()`'s
-    check - writable by OTHER, or by a group not proven private to this
-    process, without the sticky bit. Shared so a caller that also needs
-    to check a directory ITSELF (not just its ancestors) - see
-    `app.ingestion.snapshot.snapshot_tree()`'s use on `root`, Codex#4
-    round 13, 2026-09-13 - gets the identical rule."""
+    check - owned by an untrusted uid, or writable by OTHER, or by a
+    group not proven private to this process, without the sticky bit.
+    Shared so a caller that also needs to check a directory ITSELF (not
+    just its ancestors) - see `app.ingestion.snapshot.snapshot_tree()`'s
+    use on `root`, Codex#4 round 13, 2026-09-13 - gets the identical
+    rule.
+
+    Codex#1 / Antigravity SKOS-ADV-16 (round 16, 2026-09-14), reproduced
+    exactly as reported: this only ever checked CURRENT write bits
+    (group/other), never OWNERSHIP - a directory owned by a different,
+    untrusted local account but currently mode 0755 (no group/other
+    write bit) passed outright, even though that owner can chmod it
+    writable, or replace/rename its contents outright, at any later
+    time regardless of the bits observed a moment ago. Ownership, not
+    today's permission bits, is what actually bounds who can ever make
+    a directory unsafe - matching sshd(8)'s own StrictModes (every path
+    component up to a trusted root must be owned by the target user or
+    root)."""
     try:
         st = directory.stat()
     except OSError as exc:
         return f"could not verify ownership/permissions of {directory}: {exc}"
+    if st.st_uid not in (os.geteuid(), 0):
+        return (
+            f"{directory} is owned by uid {st.st_uid} (neither this process "
+            "nor root); refusing to trust it regardless of its current permission bits"
+        )
     writable_by_untrusted = bool(st.st_mode & stat.S_IWOTH) or (
         bool(st.st_mode & stat.S_IWGRP) and not _group_is_private(st.st_gid)
     )

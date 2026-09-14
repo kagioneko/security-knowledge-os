@@ -303,6 +303,135 @@ def test_untrusted_ancestor_chain_allows_a_verified_private_group(
     assert db_module.untrusted_ancestor_chain_reason(state / "idx.sqlite") is None
 
 
+def test_untrusted_ancestor_chain_flags_a_directory_owned_by_another_uid(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression for Codex#1 / Antigravity SKOS-ADV-16 (round 16,
+    2026-09-14), reproduced exactly as reported: the trust check only
+    ever inspected CURRENT write bits (group/other), never OWNERSHIP - a
+    directory owned by a different, untrusted account but currently mode
+    0755 (no group/other write bit at all) passed outright, even though
+    that owner can chmod it writable, or replace its contents outright,
+    at any later time regardless of the bits observed a moment ago.
+
+    This directory is actually owned by the test process's own real uid
+    (there is no other way to create one in a test); `os.geteuid()` is
+    monkeypatched to return a DIFFERENT value instead, the safe and
+    deterministic way to make an otherwise-self-owned directory LOOK
+    foreign to the check without needing real multi-user/root setup."""
+    from app.storage.db import untrusted_ancestor_chain_reason
+
+    other_owned = tmp_path / "other_owned"
+    other_owned.mkdir()
+    os.chmod(other_owned, 0o755)  # deliberately NOT group/other-writable
+    state = other_owned / "state"
+    state.mkdir()
+    os.chmod(state, 0o700)
+
+    monkeypatch.setattr(os, "geteuid", lambda: os.getuid() + 12345)
+
+    reason = untrusted_ancestor_chain_reason(state / "idx.sqlite")
+    assert reason is not None
+    assert str(other_owned) in reason
+
+
+def test_untrusted_ancestor_chain_allows_a_directory_owned_by_root(tmp_path: Path) -> None:
+    """Mirror case: a root-owned ancestor (matching ordinary, safely-
+    shared system directories like `/`, `/home`) must still be allowed
+    even though it is not owned by this process. Faked via a stand-in
+    stat result (constructing a real root-owned directory needs root)."""
+    import app.storage.db as db_module
+
+    real_stat = Path.stat
+
+    class _FakeStat:
+        st_uid = 0
+        st_mode = 0o40755  # directory, mode 0755
+        st_gid = 0
+
+    def _fake_stat(self: Path, *args: object, **kwargs: object) -> object:
+        if self.name == "root_owned":
+            return _FakeStat()
+        return real_stat(self, *args, **kwargs)
+
+    root_owned = tmp_path / "root_owned"
+    root_owned.mkdir()
+    state = root_owned / "state"
+    state.mkdir()
+    os.chmod(state, 0o700)
+
+    import unittest.mock as mock
+
+    with mock.patch.object(Path, "stat", _fake_stat):
+        assert db_module.untrusted_ancestor_chain_reason(state / "idx.sqlite") is None
+
+
+def test_untrusted_ancestor_chain_flags_a_symlink_owned_by_another_uid_in_a_sticky_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression for Codex#1 / Antigravity SKOS-ADV-16 (round 16,
+    2026-09-14), reproduced exactly as reported: the sticky bit stops
+    others from renaming/deleting an entry they do not own, but never
+    stops them from CREATING a new one (a symlink) inside a shared
+    sticky directory like /tmp, and says nothing about what a symlink
+    someone else made actually points to. Checking only the CONTAINING
+    directory's trust (which passes for a sticky world-writable dir)
+    missed this - the symlink ENTRY itself must be checked too."""
+    from app.storage.db import untrusted_ancestor_chain_reason
+
+    sticky_shared = tmp_path / "sticky_shared"
+    sticky_shared.mkdir()
+    os.chmod(sticky_shared, 0o1777)  # world-writable + sticky, like /tmp
+
+    real_target = tmp_path / "real_target"
+    real_target.mkdir()
+    os.chmod(real_target, 0o700)
+
+    link = sticky_shared / "link"
+    link.symlink_to(real_target, target_is_directory=True)
+
+    root = link / "knowledge"
+    root.mkdir()
+    # mkdir()'s mode is umask-adjusted (often group-writable, e.g. 0775
+    # under umask 002) - pin it to 0700 so the ONLY thing that could flag
+    # this chain is the new symlink-ownership check under test, not an
+    # incidental group-writable leaf directory.
+    os.chmod(root, 0o700)
+
+    # the symlink is actually owned by this test process's own real uid;
+    # forge a different one so it LOOKS attacker-owned to the check.
+    monkeypatch.setattr(os, "geteuid", lambda: os.getuid() + 12345)
+
+    reason = untrusted_ancestor_chain_reason(root / "idx.sqlite")
+    assert reason is not None
+    assert str(link) in reason
+
+
+def test_untrusted_ancestor_chain_allows_a_self_owned_symlink_in_a_sticky_dir(
+    tmp_path: Path,
+) -> None:
+    """Mirror case: a symlink this process itself created and owns,
+    inside a shared sticky directory, must still be allowed."""
+    from app.storage.db import untrusted_ancestor_chain_reason
+
+    sticky_shared = tmp_path / "sticky_shared"
+    sticky_shared.mkdir()
+    os.chmod(sticky_shared, 0o1777)
+
+    real_target = tmp_path / "real_target"
+    real_target.mkdir()
+    os.chmod(real_target, 0o700)
+
+    link = sticky_shared / "link"
+    link.symlink_to(real_target, target_is_directory=True)
+
+    root = link / "knowledge"
+    root.mkdir()
+    os.chmod(root, 0o700)
+
+    assert untrusted_ancestor_chain_reason(root / "idx.sqlite") is None
+
+
 def test_untrusted_ancestor_chain_flags_a_world_writable_directory_behind_a_symlink(
     tmp_path: Path,
 ) -> None:
