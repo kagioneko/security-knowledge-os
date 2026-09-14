@@ -298,6 +298,52 @@ def test_rejects_more_files_than_the_snapshot_count_limit(
         snapshot_tree(root)
 
 
+def test_rejects_a_directory_with_more_entries_than_the_combined_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#2 (round 19, 2026-09-14), reproduced exactly as
+    reported: `_walk_no_follow` used to build the FULL entry list
+    (`list(os.scandir(...))`) before any bound check ran at all, so an
+    oversized single directory paid the full enumeration cost before
+    `_MAX_SNAPSHOT_FILES` had any chance to fire. `_MAX_SNAPSHOT_ENTRIES`
+    is now checked per entry as `os.scandir()` is iterated directly, so a
+    directory containing more entries than the limit is rejected instead
+    of first being fully materialized."""
+    import app.ingestion.snapshot as snapshot_module
+
+    monkeypatch.setattr(snapshot_module, "_MAX_SNAPSHOT_ENTRIES", 3)
+    root = tmp_path / "src"
+    root.mkdir()
+    for i in range(5):
+        (root / f"f{i}.md").write_text("x", encoding="utf-8")
+
+    with pytest.raises(SnapshotError, match="directory entries under this root"):
+        snapshot_tree(root)
+
+
+def test_a_wide_tree_of_empty_directories_still_hits_the_entries_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#2 (round 19, 2026-09-14), reproduced exactly as
+    reported: only FILES used to increment `_Budget.files`, so a wide
+    fan-out of empty subdirectories (each still recursed into, `mkdir()`-ed
+    into the destination, and re-scanned) evaded the file-count limit
+    entirely, regardless of how many there were, as long as the tree
+    stayed within the separate depth limit. `_MAX_SNAPSHOT_ENTRIES` now
+    counts directories too, so this fan-out is caught even with zero files
+    anywhere in the tree."""
+    import app.ingestion.snapshot as snapshot_module
+
+    monkeypatch.setattr(snapshot_module, "_MAX_SNAPSHOT_ENTRIES", 3)
+    root = tmp_path / "src"
+    root.mkdir()
+    for i in range(5):
+        (root / f"d{i}").mkdir()
+
+    with pytest.raises(SnapshotError, match="directory entries under this root"):
+        snapshot_tree(root)
+
+
 def test_rejects_a_tree_deeper_than_the_snapshot_depth_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

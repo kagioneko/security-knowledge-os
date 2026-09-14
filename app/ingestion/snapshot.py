@@ -57,16 +57,31 @@ _MAX_SNAPSHOT_TOTAL_BYTES = 200_000_000
 _MAX_SNAPSHOT_DEPTH = 64
 _COPY_CHUNK_BYTES = 65_536
 
+# Codex#2 (round 19, 2026-09-14), reproduced exactly as reported:
+# `_walk_no_follow` used to do `entries = list(os.scandir(src_dir_fd))`
+# BEFORE any bound check ran, so a single directory with far more than
+# `_MAX_SNAPSHOT_FILES` entries was fully materialized into a Python list
+# first, paying that enumeration cost unconditionally; and only FILES
+# incremented the budget, so a wide fan-out of empty subdirectories (each
+# still recursed into, `dest.mkdir()`-ed, and re-scanned) evaded the file
+# counter entirely. This separate, combined bound - checked per entry as
+# `os.scandir()` is iterated directly rather than materialized - covers
+# every directory entry (file OR directory) and is enforced DURING
+# enumeration, so an oversized listing is rejected after at most one
+# entry past the limit instead of after the whole directory is read.
+_MAX_SNAPSHOT_ENTRIES = 20_000
+
 
 class _Budget:
     """Mutable running totals threaded through the recursive walk below -
     a plain int can't be updated by a callee and observed by its caller
     without either this or a `nonlocal` per recursion level."""
 
-    __slots__ = ("files", "bytes_copied")
+    __slots__ = ("files", "entries", "bytes_copied")
 
     def __init__(self) -> None:
         self.files = 0
+        self.entries = 0
         self.bytes_copied = 0
 
 
@@ -187,9 +202,15 @@ def _walk_no_follow(
             f"{display}: exceeds the {_MAX_SNAPSHOT_DEPTH}-level snapshot depth limit"
         )
     dest.mkdir(exist_ok=True)
-    entries = list(os.scandir(src_dir_fd))
-    before_names = {entry.name for entry in entries}
-    for entry in entries:
+    before_names: set[str] = set()
+    for entry in os.scandir(src_dir_fd):
+        before_names.add(entry.name)
+        budget.entries += 1
+        if budget.entries > _MAX_SNAPSHOT_ENTRIES:
+            raise SnapshotError(
+                f"more than {_MAX_SNAPSHOT_ENTRIES} directory entries under this "
+                "root; refusing to snapshot"
+            )
         child_display = f"{display}/{entry.name}"
         if entry.is_symlink():
             raise SnapshotError(f"{child_display}: symlinks are not allowed")
