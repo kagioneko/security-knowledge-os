@@ -38,8 +38,11 @@ raw secret); API boundary (in-memory store, /answers cost, /history cycles,
 unauthenticated reindex); test-coverage gaps; dependency / supply chain.
 
 Do NOT modify any file. For each finding give: severity, file:line, repro,
-suggested fix. End with an overall verdict: PASS / PASS-with-nits /
-CHANGES-REQUIRED, and reference commit ${COMMIT}."
+suggested fix. End your ENTIRE response with exactly one line, in exactly
+this format (this exact line is machine-checked to gate publication):
+Overall verdict for commit ${COMMIT}: PASS
+(or PASS-with-nits, or CHANGES-REQUIRED, in place of PASS - choose exactly
+one). Do not print this exact line anywhere else in your response."
 
 ANTIGRAVITY_PROMPT="You are doing a PRE-PUBLICATION ADVERSARIAL DESIGN AUDIT of
 this repository (Security Knowledge OS, Apache-2.0, commit ${COMMIT}, not yet
@@ -62,8 +65,11 @@ downgrade when the M9-M10 Pack Manager lands); classification leakage; secret
 exposure in logs.
 
 Do NOT modify any file. For each attack give: preconditions, steps, impact,
-severity, mitigation. End with an overall verdict: PASS / PASS-with-nits /
-CHANGES-REQUIRED, and reference commit ${COMMIT}."
+severity, mitigation. End your ENTIRE response with exactly one line, in
+exactly this format (this exact line is machine-checked to gate publication):
+Overall verdict for commit ${COMMIT}: PASS
+(or PASS-with-nits, or CHANGES-REQUIRED, in place of PASS - choose exactly
+one). Do not print this exact line anywhere else in your response."
 
 # Explicitly NOT fast mode: pin full reasoning depth for a security audit.
 # 'codex exec' carries no persistent "fast" toggle (that is TUI session state),
@@ -113,12 +119,22 @@ CODEX_MAX_FILE_SIZE_BLOCKS="${CODEX_MAX_FILE_SIZE_BLOCKS:-2097152}"  # 512-byte 
 # (and so the whole script, and the scheduled wrapper around it) report
 # success regardless. A caller has no way to tell "produced a verdict"
 # apart from "silently produced nothing" without reading every log by
-# hand. `_has_verdict()` requires one of the three literal tokens the
-# prompt instructs the reviewer to output; a failed/timed-out/empty run
-# now makes the function - and this script's own exit code - reflect
-# that honestly.
+# hand.
+#
+# Codex#4 / Antigravity SKOS-ADV-17 (round 16, 2026-09-14), reproduced
+# exactly as reported by both reviewers independently: the round-15 fix
+# above matched `PASS` or `CHANGES-REQUIRED` UNANCHORED, anywhere in the
+# log - a reviewer that crashed mid-run after merely printing
+# `preflight: PASS` (or quoting PUBLICATION_MANIFEST.md, which itself
+# contains those words throughout its own round-history narrative) would
+# still satisfy this check and clear the publication gate. Both prompts
+# above now require the reviewer's FINAL line to be an exact, anchored
+# "Overall verdict for commit <hash>: <verdict>" declaration; this checks
+# for exactly that line (anywhere in the file - a reviewer's transcript
+# can be long, but the declaration format itself is what makes it
+# unambiguous, not its position) rather than the bare word anywhere.
 _has_verdict() {
-  grep -qE '\bPASS\b|\bCHANGES-REQUIRED\b' "$1"
+  grep -qE "^Overall verdict for commit ${COMMIT}: (PASS-with-nits|PASS|CHANGES-REQUIRED)[[:space:]]*\$" "$1"
 }
 
 run_codex() {
