@@ -193,6 +193,38 @@ def test_connect_does_not_chmod_a_foreign_database_before_rejecting_it(
     assert stat.S_IMODE(db_path.stat().st_mode) == 0o644, "a rejected foreign db must be untouched"
 
 
+def test_connect_does_not_mutate_a_foreign_wal_database_before_rejecting_it(
+    tmp_path: Path,
+) -> None:
+    """Regression for Codex#1 / Antigravity SKOS-ADV-26 (round 20,
+    2026-09-15), reproduced exactly as reported: the round-19
+    `PRAGMA journal_mode = DELETE` fix ran BEFORE the foreign-database
+    (application_id) check, so opening someone else's unrelated SQLite
+    database in write mode - one left in WAL mode, exactly the shape the
+    round-19 fix exists to defend against - silently checkpointed it and
+    deleted its `-wal`/`-shm` sidecars before `ForeignDatabaseError` was
+    ever raised, the same "mutate before reject" bug the chmod fix
+    (round 8, see the test above) already closed for permissions. Same
+    fix shape: only touch the file once it is known to be ours."""
+    import sqlite3
+
+    db_path = tmp_path / "foreign.sqlite"
+    foreign = sqlite3.connect(str(db_path))
+    assert foreign.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    foreign.execute("CREATE TABLE unrelated (x INTEGER)")
+    foreign.commit()
+
+    with pytest.raises(ForeignDatabaseError):
+        connect(db_path)
+
+    # the ORIGINAL connection (still open) is the authoritative way to read
+    # back journal_mode without re-triggering a mode negotiation of our own.
+    assert foreign.execute("PRAGMA journal_mode").fetchone()[0] == "wal", (
+        "a rejected foreign database's journal_mode must be untouched"
+    )
+    foreign.close()
+
+
 def test_untrusted_ancestor_chain_flags_a_world_writable_ancestor_without_sticky(
     tmp_path: Path,
 ) -> None:

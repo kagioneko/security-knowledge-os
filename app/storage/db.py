@@ -571,56 +571,86 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
             "SQLite FTS5 is required but not available in this Python build"
         )
 
-    # Codex#1 (round 19, 2026-09-14), reproduced exactly as reported:
-    # `reindex_atomic()` copies/replaces db_path's MAIN file only -
-    # SQLite's WAL sidecar (`<path>-wal`) and shared-memory file
-    # (`<path>-shm`) are separate files it never touches. If a prior
-    # writer (this project's own code has never set WAL explicitly, but
-    # journal_mode is a property PERSISTED IN THE DATABASE FILE ITSELF,
-    # so anything with write access to db_path - including an untrusted
-    # process on a shared account - could) left db_path in WAL mode with
-    # un-checkpointed pages sitting in `<path>-wal`, that content
-    # survives a reindex untouched, and a later connection that ends up
-    # in WAL mode for any reason would read through it - the exact
-    # "reindex_atomic reports one revision, a reader sees a different
-    # one" gap Codex reproduced (reported revision A, visible revision
-    # C, `verify_chunk_hashes` still ALLOWED because C was itself an
-    # internally-consistent, previously-built valid index). Forcing
-    # every WRITE connection this project ever opens back to the
-    # classic `DELETE` rollback-journal mode - which SQLite implements
-    # as "checkpoint everything in the WAL into the main file, then
-    # remove the -wal/-shm sidecars", never as data loss - closes this
-    # at its root: this project's own connections can never leave a
-    # database in WAL mode for a later open (ours or anyone else's) to
-    # be confused by, regardless of what mode a PRIOR writer left it in.
-    if str(db_path) != ":memory:":
-        conn.execute("PRAGMA journal_mode = DELETE")
-
-    has_existing_content = (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') LIMIT 1"
-        ).fetchone()
-        is not None
-    )
-    if has_existing_content:
-        try:
+    # Codex#1 / Antigravity SKOS-ADV-26 (round 20, 2026-09-15): "close the
+    # connection on every setup exception" - everything from here through
+    # `conn.executescript(SCHEMA)` below used to leave `conn` open on any
+    # exception OTHER than the two explicitly-caught cases above and
+    # ForeignDatabaseError specifically (e.g. a locked file raising
+    # `sqlite3.OperationalError` out of the SELECT/PRAGMA calls below, or
+    # a corrupt/non-sqlite file raising `sqlite3.DatabaseError`) - a leaked
+    # open connection/file descriptor on ANY setup failure, not just the
+    # ones this function anticipated by name. A single try/except around
+    # the whole remaining write-path setup guarantees `conn` is always
+    # closed before a setup exception of any kind propagates.
+    try:
+        has_existing_content = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') LIMIT 1"
+            ).fetchone()
+            is not None
+        )
+        if has_existing_content:
             verify_application_id(conn, db_path)
-        except ForeignDatabaseError:
-            conn.close()
-            raise
-    else:
-        # a genuinely fresh file (or an existing empty one) - safe to claim.
-        conn.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
+        else:
+            # a genuinely fresh file (or an existing empty one) - safe to claim.
+            conn.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
 
-    # Codex#4 (round 8, 2026-09-12), reproduced exactly as reported: the
-    # chmod used to run right after sqlite3.connect() opened the file -
-    # BEFORE the foreign-database check above had a chance to refuse it -
-    # so a database this call was about to reject as "not ours" had
-    # already had its permissions silently changed. Only touch permissions
-    # once we know this file is either freshly ours or already verified.
-    if str(db_path) != ":memory:":
-        with contextlib.suppress(OSError):
-            chmod_no_follow(db_path, 0o600)
+        # Codex#1 (round 19, 2026-09-14), reproduced exactly as reported:
+        # `reindex_atomic()` copies/replaces db_path's MAIN file only -
+        # SQLite's WAL sidecar (`<path>-wal`) and shared-memory file
+        # (`<path>-shm`) are separate files it never touches. If a prior
+        # writer (this project's own code has never set WAL explicitly,
+        # but journal_mode is a property PERSISTED IN THE DATABASE FILE
+        # ITSELF, so anything with write access to db_path - including an
+        # untrusted process on a shared account - could) left db_path in
+        # WAL mode with un-checkpointed pages sitting in `<path>-wal`,
+        # that content survives a reindex untouched, and a later
+        # connection that ends up in WAL mode for any reason would read
+        # through it - the exact "reindex_atomic reports one revision, a
+        # reader sees a different one" gap Codex reproduced (reported
+        # revision A, visible revision C, `verify_chunk_hashes` still
+        # ALLOWED because C was itself an internally-consistent,
+        # previously-built valid index). Forcing every WRITE connection
+        # this project ever opens back to the classic `DELETE`
+        # rollback-journal mode - which SQLite implements as "checkpoint
+        # everything in the WAL into the main file, then remove the
+        # -wal/-shm sidecars", never as data loss - closes this at its
+        # root: this project's own connections can never leave a
+        # database in WAL mode for a later open (ours or anyone else's)
+        # to be confused by, regardless of what mode a PRIOR writer left
+        # it in.
+        #
+        # Codex#1 / Antigravity SKOS-ADV-26 (round 20, 2026-09-15),
+        # reproduced exactly as reported: this PRAGMA used to run BEFORE
+        # the verify_application_id() check just above - a persistent,
+        # mutating operation (it checkpoints a WAL database's pending
+        # pages into the main file and deletes its `-wal`/`-shm`
+        # sidecars) executed against ANY database this function opened,
+        # including one about to be rejected as foreign a few lines
+        # later. Opening someone else's unrelated SQLite database (not
+        # even a Security Knowledge OS index) in write mode silently
+        # mutated it before `ForeignDatabaseError` was ever raised. This
+        # is the exact same class of bug the chmod below was already
+        # fixed for in round 8 (see that comment) - only touch the file
+        # once we know this connection is either ours already or being
+        # freshly claimed as ours.
+        if str(db_path) != ":memory:":
+            conn.execute("PRAGMA journal_mode = DELETE")
 
-    conn.executescript(SCHEMA)
+        # Codex#4 (round 8, 2026-09-12), reproduced exactly as reported:
+        # the chmod used to run right after sqlite3.connect() opened the
+        # file - BEFORE the foreign-database check above had a chance to
+        # refuse it - so a database this call was about to reject as
+        # "not ours" had already had its permissions silently changed.
+        # Only touch permissions once we know this file is either
+        # freshly ours or already verified.
+        if str(db_path) != ":memory:":
+            with contextlib.suppress(OSError):
+                chmod_no_follow(db_path, 0o600)
+
+        conn.executescript(SCHEMA)
+    except BaseException:
+        conn.close()
+        raise
+
     return conn
