@@ -367,8 +367,24 @@ def untrusted_directory_reason(directory: Path) -> str | None:
     can, without needing to touch anything above it. Public entry point
     for the single-directory half of that same check, resolving symlinks
     the same deliberate way (a pass/fail precondition check on trust, not
-    a race-proof no-follow read)."""
-    return _untrusted_directory_stat_reason(directory.resolve(strict=False))
+    a race-proof no-follow read).
+
+    Codex#4 / Antigravity SKOS-ADV-28 (round 20, 2026-09-15), reproduced
+    exactly as reported: `Path.resolve(strict=False)` raises `RuntimeError`
+    (not `OSError`) for a self-referential symlink loop (e.g. `ln -s
+    skos-loop skos-loop`). Every caller of this function - directly or via
+    `snapshot_tree()` - only catches `OSError`, expecting a typed
+    `SnapshotError`/validation issue/`POLICY_BLOCKED` outcome; the raw
+    `RuntimeError` escaped all of them, becoming a generic 500 instead of
+    the fail-closed rejection this function exists to produce. A symlink
+    loop is exactly as untrusted as any other directory this function
+    already rejects by returning a reason string - report it the same
+    way instead of letting resolution's own exception type leak through."""
+    try:
+        resolved = directory.resolve(strict=False)
+    except RuntimeError as exc:
+        return f"{directory}: could not be resolved (possible symlink loop): {exc}"
+    return _untrusted_directory_stat_reason(resolved)
 
 
 # Codex#4 (round 8, 2026-09-12), reproduced exactly as reported: `os.chmod`

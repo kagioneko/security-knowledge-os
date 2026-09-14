@@ -36,6 +36,23 @@ def test_rejects_a_symlinked_leaf_file(tmp_path: Path) -> None:
         snapshot_tree(root)
 
 
+def test_rejects_a_self_referential_symlink_root_with_a_typed_error(tmp_path: Path) -> None:
+    """Regression for Codex#4 / Antigravity SKOS-ADV-28 (round 20,
+    2026-09-15), reproduced exactly as reported: `untrusted_directory_
+    reason()` called `directory.resolve(strict=False)` directly -
+    `Path.resolve()` raises `RuntimeError` (not `OSError`) for a
+    self-referential symlink loop. `snapshot_tree()`'s own caller and
+    every OTHER caller of `untrusted_directory_reason()` only catch
+    `OSError`, so this used to escape as a raw, untyped `RuntimeError`
+    instead of the `SnapshotError` (itself an `OSError` subclass) every
+    other untrusted-root shape already produces."""
+    root = tmp_path / "skos-loop"
+    root.symlink_to(root)
+
+    with pytest.raises(SnapshotError):
+        snapshot_tree(root)
+
+
 def test_rejects_a_fifo_in_place_of_a_regular_file(tmp_path: Path) -> None:
     """Regression for Codex#3 (round 12, 2026-09-13), reproduced exactly as
     reported: a FIFO (or socket, or device file) replacing a real rule/
