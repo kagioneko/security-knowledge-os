@@ -436,18 +436,33 @@ _ANSWER_LOCK_TIMEOUT_SECONDS = 30.0
 # of "as many as arrive".
 _MAX_ANSWER_LOCK_WAITERS_PER_KEY = 10  # 1 holder + at most 9 queued waiters
 
+# Codex#2 (round 17, 2026-09-14), reproduced exactly as reported: the
+# per-key cap above bounds worst-case thread occupancy for ONE
+# assessment ID, but nothing bounds how many DISTINCT keys can each hit
+# that cap at once - four slow assessments times ten callers each is 40
+# threads, the whole of Starlette's typical default worker pool, without
+# any single key ever exceeding its own cap. A GLOBAL counter across
+# every key closes this the same way the per-key one does: reject
+# immediately (no worker thread ever blocks) once the process-wide total
+# is already at the bound, regardless of how that total is distributed
+# across keys.
+_ANSWER_LOCK_GLOBAL_WAITERS = 0  # total active callers (holders+waiters), every key combined
+_MAX_ANSWER_LOCK_WAITERS_GLOBAL = 20  # well under a typical ~40-thread pool; leaves headroom
+
 
 class _AnswerLockBusy(Exception):
     """`_answer_lock_for` could not acquire its lock within
     `_ANSWER_LOCK_TIMEOUT_SECONDS`, or the key already has
-    `_MAX_ANSWER_LOCK_WAITERS_PER_KEY` callers on it - see that
-    function's own docstring."""
+    `_MAX_ANSWER_LOCK_WAITERS_PER_KEY` callers on it, or the process-wide
+    total across every key already has `_MAX_ANSWER_LOCK_WAITERS_GLOBAL`
+    callers on it - see that function's own docstring."""
 
 
 @contextlib.contextmanager
 def _answer_lock_for(
     key: tuple[object, ...], *, timeout: float = _ANSWER_LOCK_TIMEOUT_SECONDS
 ) -> Iterator[None]:
+    global _ANSWER_LOCK_GLOBAL_WAITERS
     with _ANSWER_LOCKS_GUARD:
         entry = _ANSWER_LOCKS.get(key)
         if entry is None:
@@ -458,11 +473,19 @@ def _answer_lock_for(
             raise _AnswerLockBusy(
                 f"too many callers ({entry.refcount}) already waiting for {key!r}"
             )
+        if _ANSWER_LOCK_GLOBAL_WAITERS >= _MAX_ANSWER_LOCK_WAITERS_GLOBAL:
+            raise _AnswerLockBusy(
+                f"too many callers ({_ANSWER_LOCK_GLOBAL_WAITERS}) already waiting "
+                "across all assessments"
+            )
         entry.refcount += 1
+        _ANSWER_LOCK_GLOBAL_WAITERS += 1
 
     def _release_refcount() -> None:
+        global _ANSWER_LOCK_GLOBAL_WAITERS
         with _ANSWER_LOCKS_GUARD:
             entry.refcount -= 1
+            _ANSWER_LOCK_GLOBAL_WAITERS -= 1
             if entry.refcount == 0 and _ANSWER_LOCKS.get(key) is entry:
                 del _ANSWER_LOCKS[key]
 

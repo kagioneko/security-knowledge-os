@@ -1470,6 +1470,54 @@ def test_answer_lock_rejects_a_caller_beyond_the_waiter_cap_immediately() -> Non
         second_caller.join(timeout=5)
 
 
+def test_answer_lock_rejects_a_caller_beyond_the_global_waiter_cap_across_distinct_keys() -> (
+    None
+):
+    """Regression for Codex#2 (round 17, 2026-09-14), reproduced exactly
+    as reported: the per-key cap above bounds worst-case thread occupancy
+    for ONE assessment ID, but nothing bounded how many DISTINCT keys
+    could each hit that cap at once - four slow assessments times ten
+    callers each is 40 threads, a typical Starlette worker pool's
+    entirety, without any single key ever exceeding its own cap. A caller
+    for a THIRD, entirely distinct key - each of the first two held by
+    its own single holder, so neither is anywhere near ITS OWN per-key
+    cap - must still be rejected immediately once the process-wide total
+    is at the (monkeypatched-down) global cap."""
+    import threading
+
+    import app.main as main_module
+
+    original_global_cap = main_module._MAX_ANSWER_LOCK_WAITERS_GLOBAL
+    main_module._MAX_ANSWER_LOCK_WAITERS_GLOBAL = 2
+    key_a = ("global-cap-test", "a")
+    key_b = ("global-cap-test", "b")
+    key_c = ("global-cap-test", "c")
+    both_holders_in = threading.Barrier(3, timeout=5)
+    release_holders = threading.Event()
+
+    def _hold(key: tuple[object, ...]) -> None:
+        with main_module._answer_lock_for(key):
+            both_holders_in.wait()
+            release_holders.wait(timeout=5)
+
+    holder_a = threading.Thread(target=_hold, args=(key_a,))
+    holder_b = threading.Thread(target=_hold, args=(key_b,))
+    try:
+        holder_a.start()
+        holder_b.start()
+        both_holders_in.wait(timeout=5)  # both holders confirmed in, global count == 2
+
+        with pytest.raises(main_module._AnswerLockBusy), main_module._answer_lock_for(
+            key_c, timeout=2
+        ):
+            pass  # must never be reached - a third, unrelated key, still rejected
+    finally:
+        main_module._MAX_ANSWER_LOCK_WAITERS_GLOBAL = original_global_cap
+        release_holders.set()
+        holder_a.join(timeout=5)
+        holder_b.join(timeout=5)
+
+
 def test_answer_cache_put_is_thread_safe_under_concurrent_eviction() -> None:
     """Same race as `test_store_put_is_thread_safe_under_concurrent_eviction`,
     for `_ANSWER_CACHE` / `_ANSWER_CACHE_GUARD` (Codex#5, round 5,
