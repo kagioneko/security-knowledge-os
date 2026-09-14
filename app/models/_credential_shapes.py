@@ -96,9 +96,24 @@ CREDENTIAL_SHAPE_PATTERNS: dict[str, re.Pattern[str]] = {
     # component (scheme://user:password@host) - the scheme names below are
     # never used for anything BUT a database/broker connection string, so
     # this cannot mistake an ordinary URL for one.
+    #
+    # Codex#2 / Antigravity SKOS-ADV-23 (round 18, 2026-09-14), reproduced
+    # exactly as reported: unlike a token's fixed-case prefix (issued by a
+    # specific service, e.g. always-uppercase "AKIA", always-lowercase
+    # "xox-"), a URI SCHEME is case-insensitive per RFC 3986 - a real
+    # driver accepts an uppercase scheme exactly like a lowercase one.
+    # This pattern matched only the lowercase spelling, so an uppercase-
+    # scheme connection string (otherwise identical in shape) validated
+    # and reached AssessmentResult.attack_surface.
+    # scripts/secret_scan.py imports this dict directly
+    # (`**CREDENTIAL_SHAPE_PATTERNS`), so the same gap applied to the
+    # tracked-history secret scan too - fixed here closes both at once,
+    # the same "one shared dict, not two drifting copies" property this
+    # module's own docstring already establishes.
     "db-connection-string": re.compile(
         r"(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://"
-        r"[^\s:@/'\"]+:[^\s:@/'\"]+@[^\s/'\"]+"
+        r"[^\s:@/'\"]+:[^\s:@/'\"]+@[^\s/'\"]+",
+        re.IGNORECASE,
     ),
     # Codex#1 (round 13, 2026-09-13), reproduced exactly as reported: a
     # modern OpenAI project API key (fixed `sk-proj-` prefix) reached the

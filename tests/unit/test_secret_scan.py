@@ -165,6 +165,20 @@ def test_an_ordinary_url_without_credentials_is_not_flagged_as_a_db_string() -> 
     assert _PATTERNS["db-connection-string"].search("https://example.com/docs") is None
 
 
+def test_db_connection_string_is_flagged_regardless_of_scheme_case() -> None:
+    """Regression for Codex#2 / Antigravity SKOS-ADV-23 (round 18,
+    2026-09-14), reproduced exactly as reported: a URI scheme is
+    case-insensitive per RFC 3986 - a real driver accepts
+    "POSTGRESQL://..." exactly like "postgresql://...", but this pattern
+    only ever matched the lowercase spelling, so an uppercase or
+    mixed-case scheme evaded detection here and in every caller that
+    shares this dict (AnswerPatch/AssessmentInput validators,
+    scripts/secret_scan.py itself)."""
+    for scheme in ("POSTGRESQL", "PostgreSQL", "MYSQL", "MongoDB", "REDIS", "AMQP"):
+        text = f"{scheme}://" + "dbuser" + ":" + "hunter2" + "@" + "db.internal:5432/prod"
+        assert _PATTERNS["db-connection-string"].search(text) is not None, scheme
+
+
 def test_openai_project_key_shaped_value_is_flagged() -> None:
     """Regression for Codex#1 (round 13, 2026-09-13): a modern OpenAI
     project API key (`sk-proj-` prefix) was not in any pattern list,

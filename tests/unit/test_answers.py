@@ -249,6 +249,20 @@ def test_free_text_fields_reject_a_db_connection_string_with_credentials() -> No
         AssessmentInput(name="t", system_prompt=fake_url)
 
 
+def test_free_text_fields_reject_a_db_connection_string_regardless_of_scheme_case() -> None:
+    """Regression for Codex#2 / Antigravity SKOS-ADV-23 (round 18,
+    2026-09-14), reproduced exactly as reported: a URI scheme is
+    case-insensitive per RFC 3986 - an uppercase-scheme connection string
+    is exactly as valid as the lowercase spelling, but the shape check
+    only ever matched lowercase, so an uppercase scheme reached
+    AssessmentResult.attack_surface.outbound_channels verbatim."""
+    fake_url = "POSTGRESQL://" + "dbuser" + ":" + "hunter2" + "@" + "db.internal:5432/prod"
+    with pytest.raises(ValidationError):
+        AnswerPatch.model_validate({"outbound_destinations": [fake_url]})
+    with pytest.raises(ValidationError):
+        AssessmentInput(name="t", system_prompt=fake_url)
+
+
 def test_free_text_fields_reject_an_openai_project_key_shaped_value() -> None:
     """Regression for Codex#1 (round 13, 2026-09-13), reproduced exactly as
     reported: a modern OpenAI project API key (`sk-proj-` + 48 more
