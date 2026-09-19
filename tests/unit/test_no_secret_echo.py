@@ -261,3 +261,105 @@ def test_cli_report_still_reads_a_normal_saved_report(
     # a small file is read (not rejected as oversized); `{}` then fails schema validation
     assert main(["report", str(bad)]) == 2
     assert "exceeds" not in capsys.readouterr().err
+
+
+# --- Codex#1 (round 27): POST /v1/knowledge/validate reflected submitted text ---
+
+_VALID_KU = """---
+id: KU-9001
+title: t
+category: prompt-security
+source_type: manual
+source_ref: ref
+classification: public
+status: reviewed
+risk_ids:
+  - PI-001
+version: "0.1"
+last_reviewed: "2026-09-10"
+requires_ip_review: false
+provenance:
+  source_title: t
+  source_url: null
+  source_version: null
+  source_license: t
+  derivation: original
+  last_verified: "2026-09-10"
+---
+body
+"""
+
+
+def test_knowledge_validate_does_not_echo_a_secret_supplied_as_source(client: TestClient) -> None:
+    response = client.post(
+        "/v1/knowledge/validate", json={"content": "not front matter", "source": SECRET}
+    )
+
+    assert response.status_code == 200
+    assert SECRET not in response.text
+    assert response.json()["valid"] is False, "the validation result itself is unchanged"
+
+
+def test_knowledge_validate_does_not_echo_a_malformed_risk_id(client: TestClient) -> None:
+    content = _VALID_KU.replace("  - PI-001", f"  - {SECRET}")
+
+    response = client.post("/v1/knowledge/validate", json={"content": content})
+
+    assert response.status_code == 200
+    assert SECRET not in response.text
+    warnings = response.json()["warnings"]
+    assert any(w["code"] == "risk-id-format" and "risk_ids[0]" in w["message"] for w in warnings)
+
+
+# --- Codex#2 (round 27): a symlinked root must never be enumerated ---
+
+
+def _symlinked_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "outside.md").write_text("x", encoding="utf-8")
+    link = tmp_path / "skos-root"
+    link.symlink_to(outside, target_is_directory=True)
+
+    real_rglob = Path.rglob
+
+    def guarded_rglob(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        assert self != link, "rglob() was called on a symlinked knowledge root"
+        return real_rglob(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "rglob", guarded_rglob)
+    return link
+
+
+def test_cli_validate_knowledge_does_not_enumerate_a_symlinked_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    link = _symlinked_root(tmp_path, monkeypatch)
+
+    assert main(["validate-knowledge", str(link)]) == 1
+
+    out = capsys.readouterr().out
+    assert "snapshot-failed" in out
+    assert "across 0 file(s)" in out, "a file outside the rejected root was counted"
+
+
+def test_build_index_script_does_not_enumerate_a_symlinked_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import scripts.build_index as build_index_script
+
+    link = _symlinked_root(tmp_path, monkeypatch)
+
+    assert build_index_script.main([str(link), "--db", str(tmp_path / "idx.sqlite")]) != 0
+    assert not (tmp_path / "idx.sqlite").exists()
+
+
+def test_validate_knowledge_script_does_not_enumerate_a_symlinked_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import scripts.validate_knowledge as validate_script
+
+    link = _symlinked_root(tmp_path, monkeypatch)
+
+    assert validate_script.main([str(link)]) == 1
+    assert "across 0 file(s)" in capsys.readouterr().out

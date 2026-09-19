@@ -1080,7 +1080,13 @@ class KnowledgeDoc(BaseModel):
 @app.post("/v1/knowledge/validate")
 def validate_knowledge_doc(doc: KnowledgeDoc) -> dict[str, Any]:
     """Read-only: validate one Knowledge Unit. Nothing is stored or written."""
-    issues = validate_markdown(doc.content, source=doc.source)
+    # Codex#1 (round 27, 2026-09-20), reproduced exactly as reported: the
+    # client-supplied `source` was returned verbatim as every issue's `path`
+    # (`POST {"content": "...", "source": "AKIA..."}` -> the key in the
+    # response), bypassing the secret-safe rendering everywhere else. It is a
+    # free-text label with no path meaning here (nothing is read or stored), so
+    # the response uses a fixed one.
+    issues = validate_markdown(doc.content, source="<api>")
     return {
         "errors": [i.__dict__ | {"level": i.level.value} for i in issues if i.level is Level.ERROR],
         "warnings": [

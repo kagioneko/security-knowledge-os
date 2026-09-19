@@ -115,11 +115,15 @@ def validate_markdown(text: str, *, source: str = "<input>") -> list[ValidationI
         )
         return issues
 
-    for rid in model.risk_ids:
+    for index, rid in enumerate(model.risk_ids):
         if not _RULE_ID_RE.match(rid):
+            # Codex#1 (round 27, 2026-09-20): the malformed id itself used to be
+            # quoted in the message - arbitrary submitted text (a pasted
+            # credential, say) came straight back out of the API. Its position
+            # identifies it.
             issues.append(
                 ValidationIssue(
-                    Level.WARNING, "risk-id-format", f"risk id '{rid}' malformed", source
+                    Level.WARNING, "risk-id-format", f"risk_ids[{index}] is malformed", source
                 )
             )
     present = _headings(body)
@@ -281,6 +285,14 @@ _NON_KU_FILENAMES = {"readme.md", "index.md", "_index.md"}
 
 
 def iter_knowledge_files(knowledge_root: Path) -> list[Path]:
+    # Codex#2 (round 27, 2026-09-20), reproduced exactly as reported: the CLI
+    # wrappers count files with this BEFORE/AFTER the snapshot check has
+    # rejected a symlinked root, and `Path.rglob()` resolves the root's own
+    # symlink - so a rejected root was still enumerated outside the intended
+    # tree (an unbounded list, for a large target). A symlinked root is never a
+    # valid knowledge root (snapshot_tree() refuses it), so it has no files.
+    if knowledge_root.is_symlink():
+        return []
     return [
         p
         for p in sorted(knowledge_root.rglob("*.md"))

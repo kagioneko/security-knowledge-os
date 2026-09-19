@@ -46,7 +46,9 @@ def _run_safe(root: Path, db: Path) -> int:
     # (`build_index.py empty-directory --db existing-index.sqlite`), so it
     # is refused here, before reindex_atomic() ever runs (once it has run,
     # the swap has already happened - there is nothing left to "refuse").
-    if root.is_dir() and not iter_knowledge_files(root):
+    # (Codex#2, round 27: a symlinked root is left to reindex_atomic()'s own
+    # snapshot rejection - iter_knowledge_files() no longer enumerates it.)
+    if root.is_dir() and not root.is_symlink() and not iter_knowledge_files(root):
         print(
             f"refusing to publish a zero-unit index from an empty knowledge "
             f"root ({root}); pass --allow-partial to override",
