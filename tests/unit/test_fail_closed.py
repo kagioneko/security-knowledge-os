@@ -515,3 +515,69 @@ def test_missing_meta_table_fails_closed_not_a_raw_exception(
         assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
     finally:
         conn.close()
+
+
+def test_shadow_table_column_names_are_never_executed_as_sql(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex#2 (round 22, 2026-09-19), reproduced exactly as
+    reported: `compute_fts_shadow_digest()` read column names from `PRAGMA
+    table_info()` and interpolated them unquoted into a SELECT, so a
+    crafted column named `1, <expression>` was evaluated during the
+    integrity check itself (the report used `randomblob(500000000)` for
+    memory exhaustion). A registered SQL function that records its own
+    invocation makes "was it executed?" directly observable."""
+    from app.storage.integrity import compute_fts_shadow_digest
+
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    calls: list[int] = []
+    conn.create_function("boom", 0, lambda: calls.append(1) or 1)
+    try:
+        for table in (
+            "chunks_fts_data",
+            "chunks_fts_idx",
+            "chunks_fts_docsize",
+            "chunks_fts_config",
+        ):
+            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f'CREATE TABLE {table}("1, boom()")')
+            conn.execute(f"INSERT INTO {table} VALUES (1)")
+        conn.commit()
+        with pytest.raises(RuntimeError, match="columns FTS5 creates"):
+            compute_fts_shadow_digest(conn)
+        assert calls == [], "a schema-derived identifier was executed as SQL"
+        assert verify_chunk_hashes(conn).outcome is PolicyOutcome.POLICY_BLOCKED
+        assert calls == []
+    finally:
+        conn.close()
+
+
+def test_ordinary_tables_masquerading_as_fts5_fail_closed(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex#2 (round 22, 2026-09-19): the row-count and
+    digest checks never established that `chunks_fts` is an FTS5 table at
+    all - with zero chunks, ordinary tables of the right names passed as
+    ALLOWED and retrieval then died later with an untyped SQLite error."""
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        conn.execute("DROP TABLE chunks_fts")  # drops the virtual table AND its shadows
+        conn.execute("CREATE TABLE chunks_fts(search_text)")
+        conn.execute("CREATE TABLE chunks_fts_data(id INTEGER PRIMARY KEY, block BLOB)")
+        conn.execute("CREATE TABLE chunks_fts_idx(segid, term, pgno)")
+        conn.execute("CREATE TABLE chunks_fts_docsize(id INTEGER PRIMARY KEY, sz BLOB)")
+        conn.execute("CREATE TABLE chunks_fts_config(k, v)")
+        conn.execute("DELETE FROM chunks")
+        conn.execute("UPDATE meta SET value = '0' WHERE key = 'chunk_count'")
+        conn.commit()
+
+        decision = verify_chunk_hashes(conn)
+
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        assert "not an FTS5 virtual table" in " ".join(decision.reasons)
+    finally:
+        conn.close()

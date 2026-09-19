@@ -34,12 +34,63 @@ class _FtsShadowTableMissing(RuntimeError):
 # contentless table's postings in. Table names, not user input - safe to
 # interpolate into PRAGMA/SELECT statements (sqlite3 cannot parameterise
 # identifiers anyway).
-_FTS_SHADOW_TABLES = (
-    "chunks_fts_data",
-    "chunks_fts_idx",
-    "chunks_fts_docsize",
-    "chunks_fts_config",
+#
+# Codex#2 (round 22, 2026-09-19), reproduced exactly as reported: the
+# COLUMN names read back from `PRAGMA table_info()` on these tables were
+# interpolated unquoted into a SELECT below - but they come from the
+# database FILE, which is exactly the thing this check exists to distrust.
+# A column literally named `1, randomblob(500000000)` turned that SELECT
+# into an arbitrary SQLite expression evaluated during the supposedly
+# fail-closed integrity check. Nothing schema-derived is executed any
+# more: the columns FTS5 really creates are a fixed, documented set, so
+# each table's columns must equal exactly this allowlist or the check
+# fails closed (and the identifiers are quoted anyway).
+_FTS_SHADOW_COLUMNS: dict[str, tuple[str, ...]] = {
+    "chunks_fts_data": ("id", "block"),
+    "chunks_fts_idx": ("segid", "term", "pgno"),
+    "chunks_fts_docsize": ("id", "sz"),
+    "chunks_fts_config": ("k", "v"),
+}
+_FTS_SHADOW_TABLES = tuple(_FTS_SHADOW_COLUMNS)
+
+_FTS5_VIRTUAL_TABLE_RE = re.compile(
+    r"^\s*CREATE\s+VIRTUAL\s+TABLE\s+\S+\s+USING\s+fts5\s*\(", re.IGNORECASE
 )
+
+
+class _FtsSchemaInvalid(RuntimeError):
+    """`chunks_fts` or one of its shadow tables is not the structure FTS5
+    itself creates - the index file was built or altered by something else."""
+
+
+def _quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _require_genuine_fts5_schema(conn: sqlite3.Connection) -> None:
+    """Codex#2 (round 22, 2026-09-19): with zero chunks, ordinary tables
+    named `chunks_fts` / `chunks_fts_*` with attacker-chosen schemas plus a
+    matching stored digest passed `verify_chunk_hashes()` as ALLOWED (the
+    row-count and digest checks never establish that `chunks_fts` is an
+    FTS5 table at all), and retrieval then failed later with an untyped
+    SQLite error. Establish the structure before trusting anything read
+    from it."""
+    row = conn.execute(
+        "SELECT type, sql FROM sqlite_master WHERE name = 'chunks_fts'"
+    ).fetchone()
+    if row is None or row[0] != "table" or not _FTS5_VIRTUAL_TABLE_RE.match(row[1] or ""):
+        raise _FtsSchemaInvalid("chunks_fts is not an FTS5 virtual table")
+    for table, expected in _FTS_SHADOW_COLUMNS.items():
+        info = conn.execute(
+            "SELECT type FROM sqlite_master WHERE name = ?", (table,)
+        ).fetchone()
+        if info is None:
+            raise _FtsShadowTableMissing(table)
+        if info[0] != "table":
+            raise _FtsSchemaInvalid(f"{table} is not a table")
+        columns = tuple(r[1] for r in conn.execute(f"PRAGMA table_info({_quote_ident(table)})"))
+        if columns != expected:
+            raise _FtsSchemaInvalid(f"{table} does not have the columns FTS5 creates")
 
 
 def _fts_phrase(text: str) -> str:
@@ -72,19 +123,21 @@ def compute_fts_shadow_digest(conn: sqlite3.Connection) -> str:
     to still contain the canonical phrase.
     """
     digest = hashlib.sha256()
-    for table in _FTS_SHADOW_TABLES:
+    # Codex#6 (round 8, 2026-09-12), reproduced exactly as reported:
+    # `PRAGMA table_info` on a MISSING table returns zero rows rather than
+    # raising - that used to reach `columns[0]` as a raw IndexError instead
+    # of the fail-closed POLICY_BLOCKED this check exists to produce.
+    # `_require_genuine_fts5_schema` reports a missing table as
+    # `_FtsShadowTableMissing` and, per Codex#2 (round 22), also rejects any
+    # table whose columns are not the fixed FTS5 set.
+    _require_genuine_fts5_schema(conn)
+    for table, columns in _FTS_SHADOW_COLUMNS.items():
         digest.update(table.encode("utf-8"))
         digest.update(b"\x00")
-        columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
-        # Codex#6 (round 8, 2026-09-12), reproduced exactly as reported:
-        # `PRAGMA table_info` on a MISSING table returns zero rows rather
-        # than raising - for an empty/corrupt index missing an expected
-        # chunks_fts shadow table, `columns` was `[]` and `columns[0]`
-        # below raised a raw IndexError instead of the fail-closed
-        # POLICY_BLOCKED this whole check exists to produce.
-        if not columns:
-            raise _FtsShadowTableMissing(table)
-        select = f"SELECT {', '.join(columns)} FROM {table} ORDER BY {columns[0]}"  # noqa: S608
+        select = (
+            f"SELECT {', '.join(_quote_ident(c) for c in columns)} "  # noqa: S608
+            f"FROM {_quote_ident(table)} ORDER BY {_quote_ident(columns[0])}"
+        )
         for row in conn.execute(select):
             for value in row:
                 if isinstance(value, bytes):
@@ -111,6 +164,9 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
         the fail-closed contract every caller of this function relies on.
     """
     try:
+        # Codex#2 (round 22, 2026-09-19): establish that chunks_fts really is
+        # FTS5 before any query below (MATCH probe, count, digest) touches it.
+        _require_genuine_fts5_schema(conn)
         mismatches: list[str] = []
         malformed: list[str] = []
         fts_content_mismatches: list[str] = []
@@ -343,6 +399,12 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
         # exists to catch, so it must be a policy decision, not a raised
         # exception that skips the caller's fail-closed handling.
         return stop(PolicyOutcome.POLICY_BLOCKED, "knowledge-index", f"index schema error: {exc}")
+    except _FtsSchemaInvalid as exc:
+        return stop(
+            PolicyOutcome.POLICY_BLOCKED,
+            "knowledge-index",
+            f"chunks_fts schema is not a genuine FTS5 structure: {exc}",
+        )
     except _FtsShadowTableMissing as exc:
         return stop(
             PolicyOutcome.POLICY_BLOCKED,
