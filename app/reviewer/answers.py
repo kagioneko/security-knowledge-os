@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from app.models.answer import AnswerPatch
 from app.models.assessment import AssessmentInput
+from app.safe_errors import format_loc
 
 
 class AnswerValidationError(ValueError):
@@ -91,5 +92,8 @@ def apply_patch(original: AssessmentInput, patch: AnswerPatch) -> AssessmentInpu
         # catches AnswerValidationError, so this escaped as an HTTP 500
         # instead of the controlled 422 every other rejection in this module
         # produces.
-        reasons = [f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()]
+        reasons = [
+            f"{format_loc(err['loc'])}: {err['msg']}"
+            for err in exc.errors(include_input=False, include_url=False)
+        ]
         raise AnswerValidationError(reasons) from exc

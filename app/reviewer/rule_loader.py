@@ -20,6 +20,7 @@ from app.models.risk import LLM_OBS_PREFIX, RiskRule
 from app.models.rule_clause import Clause, Operator
 from app.reviewer.clause_eval import ClauseError, validate_clause
 from app.reviewer.evidence import EVIDENCE_KEYS
+from app.safe_errors import format_validation_error
 
 _CLAUSE_KEYS = {"field", "op", "value"}
 _CONDITIONS_KEYS = {"all", "any"}
@@ -55,7 +56,7 @@ def parse_clause(raw: Any) -> Clause:
         try:
             return Clause.model_validate(raw)
         except ValidationError as exc:
-            raise RuleLoadError(f"invalid clause {raw!r}: {exc}") from exc
+            raise RuleLoadError(f"invalid clause: {format_validation_error(exc)}") from exc
 
     if len(raw) != 1:
         # Codex#7 (round 10, 2026-09-13), reproduced exactly as reported: the
@@ -71,7 +72,16 @@ def parse_clause(raw: Any) -> Clause:
             f"shorthand clause must have exactly one key, got {sorted(raw, key=str)}"
         )
     ((fact_key, literal),) = raw.items()
-    return Clause(field=str(fact_key), op=Operator.EQ, value=literal)
+    # Codex#5 (round 23, 2026-09-20), reproduced exactly as reported: only the
+    # explicit form above converted a pydantic ValidationError into the typed
+    # RuleLoadError - `{"external_content_ingestion": {"nested": "value"}}`
+    # escaped here raw (a traceback from the validation script, an untyped
+    # 500 from API resource loading), and pydantic's own message embeds the
+    # rejected value.
+    try:
+        return Clause(field=str(fact_key), op=Operator.EQ, value=literal)
+    except ValidationError as exc:
+        raise RuleLoadError(f"invalid clause: {format_validation_error(exc)}") from exc
 
 
 def _as_list(value: Any, *, field: str, source: Path) -> list[Any]:
@@ -145,7 +155,7 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
     try:
         rule = RiskRule.model_validate(payload)
     except ValidationError as exc:
-        raise RuleLoadError(f"{source}: invalid rule: {exc}") from exc
+        raise RuleLoadError(f"{source}: invalid rule: {format_validation_error(exc)}") from exc
 
     problems = rule_problems(rule)
     if problems:

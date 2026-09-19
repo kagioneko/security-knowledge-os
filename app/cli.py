@@ -23,7 +23,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from app.config import Settings
-from app.ingestion.parser import FrontMatterError, safe_load_bounded
+from app.ingestion.parser import FrontMatterError, read_text_bounded, safe_load_bounded
 from app.ingestion.validator import Level, iter_knowledge_files, validate_tree
 from app.llm.factory import get_client
 from app.models.assessment import AssessmentInput, OverallStatus
@@ -88,7 +88,7 @@ def _load_input(path: Path) -> AssessmentInput:
     # matter) converts every way PyYAML can blow up into FrontMatterError;
     # main() below converts that and ValidationError into exit code 2.
     raw = safe_load_bounded(
-        path.read_text(encoding="utf-8"),
+        read_text_bounded(path, max_bytes=_MAX_ASSESSMENT_YAML_BYTES, what="assessment file"),
         max_bytes=_MAX_ASSESSMENT_YAML_BYTES,
         what="assessment file",
     )

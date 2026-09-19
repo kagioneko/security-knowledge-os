@@ -31,6 +31,7 @@ from app.models._credential_shapes import CREDENTIAL_SHAPE_PATTERNS
 from app.models.assessment import SafeTest, SafeTestEnvironment, UntrustedSafeTestProposal
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
 from app.models.risk import RiskRule
+from app.safe_errors import format_validation_error
 
 # Codex#5 (round 7, 2026-09-12): a hand-authored safe-test template file is
 # at most a few KB in real use; bounds the raw text handed to the YAML
@@ -253,7 +254,7 @@ def load_safe_test_templates(root: Path | str) -> dict[str, SafeTest]:
             try:
                 test = SafeTest.model_validate(raw)
             except ValidationError as exc:
-                raise SafeTestLoadError(f"{path}: {exc}") from exc
+                raise SafeTestLoadError(f"{path}: {format_validation_error(exc)}") from exc
             decision = validate_safe_test(test)
             if not decision.is_allowed:
                 raise SafeTestLoadError(f"{path}: {decision.outcome.value}: {decision.reasons}")

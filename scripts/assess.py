@@ -21,7 +21,11 @@ from pydantic import ValidationError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings  # noqa: E402
-from app.ingestion.parser import FrontMatterError, safe_load_bounded  # noqa: E402
+from app.ingestion.parser import (  # noqa: E402
+    FrontMatterError,
+    read_text_bounded,
+    safe_load_bounded,
+)
 from app.llm.factory import get_client  # noqa: E402
 from app.models.assessment import AssessmentInput  # noqa: E402
 from app.models.report import ReportStatus  # noqa: E402
@@ -62,7 +66,9 @@ def main(argv: list[str] | None = None) -> int:
     # UTF-8 (`UnicodeDecodeError`) both escaped as a raw traceback.
     try:
         raw = safe_load_bounded(
-            args.input.read_text(encoding="utf-8"),
+            read_text_bounded(
+                args.input, max_bytes=_MAX_ASSESSMENT_YAML_BYTES, what="assessment file"
+            ),
             max_bytes=_MAX_ASSESSMENT_YAML_BYTES,
             what="assessment file",
         )

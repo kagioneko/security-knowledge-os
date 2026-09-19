@@ -19,6 +19,7 @@ from app.ingestion.snapshot import snapshot_tree
 from app.models.knowledge import Classification, KnowledgeCategory, KnowledgeUnitFrontMatter
 from app.models.risk import RULE_ID_PATTERN
 from app.policy.classification import expected_relative_dir
+from app.safe_errors import format_loc
 
 _RULE_ID_RE = re.compile(RULE_ID_PATTERN)
 
@@ -99,7 +100,7 @@ def validate_markdown(text: str, *, source: str = "<input>") -> list[ValidationI
         model = KnowledgeUnitFrontMatter.model_validate(front_matter)
     except ValidationError as exc:
         for err in exc.errors():
-            loc = ".".join(str(part) for part in err["loc"]) or "<root>"
+            loc = format_loc(err["loc"])
             issues.append(ValidationIssue(Level.ERROR, "schema", f"{loc}: {err['msg']}", source))
         return issues
 
@@ -186,7 +187,7 @@ def validate_content(
         model = KnowledgeUnitFrontMatter.model_validate(front_matter)
     except ValidationError as exc:
         for err in exc.errors():
-            loc = ".".join(str(part) for part in err["loc"]) or "<root>"
+            loc = format_loc(err["loc"])
             issues.append(
                 ValidationIssue(Level.ERROR, "schema", f"{loc}: {err['msg']}", location)
             )

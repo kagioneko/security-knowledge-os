@@ -83,6 +83,45 @@ class _RestrictedSafeLoader(yaml.SafeLoader):
         super().flatten_mapping(node)
 
 
+def read_text_bounded(path: Path, *, max_bytes: int, what: str = "file") -> str:
+    """Read at most ``max_bytes`` + 1 bytes and reject the file before
+    decoding if it is larger.
+
+    Codex#4 (round 23, 2026-09-20), reproduced exactly as reported: the CLI
+    loaders called ``Path.read_text()`` and only THEN handed the string to
+    ``safe_load_bounded()``, whose size limit therefore bounded the parse,
+    not the read - a multi-gigabyte (or sparse) assessment file was fully
+    loaded into memory, and encoded a second time for the length check,
+    before the 500 KB cap was ever consulted. A FIFO/`/dev/stdin` input
+    still works: the read is bounded regardless of the file type. Raises
+    ``FrontMatterError`` when over the limit; ``OSError`` /
+    ``UnicodeDecodeError`` propagate exactly as ``read_text()``'s did, so
+    existing callers' handling is unchanged."""
+    with open(path, "rb") as fh:
+        data = fh.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise FrontMatterError(f"{what} exceeds {max_bytes} bytes")
+    return data.decode("utf-8")
+
+
+def _describe_yaml_error(exc: yaml.YAMLError) -> str:
+    """Error class and position only. PyYAML's own `str(exc)` embeds a
+    snippet of the offending source line (and `problem` can quote an alias
+    or tag name), so a secret sitting on the line that failed to parse was
+    echoed to stderr / the HTTP response. Reproduced: an unterminated quoted
+    string `description: "AKIA...` printed the whole line."""
+    problem = getattr(exc, "problem_mark", None)
+    context = getattr(exc, "context_mark", None)
+    parts = []
+    if problem is not None:
+        parts.append(f"at line {problem.line + 1}, column {problem.column + 1}")
+    if context is not None:
+        # e.g. an unterminated quoted scalar: `problem` is the end of the
+        # stream, `context` is where the scalar STARTED - the useful one.
+        parts.append(f"construct started at line {context.line + 1}, column {context.column + 1}")
+    return " ".join([type(exc).__name__, *parts])
+
+
 def safe_load_bounded(text: str, *, max_bytes: int, what: str = "YAML content") -> Any:
     """A size-capped ``yaml.load`` using ``_RestrictedSafeLoader`` (merge
     keys refused) that converts every way PyYAML can blow up on hostile
@@ -101,7 +140,7 @@ def safe_load_bounded(text: str, *, max_bytes: int, what: str = "YAML content") 
     try:
         return yaml.load(text, Loader=_RestrictedSafeLoader)
     except yaml.YAMLError as exc:
-        raise FrontMatterError(f"invalid YAML in {what}: {exc}") from exc
+        raise FrontMatterError(f"invalid YAML in {what}: {_describe_yaml_error(exc)}") from exc
     except ValueError as exc:
         # Codex cross-review finding #8 (round 2, 2026-09-11): a
         # syntactically-shaped but semantically invalid scalar (e.g. the
@@ -111,7 +150,10 @@ def safe_load_bounded(text: str, *, max_bytes: int, what: str = "YAML content") 
         # not caught here, and POST /v1/knowledge/validate (meant to always
         # return a clean {valid: false, errors: [...]} response for exactly
         # this kind of bad input) returned an HTTP 500 instead.
-        raise FrontMatterError(f"invalid value in {what}: {exc}") from exc
+        # Codex#3 (round 23 follow-up, 2026-09-20): the message of a constructor
+        # ValueError can quote the scalar it choked on (`int()`'s "invalid
+        # literal ... 'AKIA...'"), so only the exception type is reported.
+        raise FrontMatterError(f"invalid value in {what} ({type(exc).__name__})") from exc
     except RecursionError as exc:
         # Codex cross-review finding #2, part 2 (round 3, 2026-09-12): a
         # small document with hundreds of nested flow collections

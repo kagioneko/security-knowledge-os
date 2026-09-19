@@ -19,7 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings  # noqa: E402
 from app.eval.metrics import LabelledResult, compute_metrics  # noqa: E402
-from app.ingestion.parser import FrontMatterError, safe_load_bounded  # noqa: E402
+from app.ingestion.parser import (  # noqa: E402
+    FrontMatterError,
+    read_text_bounded,
+    safe_load_bounded,
+)
 from app.models.assessment import AssessmentInput  # noqa: E402
 from app.policy.safe_test import load_safe_test_templates  # noqa: E402
 from app.reviewer.assess import assess  # noqa: E402
@@ -70,7 +74,9 @@ def main(argv: list[str] | None = None) -> int:
             # handling rule/safe-test/knowledge YAML already gets.
             try:
                 raw = safe_load_bounded(
-                    path.read_text(encoding="utf-8"),
+                    read_text_bounded(
+                        path, max_bytes=_MAX_ASSESSMENT_YAML_BYTES, what="assessment fixture"
+                    ),
                     max_bytes=_MAX_ASSESSMENT_YAML_BYTES,
                     what="assessment fixture",
                 )
