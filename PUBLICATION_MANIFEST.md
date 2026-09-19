@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `984c29a` (round-25 fixes, **not yet pushed**)
+- Commit: `e7bad5f` (round-26 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **215**
-- Tests: **719** items (718 pass, 1 skip = JA-R02)
+- Tracked files: **216**
+- Tests: **736** items (735 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -15,7 +15,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **twenty-one rounds**, 2026-09-11 -- 2026-09-15. Rounds 1-2
+  audit), **twenty-six rounds**, 2026-09-11 -- 2026-09-20. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -567,9 +567,31 @@ review; regenerate with `git ls-files` after any change.
   previously-built index (no migration path; this project has never
   shipped a released index, so only a local `var/index.sqlite` dev
   artifact needed rebuilding). See `git log` commit messages ("fix
-  round-21 Codex#…") for the itemized mapping. A twenty-second round
-  re-reviewing everything through this commit is the next step before
-  push.
+  round-21 Codex#…") for the itemized mapping.
+
+  **Rounds 22-26 (2026-09-19 -- 2026-09-20, Codex only; Antigravity's
+  round-22 PASS on `1437d88` stands).** Round 22 (Codex, CHANGES-REQUIRED,
+  3 MEDIUM): rejected credentials echoed in HTTP 422 bodies / CLI stderr;
+  schema-derived SQLite column names executed as SQL in the integrity
+  check; snapshot mixing generations across sibling subdirectories (closed
+  by a whole-tree re-verification after the copy). Round 23 (5 findings,
+  3 MEDIUM 2 LOW): secret-shaped KEYS leaking through error `loc`, YAML
+  syntax-error snippets, unbounded CLI read, untyped shorthand-clause
+  error, and the state-directory creation race (`mkdirat`-relative walk);
+  the coordinated-writer ABA race against the snapshot re-verification was
+  **accepted and documented** (`docs/threat-model.md`). Round 24 (1
+  MEDIUM): a raced-in ordinary directory bypassed the no-follow creation
+  guard (now judged by `fstat` on the descriptor). Round 25 (1 MEDIUM, 1
+  LOW): observed directories are pinned with `O_NOFOLLOW` plus an inode
+  check; `skos report` read is bounded. Round 26 (3 MEDIUM, 2 LOW): the
+  final state directory is judged by descriptor too, a BLOB
+  `sqlite_master.sql` fails closed, the review script accepts only a
+  verdict that is the transcript's final line and refuses a dirty tree or
+  one that changed during the review, and this manifest is now checked by
+  preflight to name the latest code commit and mention the latest round.
+  Every fix has a regression test that fails against the pre-fix code. A
+  twenty-seventh round re-reviewing everything through this commit is the
+  next step before push.
 
 ## Tracked files by area
 
@@ -581,7 +603,7 @@ check enforces (total tracked files, total tests) are kept current above.
 | area | files | notes |
 | --- | --- | --- |
 | `app/` | 59 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
-| `tests/` | 81 | 50 test modules + fixtures |
+| `tests/` | 82 | 51 test modules + fixtures |
 | `knowledge/` | 24 | 14 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
 | `rules/` | 13 | 7 rule YAMLs + category `.gitkeep`s |
 | `safe_tests/` | 4 | 4 vetted templates |
