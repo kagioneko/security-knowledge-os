@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `83a58ef` (round-21 fixes, **not yet pushed**)
+- Commit: `4e1497b` (round-22 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **213**
-- Tests: **682** items (681 pass, 1 skip = JA-R02)
+- Tracked files: **215**
+- Tests: **692** items (691 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -580,8 +580,8 @@ check enforces (total tracked files, total tests) are kept current above.
 
 | area | files | notes |
 | --- | --- | --- |
-| `app/` | 58 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
-| `tests/` | 80 | 49 test modules + fixtures |
+| `app/` | 59 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
+| `tests/` | 81 | 50 test modules + fixtures |
 | `knowledge/` | 24 | 14 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
 | `rules/` | 13 | 7 rule YAMLs + category `.gitkeep`s |
 | `safe_tests/` | 4 | 4 vetted templates |
