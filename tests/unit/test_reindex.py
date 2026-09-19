@@ -1245,3 +1245,36 @@ def test_reindex_signature_takes_no_content() -> None:
     from app.retrieval.index import reindex_atomic as fn
 
     assert set(inspect.signature(fn).parameters) == {"knowledge_root", "db_path", "blocking"}
+
+
+def test_reindex_does_not_create_directories_through_a_symlink_planted_after_the_trust_check(
+    tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#3 (round 23, 2026-09-20): same check-to-mkdir gap
+    as connect()'s (see tests/unit/test_db.py's sibling test), on the
+    reindex path - the symlink is planted right after the trust check
+    returns clean, and nothing may be created on the other side of it."""
+    import app.retrieval.index as index_module
+    import app.storage.db as db_module
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    db_path = shared / "skos-race" / "new" / "index.sqlite"
+
+    real_check = index_module.existing_ancestors_untrusted_reason
+
+    def check_then_plant(path: Path) -> str | None:
+        result = real_check(path)
+        (shared / "skos-race").symlink_to(outside, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(index_module, "existing_ancestors_untrusted_reason", check_then_plant)
+    monkeypatch.setattr(db_module, "_is_trusted_symlink_owner", lambda uid: False)
+
+    report = reindex_atomic(corpus_alt_root, db_path)
+
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert "symlink" in " ".join(report.decision.reasons)
+    assert list(outside.iterdir()) == [], "a directory was created THROUGH the planted symlink"

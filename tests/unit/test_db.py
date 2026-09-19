@@ -822,3 +822,64 @@ def test_snapshot_tree_refuses_when_root_itself_is_untrusted(tmp_path: Path) -> 
 
     with pytest.raises(SnapshotError, match=str(root)):
         snapshot_tree(root)
+
+
+def test_connect_does_not_create_directories_through_a_symlink_planted_after_the_trust_check(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression for Codex#3 (round 23, 2026-09-20), reproduced exactly as
+    reported: the round-17 fix validates whatever EXISTS along the ancestor
+    chain and then calls `mkdir(parents=True, exist_ok=True)` - but a
+    component that was still MISSING at check time can be replaced by a
+    symlink in the gap (a sticky /tmp lets anyone create entries), and that
+    `mkdir` then followed it and created `/target/new` outside the intended
+    path. The check is wrapped so the symlink is planted at exactly that
+    moment: right after the real check returned clean."""
+    import app.storage.db as db_module
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    db_path = shared / "skos-race" / "new" / "index.sqlite"
+
+    real_check = db_module.existing_ancestors_untrusted_reason
+
+    def check_then_plant(path: Path) -> str | None:
+        result = real_check(path)
+        (shared / "skos-race").symlink_to(outside, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(db_module, "existing_ancestors_untrusted_reason", check_then_plant)
+    # Only the planted link is "foreign": tests run as one uid and cannot create a
+    # symlink owned by someone else (see the ownership tests above for why a global
+    # os.geteuid() forge is unsound here).
+    monkeypatch.setattr(db_module, "_is_trusted_symlink_owner", lambda uid: False)
+
+    with pytest.raises(db_module.UntrustedStateDirectoryError, match="symlink"):
+        db_module.connect(db_path)
+
+    assert list(outside.iterdir()) == [], "a directory was created THROUGH the planted symlink"
+
+
+def test_make_dirs_no_follow_creates_a_normal_chain_with_private_mode(tmp_path: Path) -> None:
+    from app.storage.db import make_dirs_no_follow
+
+    target = tmp_path / "a" / "b" / "c"
+    make_dirs_no_follow(target)
+    make_dirs_no_follow(target)  # idempotent, like exist_ok=True
+
+    assert target.is_dir()
+    assert (target.stat().st_mode & 0o777) == 0o700
+
+
+def test_make_dirs_no_follow_still_accepts_a_symlink_this_process_owns(tmp_path: Path) -> None:
+    from app.storage.db import make_dirs_no_follow
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real, target_is_directory=True)
+
+    make_dirs_no_follow(tmp_path / "link" / "sub")
+
+    assert (real / "sub").is_dir()

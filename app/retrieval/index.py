@@ -31,6 +31,7 @@ from app.storage.db import (
     UntrustedStateDirectoryError,
     connect,
     existing_ancestors_untrusted_reason,
+    make_dirs_no_follow,
     open_no_follow,
     untrusted_state_dir_reason,
     verify_application_id,
@@ -288,7 +289,10 @@ def reindex_atomic(
             return ReindexReport(
                 decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", untrusted)
             )
-        db_path.parent.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            make_dirs_no_follow(db_path.parent.parent)  # Codex#3 (round 23): race-safe `mkdir -p`
+        except UntrustedStateDirectoryError as exc:
+            return ReindexReport(decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", str(exc)))
         try:
             os.mkdir(db_path.parent, 0o700)
             parent_created = True

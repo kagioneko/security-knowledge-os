@@ -230,6 +230,63 @@ def existing_ancestors_untrusted_reason(path: Path) -> str | None:
     return reason
 
 
+def _is_trusted_symlink_owner(uid: int) -> bool:
+    """A pre-existing symlink component is only followed when this process
+    or root created it - the same rule `_walk_lexical_ancestors` applies.
+    A function of its own so the race-injection tests can make a symlink
+    they can only create as themselves look foreign."""
+    return uid in (os.geteuid(), 0)
+
+
+def make_dirs_no_follow(path: Path, mode: int = 0o700) -> None:
+    """`mkdir -p`, but a component that appears between the caller's trust
+    check and this call can not redirect the creation.
+
+    Codex#3 (round 23, 2026-09-20), reproduced exactly as reported:
+    `existing_ancestors_untrusted_reason()` validates what exists NOW,
+    then `Path.mkdir(parents=True, exist_ok=True)` re-resolves the whole
+    pathname. A component that did not exist at check time but was
+    replaced by a symlink in between (a sticky /tmp lets anyone create
+    entries) was followed by that `mkdir`, so `os.mkdir(parent)` created
+    `/target/new` OUTSIDE the intended path - the later trust check
+    refused the write, but only after the directory had been created.
+
+    Each level is created with `mkdirat` relative to the already-open fd of
+    its parent: `mkdirat` never follows a symlink in the final position
+    (EEXIST), and a directory THIS call created is entered with
+    O_NOFOLLOW. A component that already exists is entered normally, unless
+    it is a symlink owned by neither this process nor root - refused before
+    anything is created below it. (A symlink owned by this process can
+    only be planted by the same uid, which can already write the state
+    directory directly; that case is outside this threat model.)"""
+    parts = [p for p in path.absolute().parts[1:] if p not in ("", ".")]
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for name in parts:
+            created = False
+            try:
+                os.mkdir(name, mode, dir_fd=fd)
+                created = True
+            except OSError as mkdir_error:
+                try:
+                    st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                except OSError:
+                    # neither created nor present: a real failure (EACCES, EROFS, ...)
+                    raise mkdir_error from None
+                if stat.S_ISLNK(st.st_mode) and not _is_trusted_symlink_owner(st.st_uid):
+                    raise UntrustedStateDirectoryError(
+                        f"{name!r} on the path to {path} is a symlink owned by uid "
+                        f"{st.st_uid} (neither this process nor root); refusing to "
+                        "create anything through it"
+                    ) from None
+            flags = os.O_RDONLY | os.O_DIRECTORY | (os.O_NOFOLLOW if created else 0)
+            next_fd = os.open(name, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+    finally:
+        os.close(fd)
+
+
 _MAX_SYMLINK_HOPS = 40  # matches a typical kernel ELOOP bound
 
 
@@ -517,7 +574,7 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
         untrusted = existing_ancestors_untrusted_reason(parent)
         if untrusted is not None:
             raise UntrustedStateDirectoryError(untrusted)
-        parent.parent.mkdir(parents=True, exist_ok=True)
+        make_dirs_no_follow(parent.parent)  # Codex#3 (round 23): race-safe `mkdir -p`
         try:
             os.mkdir(parent, 0o700)
             created_parent = True
