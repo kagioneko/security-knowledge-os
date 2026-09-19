@@ -27,6 +27,7 @@ from app.models.assessment import AssessmentInput  # noqa: E402
 from app.models.report import ReportStatus  # noqa: E402
 from app.reviewer.report import build_report  # noqa: E402
 from app.reviewer.rule_loader import load_rules  # noqa: E402
+from app.safe_errors import format_validation_error  # noqa: E402
 from app.storage.db import connect  # noqa: E402
 
 # Codex#8 (round 11, 2026-09-13): see cli.py's own comment on the identical
@@ -68,8 +69,11 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(raw, dict):
             raise FrontMatterError(f"assessment file must be a mapping, got {type(raw).__name__}")
         inp = AssessmentInput.model_validate(raw)
-    except (FrontMatterError, ValidationError) as exc:
+    except FrontMatterError as exc:
         print(f"invalid assessment file: {exc}", file=sys.stderr)
+        return 2
+    except ValidationError as exc:  # Codex#1 (round 22): never echo the rejected value
+        print(f"invalid assessment file: {format_validation_error(exc)}", file=sys.stderr)
         return 2
     except (OSError, UnicodeDecodeError) as exc:
         print(f"could not read input file: {exc}", file=sys.stderr)

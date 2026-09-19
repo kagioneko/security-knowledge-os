@@ -31,6 +31,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -45,11 +46,26 @@ from app.retrieval.index import ReindexReport, reindex_atomic
 from app.reviewer.answers import AnswerValidationError, apply_patch
 from app.reviewer.report import build_report, render_text
 from app.reviewer.rule_loader import RuleCatalogue, load_rules
+from app.safe_errors import sanitize_errors
 from app.storage.db import connect
 from app.storage.repository import ChunkRepository
 
 app = FastAPI(title="Security Knowledge OS", version="0.1.0")
 _logger = logging.getLogger(__name__)
+
+
+# Codex#1 (round 22, 2026-09-19), reproduced exactly as reported: FastAPI's
+# default 422 handler returns pydantic's error list verbatim, including each
+# error's `input` - the complete rejected value. The credential validators
+# reject a recognised secret and then this response handed it straight back
+# (POST {"name": "AKIA..."} -> 422 whose body contained the key), into
+# whatever HTTP-client / proxy / CI log sits on the other side. Only
+# `type`/`loc`/`msg` are returned (see app/safe_errors.py).
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": sanitize_errors(exc.errors())})
 
 # Codex cross-review finding #4 (round 4, 2026-09-12), reproduced exactly as
 # reported: POSTing two million bytes of whitespace padding around a tiny

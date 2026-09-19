@@ -24,6 +24,7 @@ from app.models.assessment import AssessmentInput  # noqa: E402
 from app.policy.safe_test import load_safe_test_templates  # noqa: E402
 from app.reviewer.assess import assess  # noqa: E402
 from app.reviewer.rule_loader import load_rules  # noqa: E402
+from app.safe_errors import format_validation_error  # noqa: E402
 from app.storage.db import connect  # noqa: E402
 
 _LABELS = {"vulnerable", "safe", "unknown"}
@@ -79,7 +80,8 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 inp = AssessmentInput.model_validate(raw)
             except (FrontMatterError, ValidationError) as exc:
-                print(f"INVALID fixture {path}: {exc}", file=sys.stderr)
+                detail = format_validation_error(exc) if isinstance(exc, ValidationError) else exc
+                print(f"INVALID fixture {path}: {detail}", file=sys.stderr)
                 skipped.append(str(path))
                 continue
             result = assess(

@@ -36,6 +36,7 @@ from app.policy.safe_test import (
 from app.retrieval.index import reindex_atomic
 from app.reviewer.report import build_report, render_text
 from app.reviewer.rule_loader import RuleLoadError, load_rules
+from app.safe_errors import format_validation_error
 from app.storage.db import connect
 
 # Codex#8 (round 11, 2026-09-13): a hand-authored assessment YAML file is at
@@ -341,8 +342,14 @@ def main(argv: list[str] | None = None) -> int:
     # Codex#8 (round 11, 2026-09-13): a malformed/hostile assessment YAML
     # file (via _load_input()) used to escape as a raw traceback instead of
     # this CLI's normal exit-code-2 usage-error path.
-    except (FrontMatterError, ValidationError) as exc:
+    except FrontMatterError as exc:
         print(f"invalid assessment file: {exc}", file=sys.stderr)
+        return 2
+    # Codex#1 (round 22, 2026-09-19): `str(ValidationError)` embeds the
+    # rejected value (`input_value=...`), so a credential that the
+    # validators just refused was printed back to the terminal / CI log.
+    except ValidationError as exc:
+        print(f"invalid assessment file: {format_validation_error(exc)}", file=sys.stderr)
         return 2
     # Codex#10 (round 12, 2026-09-13), reproduced exactly as reported:
     # `_load_input()`'s / `_cmd_report()`'s `path.read_text()` is not
