@@ -222,3 +222,14 @@ def test_read_text_bounded_reads_a_normal_file_unchanged(tmp_path: Path) -> None
     f.write_text("name: café\n", encoding="utf-8")
 
     assert read_text_bounded(f, max_bytes=1000) == "name: café\n"
+
+
+def test_duplicate_key_error_names_the_problem_but_not_the_key() -> None:
+    text = f"{SECRET}: 1\n{SECRET}: 2\n"
+
+    with pytest.raises(FrontMatterError) as excinfo:
+        safe_load_bounded(text, max_bytes=10_000, what="assessment file")
+
+    assert "duplicate key" in str(excinfo.value)
+    assert SECRET not in str(excinfo.value)
+    assert "line 2" in str(excinfo.value)

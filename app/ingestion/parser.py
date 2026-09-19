@@ -28,6 +28,17 @@ class FrontMatterError(ValueError):
     """The file has no parseable YAML front matter block."""
 
 
+class _LoaderRefusal(yaml.constructor.ConstructorError):
+    """A refusal this module raises itself, with a message written here and
+    containing nothing from the document (no key name, no scalar). Unlike
+    PyYAML's own errors - whose text can quote source content - it is safe
+    to show verbatim (see `_describe_yaml_error`)."""
+
+    def __init__(self, safe_message: str, mark: yaml.Mark) -> None:
+        super().__init__(None, None, safe_message, mark)
+        self.safe_message = safe_message
+
+
 class _RestrictedSafeLoader(yaml.SafeLoader):
     """SafeLoader with YAML merge keys (``<<``) refused outright.
 
@@ -64,21 +75,16 @@ class _RestrictedSafeLoader(yaml.SafeLoader):
         seen_keys: set[tuple[str, str]] = set()
         for key_node, _value_node in node.value:
             if key_node.tag == "tag:yaml.org,2002:merge":
-                raise yaml.constructor.ConstructorError(
-                    None,
-                    None,
-                    "merge keys ('<<') are not allowed in front matter",
-                    key_node.start_mark,
+                raise _LoaderRefusal(
+                    "merge keys ('<<') are not allowed in front matter", key_node.start_mark
                 )
             if isinstance(key_node, yaml.ScalarNode):
                 key_id = (key_node.tag, key_node.value)
                 if key_id in seen_keys:
-                    raise yaml.constructor.ConstructorError(
-                        None,
-                        None,
-                        f"duplicate key {key_node.value!r} in mapping",
-                        key_node.start_mark,
-                    )
+                    # The key's NAME is deliberately not in the message (it is
+                    # attacker-chosen text and could itself be a secret); the
+                    # position identifies it.
+                    raise _LoaderRefusal("duplicate key in mapping", key_node.start_mark)
                 seen_keys.add(key_id)
         super().flatten_mapping(node)
 
@@ -119,7 +125,8 @@ def _describe_yaml_error(exc: yaml.YAMLError) -> str:
         # e.g. an unterminated quoted scalar: `problem` is the end of the
         # stream, `context` is where the scalar STARTED - the useful one.
         parts.append(f"construct started at line {context.line + 1}, column {context.column + 1}")
-    return " ".join([type(exc).__name__, *parts])
+    detail = f": {exc.safe_message}" if isinstance(exc, _LoaderRefusal) else ""
+    return " ".join([type(exc).__name__, *parts]) + detail
 
 
 def safe_load_bounded(text: str, *, max_bytes: int, what: str = "YAML content") -> Any:
