@@ -862,24 +862,88 @@ def test_connect_does_not_create_directories_through_a_symlink_planted_after_the
     assert list(outside.iterdir()) == [], "a directory was created THROUGH the planted symlink"
 
 
-def test_make_dirs_no_follow_creates_a_normal_chain_with_private_mode(tmp_path: Path) -> None:
-    from app.storage.db import make_dirs_no_follow
+def test_ensure_dir_no_follow_creates_a_normal_chain_with_private_mode(tmp_path: Path) -> None:
+    from app.storage.db import ensure_dir_no_follow
 
     target = tmp_path / "a" / "b" / "c"
-    make_dirs_no_follow(target)
-    make_dirs_no_follow(target)  # idempotent, like exist_ok=True
+    ensure_dir_no_follow(target)
+    ensure_dir_no_follow(target)  # idempotent, like exist_ok=True
 
     assert target.is_dir()
     assert (target.stat().st_mode & 0o777) == 0o700
 
 
-def test_make_dirs_no_follow_still_accepts_a_symlink_this_process_owns(tmp_path: Path) -> None:
-    from app.storage.db import make_dirs_no_follow
+def test_ensure_dir_no_follow_still_accepts_a_symlink_this_process_owns(tmp_path: Path) -> None:
+    from app.storage.db import ensure_dir_no_follow
 
     real = tmp_path / "real"
     real.mkdir()
     (tmp_path / "link").symlink_to(real, target_is_directory=True)
 
-    make_dirs_no_follow(tmp_path / "link" / "sub")
+    ensure_dir_no_follow(tmp_path / "link" / "sub")
 
     assert (real / "sub").is_dir()
+
+
+def test_a_directory_raced_in_after_the_trust_check_is_judged_by_fstat_not_entered(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression for Codex#1 (round 24, 2026-09-20), reproduced exactly as
+    reported: the round-23 guard only refused a raced-in SYMLINK owned by
+    someone else. An ordinary DIRECTORY created in the same gap (`a`, owned
+    by the attacker) was entered and built under - and since the caller
+    then re-resolved a pathname for its own `os.mkdir(parent)`, the owner
+    of `a` could swap the next component for a symlink and redirect that
+    creation. Tests run as one uid, so 'owned by someone else' is injected
+    at the single ownership judgement (`_stat_result_untrusted_reason`)
+    for exactly the raced-in component."""
+    import app.storage.db as db_module
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    db_path = shared / "a" / "b" / "state" / "index.sqlite"
+
+    real_check = db_module.existing_ancestors_untrusted_reason
+
+    def check_then_race(path: Path) -> str | None:
+        result = real_check(path)
+        (shared / "a").mkdir()  # the attacker's directory appears in the gap
+        return result
+
+    real_judge = db_module._stat_result_untrusted_reason
+
+    def judge(st: os.stat_result, label: str) -> str | None:
+        if label.startswith("'a'"):
+            return f"{label} is owned by uid {st.st_uid + 1} (injected foreign owner)"
+        return real_judge(st, label)
+
+    monkeypatch.setattr(db_module, "existing_ancestors_untrusted_reason", check_then_race)
+    monkeypatch.setattr(db_module, "_stat_result_untrusted_reason", judge)
+
+    with pytest.raises(db_module.UntrustedStateDirectoryError, match="injected foreign owner"):
+        db_module.connect(db_path)
+
+    assert list((shared / "a").iterdir()) == [], "something was created inside the raced directory"
+
+
+def test_ensure_dir_no_follow_reports_whether_the_last_component_was_created(
+    tmp_path: Path,
+) -> None:
+    from app.storage.db import ensure_dir_no_follow
+
+    target = tmp_path / "x" / "state"
+
+    assert ensure_dir_no_follow(target) is True
+    assert ensure_dir_no_follow(target) is False
+    assert (target.stat().st_mode & 0o777) == 0o700
+
+
+def test_ensure_dir_no_follow_refuses_a_symlink_as_the_last_component(tmp_path: Path) -> None:
+    from app.storage.db import UntrustedStateDirectoryError, ensure_dir_no_follow
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "state").symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(UntrustedStateDirectoryError, match="could not be safely opened"):
+        ensure_dir_no_follow(tmp_path / "state")

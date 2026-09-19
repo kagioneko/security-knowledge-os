@@ -30,8 +30,8 @@ from app.storage.db import (
     FTS5Unavailable,
     UntrustedStateDirectoryError,
     connect,
+    ensure_dir_no_follow,
     existing_ancestors_untrusted_reason,
-    make_dirs_no_follow,
     open_no_follow,
     untrusted_state_dir_reason,
     verify_application_id,
@@ -289,32 +289,13 @@ def reindex_atomic(
             return ReindexReport(
                 decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", untrusted)
             )
+        # Codex#3 (round 23) / Codex#1 (round 24): the whole `mkdir -p`, the
+        # last component and the fchmod happen inside one descriptor-relative
+        # walk - no pathname is re-resolved after the trust check above.
         try:
-            make_dirs_no_follow(db_path.parent.parent)  # Codex#3 (round 23): race-safe `mkdir -p`
+            ensure_dir_no_follow(db_path.parent)
         except UntrustedStateDirectoryError as exc:
             return ReindexReport(decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", str(exc)))
-        try:
-            os.mkdir(db_path.parent, 0o700)
-            parent_created = True
-        except FileExistsError:
-            parent_created = False
-        try:
-            parent_fd = os.open(db_path.parent, os.O_DIRECTORY | os.O_NOFOLLOW)
-        except OSError as exc:
-            return ReindexReport(
-                decision=stop(
-                    PolicyOutcome.POLICY_BLOCKED,
-                    "reindex",
-                    f"state directory {db_path.parent} could not be safely opened "
-                    f"(may be a symlink or not a directory): {exc}",
-                )
-            )
-        try:
-            if parent_created:
-                with contextlib.suppress(OSError):
-                    os.fchmod(parent_fd, 0o700)
-        finally:
-            os.close(parent_fd)
         # Codex#3 (round 11, 2026-09-13): finding #1/#2 (round 10) each
         # narrowed a symlink-substitution TOCTOU window in this function to
         # a single stat-then-use gap, but a residual window is provably

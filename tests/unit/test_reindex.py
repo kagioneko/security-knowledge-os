@@ -1278,3 +1278,40 @@ def test_reindex_does_not_create_directories_through_a_symlink_planted_after_the
     assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
     assert "symlink" in " ".join(report.decision.reasons)
     assert list(outside.iterdir()) == [], "a directory was created THROUGH the planted symlink"
+
+
+def test_reindex_does_not_build_inside_a_directory_raced_in_after_the_trust_check(
+    tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#1 (round 24, 2026-09-20): same ordinary-directory
+    race as connect()'s (see tests/unit/test_db.py's sibling test), on the
+    reindex path."""
+    import app.retrieval.index as index_module
+    import app.storage.db as db_module
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    db_path = shared / "a" / "b" / "state" / "index.sqlite"
+
+    real_check = index_module.existing_ancestors_untrusted_reason
+
+    def check_then_race(path: Path) -> str | None:
+        result = real_check(path)
+        (shared / "a").mkdir()
+        return result
+
+    real_judge = db_module._stat_result_untrusted_reason
+
+    def judge(st: os.stat_result, label: str) -> str | None:
+        if label.startswith("'a'"):
+            return f"{label} is owned by uid {st.st_uid + 1} (injected foreign owner)"
+        return real_judge(st, label)
+
+    monkeypatch.setattr(index_module, "existing_ancestors_untrusted_reason", check_then_race)
+    monkeypatch.setattr(db_module, "_stat_result_untrusted_reason", judge)
+
+    report = reindex_atomic(corpus_alt_root, db_path)
+
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert "injected foreign owner" in " ".join(report.decision.reasons)
+    assert list((shared / "a").iterdir()) == []

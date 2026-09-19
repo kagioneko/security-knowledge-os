@@ -231,16 +231,26 @@ def existing_ancestors_untrusted_reason(path: Path) -> str | None:
 
 
 def _is_trusted_symlink_owner(uid: int) -> bool:
-    """A pre-existing symlink component is only followed when this process
-    or root created it - the same rule `_walk_lexical_ancestors` applies.
-    A function of its own so the race-injection tests can make a symlink
-    they can only create as themselves look foreign."""
+    """`_is_trusted_owner` for the one symlink-ownership judgement in
+    `ensure_dir_no_follow` - separate only so a race-injection test can make
+    the symlink it plants look foreign WITHOUT also making every real
+    ancestor directory (root-owned /tmp, ...) look foreign."""
+    return _is_trusted_owner(uid)
+
+
+def _is_trusted_owner(uid: int) -> bool:
+    """Owned by this process or by root - the one ownership rule every
+    directory/symlink trust check here applies. A function of its own so
+    the race-injection tests can make an object they can only create as
+    themselves look foreign."""
     return uid in (os.geteuid(), 0)
 
 
-def make_dirs_no_follow(path: Path, mode: int = 0o700) -> None:
-    """`mkdir -p`, but a component that appears between the caller's trust
-    check and this call can not redirect the creation.
+def ensure_dir_no_follow(path: Path, mode: int = 0o700) -> bool:
+    """Create `path` and any missing ancestors entirely through directory
+    descriptors, and return whether `path` ITSELF was newly created (it is
+    then already `fchmod`-ed to `mode`). Callers must not go back to a
+    pathname-based `mkdir`/`open` afterwards - see below.
 
     Codex#3 (round 23, 2026-09-20), reproduced exactly as reported:
     `existing_ancestors_untrusted_reason()` validates what exists NOW,
@@ -248,21 +258,33 @@ def make_dirs_no_follow(path: Path, mode: int = 0o700) -> None:
     pathname. A component that did not exist at check time but was
     replaced by a symlink in between (a sticky /tmp lets anyone create
     entries) was followed by that `mkdir`, so `os.mkdir(parent)` created
-    `/target/new` OUTSIDE the intended path - the later trust check
-    refused the write, but only after the directory had been created.
+    `/target/new` OUTSIDE the intended path.
 
-    Each level is created with `mkdirat` relative to the already-open fd of
-    its parent: `mkdirat` never follows a symlink in the final position
-    (EEXIST), and a directory THIS call created is entered with
-    O_NOFOLLOW. A component that already exists is entered normally, unless
-    it is a symlink owned by neither this process nor root - refused before
-    anything is created below it. (A symlink owned by this process can
-    only be planted by the same uid, which can already write the state
-    directory directly; that case is outside this threat model.)"""
+    Codex#1 (round 24, 2026-09-20), reproduced exactly as reported: the
+    first version of this only refused a raced-in SYMLINK owned by someone
+    else. An ordinary DIRECTORY inserted in the same gap (`/tmp/a`, owned
+    by the attacker) was entered and built under, and because the caller
+    then went back to a pathname `os.mkdir(parent)`, the attacker - who owns
+    `/tmp/a` - could swap the next component for a symlink and redirect that
+    final creation. Two changes: every directory this walk ENTERS that it
+    did not create is judged by `fstat` on the descriptor it is about to use
+    (owner and write bits, the same rule as the ancestor check - not the
+    pathname, which may have changed), and the whole destination including
+    the last component is created here, `mkdirat`-relative to its parent's
+    descriptor, so no later step resolves a pathname.
+
+    `mkdirat` never follows a symlink in the final position (EEXIST), and a
+    directory THIS call created is entered with O_NOFOLLOW. An existing
+    symlink component is followed only if this process or root owns it.
+    The last component, if it already exists, must be a real directory
+    (O_NOFOLLOW); judging its ownership/permissions stays with the caller's
+    `untrusted_state_dir_reason()`."""
     parts = [p for p in path.absolute().parts[1:] if p not in ("", ".")]
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    created = False
     try:
-        for name in parts:
+        for index, name in enumerate(parts):
+            last = index == len(parts) - 1
             created = False
             try:
                 os.mkdir(name, mode, dir_fd=fd)
@@ -273,16 +295,40 @@ def make_dirs_no_follow(path: Path, mode: int = 0o700) -> None:
                 except OSError:
                     # neither created nor present: a real failure (EACCES, EROFS, ...)
                     raise mkdir_error from None
-                if stat.S_ISLNK(st.st_mode) and not _is_trusted_symlink_owner(st.st_uid):
+                if (
+                    not last
+                    and stat.S_ISLNK(st.st_mode)
+                    and not _is_trusted_symlink_owner(st.st_uid)
+                ):
                     raise UntrustedStateDirectoryError(
                         f"{name!r} on the path to {path} is a symlink owned by uid "
                         f"{st.st_uid} (neither this process nor root); refusing to "
                         "create anything through it"
                     ) from None
-            flags = os.O_RDONLY | os.O_DIRECTORY | (os.O_NOFOLLOW if created else 0)
-            next_fd = os.open(name, flags, dir_fd=fd)
+            flags = os.O_RDONLY | os.O_DIRECTORY
+            if created or last:
+                flags |= os.O_NOFOLLOW
+            try:
+                next_fd = os.open(name, flags, dir_fd=fd)
+            except OSError as exc:
+                if last:
+                    raise UntrustedStateDirectoryError(
+                        f"state directory {path} could not be safely opened "
+                        f"(may be a symlink or not a directory): {exc}"
+                    ) from exc
+                raise
             os.close(fd)
             fd = next_fd
+            if not created and not last:
+                reason = _stat_result_untrusted_reason(
+                    os.fstat(fd), f"{name!r} on the path to {path}"
+                )
+                if reason is not None:
+                    raise UntrustedStateDirectoryError(reason)
+        if created:
+            with contextlib.suppress(OSError):  # best-effort: no POSIX perms on this fs
+                os.fchmod(fd, mode)
+        return created
     finally:
         os.close(fd)
 
@@ -397,7 +443,16 @@ def _untrusted_directory_stat_reason(directory: Path) -> str | None:
         st = directory.stat()
     except OSError as exc:
         return f"could not verify ownership/permissions of {directory}: {exc}"
-    if st.st_uid not in (os.geteuid(), 0):
+    return _stat_result_untrusted_reason(st, str(directory))
+
+
+def _stat_result_untrusted_reason(st: os.stat_result, label: str) -> str | None:
+    """`_untrusted_directory_stat_reason`'s rule applied to an ALREADY-TAKEN
+    stat result - so a caller that holds an open directory descriptor can
+    judge exactly the directory it is about to use (`os.fstat(fd)`) rather
+    than re-resolving a pathname that may have changed since."""
+    directory = label
+    if not _is_trusted_owner(st.st_uid):
         return (
             f"{directory} is owned by uid {st.st_uid} (neither this process "
             "nor root); refusing to trust it regardless of its current permission bits"
@@ -574,25 +629,10 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
         untrusted = existing_ancestors_untrusted_reason(parent)
         if untrusted is not None:
             raise UntrustedStateDirectoryError(untrusted)
-        make_dirs_no_follow(parent.parent)  # Codex#3 (round 23): race-safe `mkdir -p`
-        try:
-            os.mkdir(parent, 0o700)
-            created_parent = True
-        except FileExistsError:
-            created_parent = False
-        try:
-            parent_fd = os.open(parent, os.O_DIRECTORY | os.O_NOFOLLOW)
-        except OSError as exc:
-            raise UntrustedStateDirectoryError(
-                f"state directory {parent} could not be safely opened "
-                f"(may be a symlink or not a directory): {exc}"
-            ) from exc
-        try:
-            if created_parent:
-                with contextlib.suppress(OSError):  # best-effort: no POSIX perms on this fs
-                    os.fchmod(parent_fd, 0o700)
-        finally:
-            os.close(parent_fd)
+        # Codex#3 (round 23) / Codex#1 (round 24): the whole `mkdir -p`, the
+        # last component and the fchmod happen inside one descriptor-relative
+        # walk - no pathname is re-resolved after the trust check above.
+        ensure_dir_no_follow(parent)
         # Codex#6 (round 11, 2026-09-13): see untrusted_state_dir_reason()'s
         # own comment - the pre/post identity check further down can be
         # defeated by an ABA race (substitute, let SQLite write, restore
