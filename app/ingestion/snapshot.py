@@ -31,6 +31,7 @@ import shutil
 import stat
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from app.storage.db import untrusted_ancestor_chain_reason, untrusted_directory_reason
 
@@ -77,12 +78,18 @@ class _Budget:
     a plain int can't be updated by a callee and observed by its caller
     without either this or a `nonlocal` per recursion level."""
 
-    __slots__ = ("files", "entries", "bytes_copied")
+    __slots__ = ("files", "entries", "bytes_copied", "manifest")
 
     def __init__(self) -> None:
         self.files = 0
         self.entries = 0
         self.bytes_copied = 0
+        # Codex#3 (round 22, 2026-09-19): relative path -> what the copy saw
+        # there, for the final whole-tree re-verification in
+        # `_verify_tree_unchanged()`. A directory is `("d", (st_dev, st_ino),
+        # frozenset(entry names))`, a file is `("f", (ino, mtime_ns, ctime_ns,
+        # size))`; the root directory's key is "".
+        self.manifest: dict[str, tuple[Any, ...]] = {}
 
 
 def _open_dir_no_follow(name: str, dir_fd: int | None = None) -> int:
@@ -195,8 +202,12 @@ def _copy_file_no_follow(
             os.close(fd)
 
 
+def _join_rel(rel: str, name: str) -> str:
+    return f"{rel}/{name}" if rel else name
+
+
 def _walk_no_follow(
-    src_dir_fd: int, display: str, dest: Path, budget: _Budget, depth: int = 0
+    src_dir_fd: int, display: str, dest: Path, budget: _Budget, depth: int = 0, rel: str = ""
 ) -> None:
     # Codex#7 (round 11, 2026-09-13): an attacker-controlled or accidentally
     # very deep directory tree recurses this function once per level - a
@@ -228,7 +239,14 @@ def _walk_no_follow(
             child_fd = _open_dir_no_follow(entry.name, dir_fd=src_dir_fd)
             try:
                 _check_identity_unchanged(scanned, os.fstat(child_fd), child_display)
-                _walk_no_follow(child_fd, child_display, dest / entry.name, budget, depth + 1)
+                _walk_no_follow(
+                    child_fd,
+                    child_display,
+                    dest / entry.name,
+                    budget,
+                    depth + 1,
+                    _join_rel(rel, entry.name),
+                )
             finally:
                 os.close(child_fd)
         elif entry.is_file(follow_symlinks=False):
@@ -293,14 +311,18 @@ def _walk_no_follow(
     # the (ino, mtime_ns, ctime_ns, size) recorded right after that
     # file's own copy finished catches a change any time between then
     # and this directory's rescan, not just during the file's own
-    # narrow copy window. (A residual window remains between THIS
-    # rescan and the moment the whole multi-level walk finally returns
-    # to the caller - the same class of gap a full snapshot-without-
-    # locking approach can't close without the shared source-update
-    # lock or atomically-switched generation directories noted as the
-    # stronger alternative; re-verifying at every directory LEVEL, as
-    # soon as that level's own copying is done, keeps that residual
-    # window as small as the tree structure allows.)
+    # narrow copy window.
+    #
+    # Codex#3 (round 22, 2026-09-19), reproduced exactly as reported: this
+    # per-directory check only covers the files DIRECTLY in this directory,
+    # right after its own subtree - a file inside an already-finished child
+    # directory is never looked at again, so a change there while a LATER
+    # sibling subtree was still being copied went undetected (an earlier
+    # version of this comment called that a "residual window" and named a
+    # shared lock or generation directories as the only fix). It is closed
+    # by `_verify_tree_unchanged()`, one full re-walk after the entire copy
+    # (see its docstring); this per-level check remains only so a change is
+    # rejected early instead of after the whole tree has been copied.
     remaining = set(before_names)
     for entry in os.scandir(src_dir_fd):
         if entry.name not in remaining:
@@ -331,6 +353,83 @@ def _walk_no_follow(
                 )
     if remaining:
         raise SnapshotError(f"{display}: directory entries changed while being copied")
+    dir_stat = os.fstat(src_dir_fd)
+    budget.manifest[rel] = ("d", (dir_stat.st_dev, dir_stat.st_ino), frozenset(before_names))
+    for name, recorded in recorded_files.items():
+        budget.manifest[_join_rel(rel, name)] = ("f", recorded)
+
+
+def _reverify_dir(
+    dir_fd: int, display: str, rel: str, manifest: dict[str, tuple[Any, ...]]
+) -> None:
+    _, _, expected_names = manifest[rel]
+    remaining = set(expected_names)
+    # Streamed and bounded exactly like the per-directory rescan: aborts at
+    # the first name outside the recorded set, so a writer flooding the
+    # directory cannot make this pass allocate without limit.
+    for entry in os.scandir(dir_fd):
+        if entry.name not in remaining:
+            raise SnapshotError(f"{display}: directory entries changed while being copied")
+        remaining.discard(entry.name)
+        child_display = f"{display}/{entry.name}"
+        expected = manifest.get(_join_rel(rel, entry.name))
+        if expected is None:  # pragma: no cover - names come from the same manifest
+            raise SnapshotError(f"{child_display}: not part of the copied tree")
+        if expected[0] == "d":
+            try:
+                child_fd = _open_dir_no_follow(entry.name, dir_fd=dir_fd)
+            except OSError as exc:
+                raise SnapshotError(
+                    f"{child_display}: could not be re-verified after being copied: {exc}"
+                ) from exc
+            try:
+                st = os.fstat(child_fd)
+                if (st.st_dev, st.st_ino) != expected[1]:
+                    raise SnapshotError(
+                        f"{child_display}: replaced with a different directory after being "
+                        "copied; refusing to publish a mixed-time snapshot"
+                    )
+                _reverify_dir(child_fd, child_display, _join_rel(rel, entry.name), manifest)
+            finally:
+                os.close(child_fd)
+        else:
+            try:
+                fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+            except OSError as exc:
+                raise SnapshotError(
+                    f"{child_display}: could not be re-verified after being copied: {exc}"
+                ) from exc
+            try:
+                st = os.fstat(fd)
+            finally:
+                os.close(fd)
+            if (st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size) != expected[1]:
+                raise SnapshotError(
+                    f"{child_display}: changed after being copied but before the snapshot "
+                    "finished; refusing to publish a mixed-time snapshot"
+                )
+    if remaining:
+        raise SnapshotError(f"{display}: directory entries changed while being copied")
+
+
+def _verify_tree_unchanged(root_fd: int, display: str, budget: _Budget) -> None:
+    """Codex#3 (round 22, 2026-09-19), reproduced exactly as reported: each
+    directory re-verified only ITS OWN direct files, right after its own
+    subtree finished - so once a child directory had passed, a later
+    sibling subtree could still be copying while a writer rewrote files in
+    that already-finished child; the snapshot then held one file at its old
+    version and another at its new one, a combination the source never had
+    at any single instant. This re-walks the WHOLE tree once, after the
+    entire copy, against what the copy recorded. If nothing differs, every
+    copied file was unchanged from the moment it was copied until this
+    check, so the snapshot equals the source as it stood at this check;
+    anything a writer does afterwards is simply a newer state, not a mix of
+    two. (Detection is by (ino, mtime_ns, ctime_ns, size), the same
+    stat-based test the per-directory check uses. Filesystem timestamps
+    can be coarse (a few ms on some kernels), so a same-size rewrite
+    within one timestamp tick of the copy is a limit of that method, not
+    something this pass adds.)"""
+    _reverify_dir(root_fd, display, "", budget.manifest)
 
 
 def snapshot_tree(root: Path) -> Path:
@@ -366,7 +465,9 @@ def snapshot_tree(root: Path) -> Path:
     try:
         root_fd = _open_dir_no_follow(str(root))
         try:
-            _walk_no_follow(root_fd, str(root), dest, _Budget())
+            budget = _Budget()
+            _walk_no_follow(root_fd, str(root), dest, budget)
+            _verify_tree_unchanged(root_fd, str(root), budget)
         finally:
             os.close(root_fd)
     except BaseException:

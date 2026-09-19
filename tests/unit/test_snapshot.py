@@ -469,3 +469,95 @@ def test_rejects_a_tree_deeper_than_the_snapshot_depth_limit(
 
     with pytest.raises(SnapshotError, match="snapshot depth limit"):
         snapshot_tree(root)
+
+
+def test_a_change_in_an_already_finished_subtree_is_caught_by_the_final_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#3 (round 22, 2026-09-19), reproduced exactly as
+    reported: each directory only re-verified its OWN direct files right
+    after its own subtree, so once the first child directory had passed, a
+    writer could rewrite files in it while a LATER sibling was still being
+    copied. Both files go old/old -> new/new on the source, but the
+    snapshot held first-child=old, second-child=new - a state that never
+    existed. Sizes differ old->new so the check never depends on
+    filesystem timestamp granularity."""
+    import app.ingestion.snapshot as snapshot_module
+
+    root = tmp_path / "src"
+    (root / "one").mkdir(parents=True)
+    (root / "two").mkdir()
+    (root / "one" / "f.yaml").write_text("old-one", encoding="utf-8")
+    (root / "two" / "f.yaml").write_text("old-two", encoding="utf-8")
+
+    real_walk = snapshot_module._walk_no_follow
+    finished_children: list[str] = []
+
+    def racy_walk(*args, **kwargs):  # type: ignore[no-untyped-def]
+        result = real_walk(*args, **kwargs)
+        display = args[1]
+        depth = args[4] if len(args) > 4 else kwargs.get("depth", 0)
+        if depth == 1 and not finished_children:
+            # the FIRST child subtree just finished (and passed its own
+            # rescan); before the next sibling is copied, the writer flips
+            # the whole source to its new version.
+            finished_children.append(display)
+            (root / "one" / "f.yaml").write_text("new-version-one", encoding="utf-8")
+            (root / "two" / "f.yaml").write_text("new-version-two", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(snapshot_module, "_walk_no_follow", racy_walk)
+
+    with pytest.raises(SnapshotError, match="changed after being copied"):
+        snapshot_tree(root)
+    assert finished_children, "premise: the race hook must actually have fired"
+
+
+def test_final_pass_accepts_an_unchanged_multi_level_tree(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    (root / "a" / "b").mkdir(parents=True)
+    (root / "c").mkdir()
+    (root / "a" / "b" / "leaf.md").write_text("1", encoding="utf-8")
+    (root / "c" / "x.md").write_text("2", encoding="utf-8")
+    (root / "top.md").write_text("3", encoding="utf-8")
+
+    dest = snapshot_tree(root)
+    try:
+        assert (dest / "a" / "b" / "leaf.md").read_text(encoding="utf-8") == "1"
+        assert (dest / "c" / "x.md").read_text(encoding="utf-8") == "2"
+    finally:
+        shutil.rmtree(dest, ignore_errors=True)
+
+
+def test_final_pass_catches_a_directory_replaced_after_being_copied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.ingestion.snapshot as snapshot_module
+
+    root = tmp_path / "src"
+    (root / "one").mkdir(parents=True)
+    (root / "two").mkdir()
+    (root / "one" / "f.md").write_text("x", encoding="utf-8")
+    (root / "two" / "f.md").write_text("y", encoding="utf-8")
+
+    real_walk = snapshot_module._walk_no_follow
+    fired: list[int] = []
+
+    def racy_walk(*args, **kwargs):  # type: ignore[no-untyped-def]
+        result = real_walk(*args, **kwargs)
+        depth = args[4] if len(args) > 4 else kwargs.get("depth", 0)
+        if depth == 1 and not fired:
+            fired.append(1)
+            # same names, same content - but a DIFFERENT directory inode.
+            # (scandir order is arbitrary, so target whichever child just finished.)
+            finished = root / args[1].rsplit("/", 1)[-1]
+            content = (finished / "f.md").read_text(encoding="utf-8")
+            shutil.rmtree(finished)
+            finished.mkdir()
+            (finished / "f.md").write_text(content, encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(snapshot_module, "_walk_no_follow", racy_walk)
+
+    with pytest.raises(SnapshotError, match="replaced with a different directory|changed after"):
+        snapshot_tree(root)
