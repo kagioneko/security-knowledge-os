@@ -148,6 +148,7 @@ secret/          OUTSIDE the repository. Never indexed, never sent to an LLM.
 | `retrieval/hybrid.py` | thin BM25 wrapper; embeddings / reranker are future work |
 | JA-R02 (cross-language retrieval) | out of MVP scope; test skipped |
 | Update Pack / Pack Manager | not in this codebase (M9-M10, separate track); the ZIP-import attack surface it introduces is future work |
+| snapshot consistency vs. a COORDINATING writer | whole-tree re-verification catches ordinary concurrent updates; a writer that swaps directory generations during the verification pass itself is accepted (trust boundary: the tree root must not be writable by untrusted parties; a writer with write access can replace a rule directly). See `docs/threat-model.md` (Codex#1, round 23) |
 | trigram tokenizer | substring matching; can over-retrieve on a large corpus (fine for 14 KUs) |
 
 ## 10. How to run

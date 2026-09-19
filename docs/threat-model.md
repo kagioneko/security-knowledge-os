@@ -56,6 +56,20 @@ that edits knowledge content.
   forwarded to the external LLM regardless (`app/reviewer/llm_review.py`'s
   anonymization, round 14) - only the in-scope, already-unauthenticated
   read-back applies.
+- Snapshot consistency (`app/ingestion/snapshot.py`) is guaranteed against
+  ordinary, uncoordinated concurrent updates of the rules / safe-tests /
+  knowledge trees (Codex#3 round 22, whole-tree re-verification after the
+  copy), **not** against a writer that coordinates with the verification
+  pass itself - e.g. swapping directory generations back and forth so that
+  an already-checked entry is restored to its original inode while a later
+  one is examined (Codex#1, round 23, 2026-09-20). Closing that needs a lock
+  every writer honours or atomically published immutable generation
+  directories, neither of which can be imposed on writers outside this
+  project (git, an editor). Accepted because the tree is inside the trust
+  boundary: the root must not be writable by any untrusted party
+  (`snapshot_tree()` refuses it), and whoever can write it can replace a rule
+  directly - a stronger consistency guarantee would not reduce that threat.
+  Operationally: do not run `reindex` while the trees are being updated.
 - Integrity is a content hash (SHA-256), which proves the index matches the
   knowledge files, **not** that the knowledge files are authentic. Signature /
   trusted-manifest / human-approval is Pack Manager (M9-M10) work.

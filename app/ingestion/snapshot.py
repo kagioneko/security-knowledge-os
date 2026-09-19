@@ -428,7 +428,22 @@ def _verify_tree_unchanged(root_fd: int, display: str, budget: _Budget) -> None:
     stat-based test the per-directory check uses. Filesystem timestamps
     can be coarse (a few ms on some kernels), so a same-size rewrite
     within one timestamp tick of the copy is a limit of that method, not
-    something this pass adds.)"""
+    something this pass adds.)
+
+    What this does NOT guarantee (Codex#1, round 23, 2026-09-20 - accepted,
+    see docs/threat-model.md): this pass is itself a sequence of separate
+    reads, not an atomic one. A writer that is COORDINATING with it - it
+    swaps directory generations back and forth, restoring an
+    already-checked entry to its original inode while a later entry is
+    being examined - can make every individual comparison pass. Only a
+    lock every writer honours, or immutable generation directories
+    published atomically, closes that; neither can be imposed on writers
+    this project does not control (git, an editor). The defence is the trust boundary
+    instead: `snapshot_tree()` refuses a root writable by any untrusted
+    party, and whoever CAN write the tree can already replace a rule
+    outright, so a consistency guarantee against that writer would not
+    reduce the threat. The guarantee is against ordinary, uncoordinated
+    concurrent updates."""
     _reverify_dir(root_fd, display, "", budget.manifest)
 
 
