@@ -78,7 +78,16 @@ def _require_genuine_fts5_schema(conn: sqlite3.Connection) -> None:
     row = conn.execute(
         "SELECT type, sql FROM sqlite_master WHERE name = 'chunks_fts'"
     ).fetchone()
-    if row is None or row[0] != "table" or not _FTS5_VIRTUAL_TABLE_RE.match(row[1] or ""):
+    # Codex#4 (round 26, 2026-09-20), reproduced exactly as reported: a
+    # corrupted database can store a BLOB (or NULL) in `sqlite_master.sql`;
+    # applying the string regex to it raised a raw TypeError instead of the
+    # fail-closed POLICY_BLOCKED this check exists to produce.
+    if (
+        row is None
+        or row[0] != "table"
+        or not isinstance(row[1], str)
+        or not _FTS5_VIRTUAL_TABLE_RE.match(row[1])
+    ):
         raise _FtsSchemaInvalid("chunks_fts is not an FTS5 virtual table")
     for table, expected in _FTS_SHADOW_COLUMNS.items():
         info = conn.execute(

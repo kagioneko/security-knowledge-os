@@ -1347,3 +1347,28 @@ def test_reindex_refuses_a_directory_swapped_for_a_symlink_between_stat_and_open
     assert fired
     assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
     assert list(victim.iterdir()) == []
+
+
+def test_reindex_refuses_a_pre_existing_foreign_state_directory_before_touching_it(
+    tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#1 (round 26, 2026-09-20): see tests/unit/test_db.py's
+    sibling tests."""
+    import app.storage.db as db_module
+
+    state = tmp_path / "shared" / "skos-state"
+    state.mkdir(parents=True)
+    real_judge = db_module._stat_result_untrusted_reason
+
+    def judge(st: os.stat_result, label: str) -> str | None:
+        if label == str(state):
+            return f"{label} is owned by uid {st.st_uid + 1} (injected foreign owner)"
+        return real_judge(st, label)
+
+    monkeypatch.setattr(db_module, "_stat_result_untrusted_reason", judge)
+
+    report = reindex_atomic(corpus_alt_root, state / "index.sqlite")
+
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert "injected foreign owner" in " ".join(report.decision.reasons)
+    assert list(state.iterdir()) == []

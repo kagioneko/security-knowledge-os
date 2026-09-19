@@ -1033,3 +1033,52 @@ def test_connect_refuses_a_directory_swapped_for_a_symlink_between_stat_and_open
         db_module.connect(shared / "a" / "state" / "index.sqlite")
 
     assert list(victim.iterdir()) == []
+
+
+def _foreign_final_directory(monkeypatch, final: Path) -> None:
+    """Make exactly `final` (judged by descriptor, label == its path) look owned
+    by someone else - tests run as one uid and cannot create a directory owned
+    by another."""
+    import app.storage.db as db_module
+
+    real_judge = db_module._stat_result_untrusted_reason
+
+    def judge(st: os.stat_result, label: str) -> str | None:
+        if label == str(final):
+            return f"{label} is owned by uid {st.st_uid + 1} (injected foreign owner)"
+        return real_judge(st, label)
+
+    monkeypatch.setattr(db_module, "_stat_result_untrusted_reason", judge)
+
+
+def test_a_pre_existing_foreign_final_directory_is_refused_by_descriptor(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression for Codex#1 (round 26, 2026-09-20), reproduced exactly as
+    reported: the final component of a pre-existing chain was skipped by the
+    descriptor judgement ("the caller judges it") - but the caller judges it
+    later by PATHNAME, after a swap to a symlink is possible. A foreign-owned
+    final directory must be refused here, before anything is created in it."""
+    from app.storage.db import UntrustedStateDirectoryError, ensure_dir_no_follow
+
+    state = tmp_path / "shared" / "skos-state"
+    state.mkdir(parents=True)
+    _foreign_final_directory(monkeypatch, state)
+
+    with pytest.raises(UntrustedStateDirectoryError, match="injected foreign owner"):
+        ensure_dir_no_follow(state)
+
+
+def test_connect_refuses_a_pre_existing_foreign_state_directory_before_touching_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import app.storage.db as db_module
+
+    state = tmp_path / "shared" / "skos-state"
+    state.mkdir(parents=True)
+    _foreign_final_directory(monkeypatch, state)
+
+    with pytest.raises(db_module.UntrustedStateDirectoryError, match="injected foreign owner"):
+        db_module.connect(state / "index.sqlite")
+
+    assert list(state.iterdir()) == [], "a lock/db file was created in the foreign directory"

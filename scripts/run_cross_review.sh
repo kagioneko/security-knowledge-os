@@ -16,6 +16,28 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
 COMMIT="$(git rev-parse --short HEAD)"
+FULL_COMMIT="$(git rev-parse HEAD)"
+
+# Codex#3 (round 26, 2026-09-20), reproduced exactly as reported: the
+# review names HEAD in its prompt, output filename and verdict line but reads
+# the WORKING DIRECTORY - an uncommitted edit to a tracked file was reviewed
+# under the unchanged commit's name, and a reviewer running with
+# `danger-full-access` (or a concurrent checkout) could change the tree
+# mid-review with the verdict still labelled for the original commit. So:
+#   1. refuse to start unless tracked files match HEAD exactly, and
+#   2. after the reviewer finishes, require HEAD and the tracked files to be
+#      unchanged before a verdict is accepted (see `_assert_tree_unchanged`).
+# Untracked files are deliberately ignored (reviews/ output itself is one).
+_tree_is_clean() {
+  [ -z "$(git status --porcelain --untracked-files=no)" ]
+}
+
+if ! _tree_is_clean; then
+  echo "!! refusing to review: tracked files differ from HEAD ($COMMIT)." >&2
+  echo "   commit (or stash) first, so the reviewed tree IS the commit the verdict names." >&2
+  git status --short --untracked-files=no >&2
+  exit 1
+fi
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="$REPO/reviews"
 mkdir -p "$OUT"
@@ -149,11 +171,30 @@ CODEX_MAX_FILE_SIZE_BLOCKS="${CODEX_MAX_FILE_SIZE_BLOCKS:-2097152}"  # 512-byte 
 # PASS/PASS-with-nits (success), and CHANGES-REQUIRED (the reviewer DID
 # complete and DID answer, but the answer was "not yet publishable" -
 # distinct from a failure, but not success either).
+#
+# Codex#2 (round 26, 2026-09-20), reproduced exactly as reported: this used
+# to accept the LAST matching verdict line ANYWHERE in the transcript, so
+# `Overall verdict ...: PASS` followed by "Audit incomplete because the
+# process terminated ..." (or a truncated run that happened to print a
+# verdict line earlier, e.g. while quoting the prompt) passed as a
+# successful review. The prompts require the verdict to be the very last
+# line, so that is what is enforced: only the final NON-EMPTY line of the
+# transcript is examined, and anything after a verdict makes it "no verdict".
 _verdict_of() {
-  grep -oE "^Overall verdict for commit ${COMMIT}: (PASS-with-nits|PASS|CHANGES-REQUIRED)[[:space:]]*\$" "$1" \
+  grep -v '^[[:space:]]*$' "$1" | tail -1 \
+    | grep -oE "^Overall verdict for commit ${COMMIT}: (PASS-with-nits|PASS|CHANGES-REQUIRED)[[:space:]]*\$" \
     | tail -1 \
     | sed -E 's/^Overall verdict for commit [^:]*: *//' \
     | tr -d '[:space:]'
+}
+
+# Called after a reviewer has finished, BEFORE its verdict is read.
+_assert_tree_unchanged() {
+  local f="$1"
+  if [ "$(git rev-parse HEAD)" != "$FULL_COMMIT" ] || ! _tree_is_clean; then
+    echo "!! the repository changed during the review (HEAD or tracked files); the verdict does not apply to commit ${COMMIT}" | tee -a "$f"
+    return 1
+  fi
 }
 
 run_codex() {
@@ -192,6 +233,7 @@ run_codex() {
     echo "!! codex exec failed or timed out (exit $codex_exit)" | tee -a "$f"
     return 1
   fi
+  _assert_tree_unchanged "$f" || return 1
   local verdict
   verdict="$(_verdict_of "$f")"
   if [ -z "$verdict" ]; then
@@ -235,6 +277,7 @@ run_antigravity() {
     echo "!! agy failed or timed out (exit $agy_exit)" | tee -a "$f"
     return 1
   fi
+  _assert_tree_unchanged "$f" || return 1
   local verdict
   verdict="$(_verdict_of "$f")"
   if [ -z "$verdict" ]; then

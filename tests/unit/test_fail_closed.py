@@ -581,3 +581,26 @@ def test_ordinary_tables_masquerading_as_fts5_fail_closed(
         assert "not an FTS5 virtual table" in " ".join(decision.reasons)
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("bad_sql", [b"AB", None], ids=["blob", "null"])
+def test_a_non_text_chunks_fts_schema_fails_closed_not_a_raw_typeerror(
+    tmp_path: Path, corpus_root: Path, bad_sql: bytes | None
+) -> None:
+    """Regression for Codex#4 (round 26, 2026-09-20), reproduced exactly as
+    reported: a corrupted database can store a BLOB (or NULL) in
+    `sqlite_master.sql`; the string regex raised a raw TypeError out of
+    `verify_chunk_hashes()` instead of returning POLICY_BLOCKED."""
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    conn = connect(db)
+    try:
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute("UPDATE sqlite_master SET sql = ? WHERE name = 'chunks_fts'", (bad_sql,))
+        conn.commit()
+
+        decision = verify_chunk_hashes(conn)
+
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    finally:
+        conn.close()

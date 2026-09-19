@@ -277,8 +277,9 @@ def ensure_dir_no_follow(path: Path, mode: int = 0o700) -> bool:
     directory THIS call created is entered with O_NOFOLLOW. An existing
     symlink component is followed only if this process or root owns it.
     The last component, if it already exists, must be a real directory
-    (O_NOFOLLOW); judging its ownership/permissions stays with the caller's
-    `untrusted_state_dir_reason()`."""
+    (O_NOFOLLOW) and is judged on its descriptor like every other existing
+    component (Codex#1, round 26); the caller's `untrusted_state_dir_reason()`
+    still applies its own, stricter state-directory rule afterwards."""
     parts = [p for p in path.absolute().parts[1:] if p not in ("", ".")]
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     created = False
@@ -345,10 +346,19 @@ def ensure_dir_no_follow(path: Path, mode: int = 0o700) -> bool:
                     )
             os.close(fd)
             fd = next_fd
-            if not created and not last:
-                reason = _stat_result_untrusted_reason(
-                    os.fstat(fd), f"{name!r} on the path to {path}"
-                )
+            # Codex#1 (round 26, 2026-09-20), reproduced exactly as reported:
+            # this used to skip the LAST component ("the caller judges it") - but
+            # the caller judges it later, by PATHNAME, after this descriptor is
+            # closed. An attacker-owned final directory (say a pre-created
+            # `/tmp/skos-state`) could then be swapped for a symlink to a
+            # service-owned directory in that gap, which the pathname check
+            # accepts. A final directory this call did not create is now judged
+            # here, on the descriptor it just opened, exactly like every other
+            # pre-existing component - a foreign-owned one is refused outright,
+            # so there is nothing left to swap.
+            if not created:
+                label = str(path) if last else f"{name!r} on the path to {path}"
+                reason = _stat_result_untrusted_reason(os.fstat(fd), label)
                 if reason is not None:
                     raise UntrustedStateDirectoryError(reason)
         if created:
