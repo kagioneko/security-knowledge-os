@@ -346,3 +346,62 @@ def test_real_tracked_sbom_matches_the_current_environment() -> None:
     preflight actually looks, not just that the synthetic tmp_path cases
     above work."""
     assert preflight._tracked_sbom_matches_current_environment() is True
+
+
+def test_manifest_commit_may_be_followed_only_by_manifest_only_commits(tmp_path) -> None:
+    """Codex#5 (round 26, 2026-09-20): `is-ancestor` alone accepted a manifest
+    naming a commit arbitrarily far behind HEAD."""
+    import subprocess
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "-q")
+    (tmp_path / "code.py").write_text("v1\n")
+    (tmp_path / "PUBLICATION_MANIFEST.md").write_text("m1\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "code")
+    code_commit = git("rev-parse", "--short", "HEAD")
+
+    (tmp_path / "PUBLICATION_MANIFEST.md").write_text("m2\n")
+    git("commit", "-q", "-am", "docs: manifest only")
+    assert preflight._manifest_commit_is_the_audited_code_commit(tmp_path, code_commit) == (
+        True,
+        [],
+    )
+
+    (tmp_path / "code.py").write_text("v2\n")
+    git("commit", "-q", "-am", "fix round-9 something")
+    ok, extra = preflight._manifest_commit_is_the_audited_code_commit(tmp_path, code_commit)
+    assert ok is False
+    assert extra == ["code.py"]
+
+
+def test_manifest_must_mention_the_latest_round_named_by_commits(tmp_path) -> None:
+    import subprocess
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q")
+    (tmp_path / "f").write_text("x\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "fix round-3 a")
+    git("commit", "-q", "--allow-empty", "-m", "fix round-12 b")
+
+    assert preflight._manifest_mentions_latest_round(tmp_path, "covers round-12 fixes") == (
+        True,
+        12,
+    )
+    assert preflight._manifest_mentions_latest_round(tmp_path, "only round-3") == (False, 12)

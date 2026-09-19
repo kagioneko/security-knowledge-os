@@ -251,6 +251,43 @@ def _commit_is_known_ancestor_of_head(root: Path, commit: str) -> bool:
     )
 
 
+def _files_changed_since(root: Path, commit: str) -> list[str] | None:
+    """Paths that differ between `commit` and HEAD, or None if git cannot say."""
+    result = subprocess.run(
+        ["git", "diff", "--name-only", commit, "HEAD"], cwd=root, capture_output=True, text=True
+    )
+    return result.stdout.splitlines() if result.returncode == 0 else None
+
+
+def _manifest_commit_is_the_audited_code_commit(root: Path, commit: str) -> tuple[bool, list[str]]:
+    """Codex#5 (round 26, 2026-09-20), reproduced exactly as reported: "an
+    ancestor of HEAD" accepts a manifest naming a commit arbitrarily far
+    behind, so the manifest's own narrative (round count, "next round") could
+    lag several review rounds while preflight stayed green. The manifest
+    documents the commit whose CODE was audited; the only commits allowed to
+    follow it are ones that touch nothing but the manifest itself (the
+    lifecycle described above). Returns (ok, the offending paths)."""
+    changed = _files_changed_since(root, commit)
+    if changed is None:
+        return False, ["<git diff failed>"]
+    extra = [path for path in changed if path != "PUBLICATION_MANIFEST.md"]
+    return not extra, extra
+
+
+def _latest_fix_round(root: Path) -> int | None:
+    """Highest N among commit subjects mentioning `round-N` (e.g. `fix round-25 ...`)."""
+    log = subprocess.run(
+        ["git", "log", "--format=%s"], cwd=root, capture_output=True, text=True
+    ).stdout
+    rounds = [int(m) for m in re.findall(r"\bround-(\d+)\b", log)]
+    return max(rounds) if rounds else None
+
+
+def _manifest_mentions_latest_round(root: Path, manifest_text: str) -> tuple[bool, int | None]:
+    latest = _latest_fix_round(root)
+    return (latest is None or f"round-{latest}" in manifest_text), latest
+
+
 def _actual_tracked_files_and_tests(root: Path) -> tuple[int, int]:
     actual_files = len(
         subprocess.run(
@@ -314,7 +351,14 @@ def _publication_manifest_matches_reality() -> bool:
         ROOT, manifest_commit
     )
 
-    ok = counts_ok and components_ok and commit_ok
+    code_ok, stray_paths = (
+        _manifest_commit_is_the_audited_code_commit(ROOT, manifest_commit)
+        if commit_ok and manifest_commit is not None
+        else (True, [])
+    )
+    round_ok, latest_round = _manifest_mentions_latest_round(ROOT, manifest_text)
+
+    ok = counts_ok and components_ok and commit_ok and code_ok and round_ok
     print(f"[{'ok ' if ok else 'FAIL'}] PUBLICATION_MANIFEST.md matches reality")
     if not counts_ok:
         print(f"    tracked files: manifest says {claimed_files}, actual {actual_files}")
@@ -328,6 +372,16 @@ def _publication_manifest_matches_reality() -> bool:
         print(
             f"    commit: manifest says `{manifest_commit}`, which is not a known "
             "ancestor of HEAD (missing, or from an unrelated line of work)"
+        )
+    if not code_ok:
+        print(
+            f"    commit: `{manifest_commit}` is not the latest code commit - files other "
+            f"than PUBLICATION_MANIFEST.md changed after it: {', '.join(stray_paths[:5])}"
+        )
+    if not round_ok:
+        print(
+            f"    history: commits mention round-{latest_round} but the manifest's "
+            f"review history does not (update the round count and summary)"
         )
     if not ok:
         print("    regenerate PUBLICATION_MANIFEST.md before publishing")
