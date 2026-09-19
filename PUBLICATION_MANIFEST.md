@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `bfd72bc` (round-24 fixes, **not yet pushed**)
+- Commit: `984c29a` (round-25 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **215**
-- Tests: **713** items (712 pass, 1 skip = JA-R02)
+- Tests: **719** items (718 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
