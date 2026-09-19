@@ -1315,3 +1315,35 @@ def test_reindex_does_not_build_inside_a_directory_raced_in_after_the_trust_chec
     assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
     assert "injected foreign owner" in " ".join(report.decision.reasons)
     assert list((shared / "a").iterdir()) == []
+
+
+def test_reindex_refuses_a_directory_swapped_for_a_symlink_between_stat_and_open(
+    tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex#1 (round 25, 2026-09-20): see
+    tests/unit/test_db.py's sibling tests for the schedule."""
+    import app.storage.db as db_module
+
+    shared = tmp_path / "shared"
+    victim = tmp_path / "victim"
+    shared.mkdir()
+    victim.mkdir()
+    (shared / "a").mkdir()
+
+    real_open = db_module.os.open
+    fired: list[bool] = []
+
+    def raced_open(name, flags, *args, dir_fd=None, **kwargs):  # type: ignore[no-untyped-def]
+        if name == "a" and dir_fd is not None and not fired:
+            fired.append(True)
+            (shared / "a").rmdir()
+            (shared / "a").symlink_to(victim, target_is_directory=True)
+        return real_open(name, flags, *args, dir_fd=dir_fd, **kwargs)
+
+    monkeypatch.setattr(db_module.os, "open", raced_open)
+
+    report = reindex_atomic(corpus_alt_root, shared / "a" / "state" / "index.sqlite")
+
+    assert fired
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert list(victim.iterdir()) == []

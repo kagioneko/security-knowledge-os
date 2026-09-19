@@ -947,3 +947,89 @@ def test_ensure_dir_no_follow_refuses_a_symlink_as_the_last_component(tmp_path: 
 
     with pytest.raises(UntrustedStateDirectoryError, match="could not be safely opened"):
         ensure_dir_no_follow(tmp_path / "state")
+
+
+def _install_swap_on_open(monkeypatch, shared: Path, replace) -> dict:
+    """Race injection at the exact gap Codex#1 (round 25) describes: the
+    first `os.open("a", ..., dir_fd=...)` of the descriptor walk finds `a`
+    already replaced - after the walk's own `stat` saw an ordinary
+    directory there."""
+    import app.storage.db as db_module
+
+    real_open = db_module.os.open
+    state = {"fired": False}
+
+    def raced_open(name, flags, *args, dir_fd=None, **kwargs):  # type: ignore[no-untyped-def]
+        if name == "a" and dir_fd is not None and not state["fired"]:
+            state["fired"] = True
+            replace(shared / "a")
+        return real_open(name, flags, *args, dir_fd=dir_fd, **kwargs)
+
+    monkeypatch.setattr(db_module.os, "open", raced_open)
+    return state
+
+
+def test_a_directory_swapped_for_a_symlink_between_stat_and_open_is_not_followed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression for Codex#1 (round 25, 2026-09-20), reproduced exactly as
+    reported (its repro, unchanged): a component observed as an ordinary
+    directory was opened without O_NOFOLLOW, so a swap to a symlink after
+    the `stat` was followed and `victim/created-outside` got created."""
+    from app.storage.db import UntrustedStateDirectoryError, ensure_dir_no_follow
+
+    shared = tmp_path / "shared"
+    victim = tmp_path / "victim"
+    shared.mkdir()
+    victim.mkdir()
+    (shared / "a").mkdir()
+    state = _install_swap_on_open(
+        monkeypatch, shared, lambda p: (p.rmdir(), p.symlink_to(victim, target_is_directory=True))
+    )
+
+    with pytest.raises(UntrustedStateDirectoryError, match="changed between inspection"):
+        ensure_dir_no_follow(shared / "a" / "created-outside")
+
+    assert state["fired"], "premise: the race hook must actually have fired"
+    assert list(victim.iterdir()) == [], "a directory was created THROUGH the swapped-in symlink"
+
+
+def test_a_directory_swapped_for_a_different_directory_between_stat_and_open_is_refused(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.storage.db import UntrustedStateDirectoryError, ensure_dir_no_follow
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "a").mkdir()
+    # rename (not rmdir+mkdir): a freed inode number is reused immediately, which
+    # would make the replacement indistinguishable by (st_dev, st_ino).
+    state = _install_swap_on_open(
+        monkeypatch, shared, lambda p: (p.rename(shared / "a-moved"), p.mkdir())
+    )
+
+    with pytest.raises(UntrustedStateDirectoryError, match="replaced between inspection"):
+        ensure_dir_no_follow(shared / "a" / "created-inside")
+
+    assert state["fired"]
+    assert list((shared / "a").iterdir()) == []
+
+
+def test_connect_refuses_a_directory_swapped_for_a_symlink_between_stat_and_open(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import app.storage.db as db_module
+
+    shared = tmp_path / "shared"
+    victim = tmp_path / "victim"
+    shared.mkdir()
+    victim.mkdir()
+    (shared / "a").mkdir()
+    _install_swap_on_open(
+        monkeypatch, shared, lambda p: (p.rmdir(), p.symlink_to(victim, target_is_directory=True))
+    )
+
+    with pytest.raises(db_module.UntrustedStateDirectoryError):
+        db_module.connect(shared / "a" / "state" / "index.sqlite")
+
+    assert list(victim.iterdir()) == []

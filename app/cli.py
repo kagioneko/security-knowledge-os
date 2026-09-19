@@ -44,6 +44,9 @@ from app.storage.db import connect
 # validator caps the parsed result at 300,000 bytes); bounds the raw text
 # handed to the YAML parser regardless of how it would blow up.
 _MAX_ASSESSMENT_YAML_BYTES = 500_000
+# Codex#2 (round 25, 2026-09-20): a saved report is machine-written JSON (findings,
+# evidence excerpts); 10 MB is far above any real one, and bounds the READ.
+_MAX_REPORT_JSON_BYTES = 10_000_000
 
 # Codex#6 (round 12, 2026-09-13), reproduced exactly as reported: this
 # hand-maintained list had drifted to 12 names while
@@ -246,7 +249,13 @@ def _cmd_report(args: argparse.Namespace, s: Settings) -> int:
     if not args.file.exists():
         print(f"report not found: {args.file}", file=sys.stderr)
         return 2
-    report = AssessmentReport.model_validate_json(args.file.read_text(encoding="utf-8"))
+    # Codex#2 (round 25, 2026-09-20), reproduced exactly as reported: unlike
+    # assessment loading, this read the whole file (`truncate -s 1G` -> ~1 GiB
+    # materialised) before pydantic ever looked at it. FrontMatterError /
+    # OSError / UnicodeDecodeError / ValidationError are handled by main().
+    report = AssessmentReport.model_validate_json(
+        read_text_bounded(args.file, max_bytes=_MAX_REPORT_JSON_BYTES, what="report file")
+    )
     print(render_text(report))
     return 3 if report.status is ReportStatus.POLICY_BLOCKED else 0
 

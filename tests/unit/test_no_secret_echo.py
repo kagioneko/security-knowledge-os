@@ -233,3 +233,31 @@ def test_duplicate_key_error_names_the_problem_but_not_the_key() -> None:
     assert "duplicate key" in str(excinfo.value)
     assert SECRET not in str(excinfo.value)
     assert "line 2" in str(excinfo.value)
+
+
+# --- Codex#2 (round 25): `skos report` must bound the READ too ---
+
+
+def test_cli_report_rejects_an_oversized_file_without_parsing_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    big = tmp_path / "report.json"
+    with big.open("wb") as fh:
+        fh.truncate(11_000_000)  # sparse: over the 10 MB cap, ~0 bytes on disk
+
+    assert main(["report", str(big)]) == 2
+
+    assert "exceeds" in capsys.readouterr().err
+
+
+def test_cli_report_still_reads_a_normal_saved_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from app.reviewer.report import build_report  # noqa: F401  (import check only)
+
+    bad = tmp_path / "report.json"
+    bad.write_text("{}", encoding="utf-8")
+
+    # a small file is read (not rejected as oversized); `{}` then fails schema validation
+    assert main(["report", str(bad)]) == 2
+    assert "exceeds" not in capsys.readouterr().err

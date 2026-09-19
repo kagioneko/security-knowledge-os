@@ -286,12 +286,13 @@ def ensure_dir_no_follow(path: Path, mode: int = 0o700) -> bool:
         for index, name in enumerate(parts):
             last = index == len(parts) - 1
             created = False
+            observed: os.stat_result | None = None
             try:
                 os.mkdir(name, mode, dir_fd=fd)
                 created = True
             except OSError as mkdir_error:
                 try:
-                    st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    st = observed = os.stat(name, dir_fd=fd, follow_symlinks=False)
                 except OSError:
                     # neither created nor present: a real failure (EACCES, EROFS, ...)
                     raise mkdir_error from None
@@ -305,8 +306,20 @@ def ensure_dir_no_follow(path: Path, mode: int = 0o700) -> bool:
                         f"{st.st_uid} (neither this process nor root); refusing to "
                         "create anything through it"
                     ) from None
+            # Codex#1 (round 25, 2026-09-20), reproduced exactly as reported:
+            # a pre-existing component observed above as an ordinary
+            # DIRECTORY was then opened WITHOUT O_NOFOLLOW, so its owner could
+            # replace it with a symlink between the `stat` and the `open`;
+            # the open followed it and the later `fstat` judged the symlink's
+            # TARGET (owned by the service user or root, so it passed) rather
+            # than the entry that was inspected. Whatever was observed as a
+            # directory is now opened O_NOFOLLOW and must be the same
+            # (st_dev, st_ino) afterwards. Only a symlink that was OBSERVED
+            # as a symlink (and passed the ownership check above) is
+            # followed - an explicit, separate branch.
+            observed_dir = observed is not None and stat.S_ISDIR(observed.st_mode)
             flags = os.O_RDONLY | os.O_DIRECTORY
-            if created or last:
+            if created or last or observed_dir:
                 flags |= os.O_NOFOLLOW
             try:
                 next_fd = os.open(name, flags, dir_fd=fd)
@@ -316,7 +329,20 @@ def ensure_dir_no_follow(path: Path, mode: int = 0o700) -> bool:
                         f"state directory {path} could not be safely opened "
                         f"(may be a symlink or not a directory): {exc}"
                     ) from exc
+                if observed_dir:
+                    raise UntrustedStateDirectoryError(
+                        f"{name!r} on the path to {path} changed between inspection and "
+                        f"open ({exc}); refusing to continue"
+                    ) from exc
                 raise
+            if observed is not None and observed_dir:
+                opened = os.fstat(next_fd)
+                if (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino):
+                    os.close(next_fd)
+                    raise UntrustedStateDirectoryError(
+                        f"{name!r} on the path to {path} was replaced between inspection "
+                        "and open; refusing to continue"
+                    )
             os.close(fd)
             fd = next_fd
             if not created and not last:
