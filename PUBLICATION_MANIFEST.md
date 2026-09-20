@@ -3,9 +3,13 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `3934b9c` (round-29 re-review fixes + review scope, **not yet pushed**)
+- Commit: `b2470b9` (round-29 re-review fixes + review scope + history rewrite, **not yet pushed**)
+- History: rewritten once on 2026-09-20, before first publication, to normalise author/committer identity to the
+  GitHub no-reply address (one commit message also scrubbed of a local account name). Every commit's tree is
+  identical before and after, so the reviewed content is the published content; commit hashes cited in the
+  review records below are the **pre-rewrite** ones - see `docs/history-rewrite-map.md` for old -> new.
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **216**
+- Tracked files: **217**
 - Tests: **761** items (760 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
