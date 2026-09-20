@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `a2a6900` (round-28 fixes + review scope, **not yet pushed**)
+- Commit: `61eebc8` (round-29 nit + review scope, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **216**
-- Tests: **750** items (749 pass, 1 skip = JA-R02)
+- Tests: **752** items (751 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -614,8 +614,13 @@ review; regenerate with `git ls-files` after any change.
   crash, fail-open behaviour or leak in the handling of a corrupt file stays
   in scope. This narrows what the remaining rounds can conclude and is
   recorded here so it cannot be mistaken for the earlier, unscoped rounds.
-  A twenty-ninth round (scoped) re-reviewing everything through this commit
-  is the next step before push.
+  The twenty-ninth round (scoped, 2026-09-20; Codex **PASS-with-nits**,
+  Antigravity **PASS**, both on `720df3e`) left one LOW nit - `risk_ids` was
+  unbounded, so `POST /v1/knowledge/validate` could return ~890 KB for an
+  ~18 KB document - fixed with a 200-entry bound (`round-29`) and one further
+  scoped Codex run over the fixed commit. Note that the PASS verdicts are for
+  the scoped review; rounds 22-28, before the scope was stated, each ended
+  CHANGES-REQUIRED.
 
 ## Tracked files by area
 
