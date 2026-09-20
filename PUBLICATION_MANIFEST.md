@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `16143af` (round-28 fixes, **not yet pushed**)
+- Commit: `a2a6900` (round-28 fixes + review scope, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **216**
-- Tests: **749** items (748 pass, 1 skip = JA-R02)
+- Tests: **750** items (749 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -600,8 +600,22 @@ review; regenerate with `git ls-files` after any change.
   trigram tokenizer, no extra `chunks_fts_*` table), and the shadow digest
   uses a type-tagged, length-prefixed, row-counted encoding (**an index
   built before this must be rebuilt**). Every fix has a regression test
-  that fails against the pre-fix code. A twenty-ninth round re-reviewing
-  everything through this commit is the next step before push.
+  that fails against the pre-fix code.
+
+  **Review scope (2026-09-20, agreed with the owner after round 28).**
+  Findings kept arriving that require write access to the state directory,
+  the index or the rule trees - locations `docs/threat-model.md` now states
+  (section "Deployment assumptions") are inside the trust boundary, writable
+  only by the service's OS user, where the writer can replace a rule directly
+  and a hash they can recompute is no defence. From the next round on, both
+  reviewer prompts (`scripts/run_cross_review.sh`) ask for findings that are
+  exploitable WITHOUT that access (untrusted input, or another local account
+  lacking it) and to list the write-access ones once as out of scope; a
+  crash, fail-open behaviour or leak in the handling of a corrupt file stays
+  in scope. This narrows what the remaining rounds can conclude and is
+  recorded here so it cannot be mistaken for the earlier, unscoped rounds.
+  A twenty-ninth round (scoped) re-reviewing everything through this commit
+  is the next step before push.
 
 ## Tracked files by area
 
