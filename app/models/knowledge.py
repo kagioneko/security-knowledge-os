@@ -81,7 +81,11 @@ class KnowledgeUnitFrontMatter(BaseModel):
     source_ref: str = Field(min_length=1)
     classification: Classification
     status: KnowledgeStatus
-    risk_ids: list[str] = Field(default_factory=list)
+    # Codex nit (round 29, 2026-09-20), reproduced exactly as reported: an
+    # unbounded list let a ~18 KB document with 9,000 malformed ids produce
+    # 9,010 warnings and a ~890 KB response from POST /v1/knowledge/validate.
+    # Real units reference a handful of rules; 200 is far above any of them.
+    risk_ids: list[str] = Field(default_factory=list, max_length=200)
     version: str = Field(min_length=1)
     last_reviewed: date
     requires_ip_review: bool

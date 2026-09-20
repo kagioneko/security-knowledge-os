@@ -1630,3 +1630,61 @@ def test_no_knowledge_write_endpoint(client: TestClient) -> None:
     # and the two knowledge endpoints do not accept a write/mutation verb beyond POST-as-query
     assert "/v1/knowledge/update" not in paths
     assert "/v1/knowledge/delete" not in paths
+
+
+_KU_WITH_RISK_IDS = """---
+id: KU-9001
+title: t
+category: prompt-security
+source_type: manual
+source_ref: ref
+classification: public
+status: reviewed
+risk_ids: {risk_ids}
+version: "0.1"
+last_reviewed: "2026-09-10"
+requires_ip_review: false
+provenance:
+  source_title: t
+  source_url: null
+  source_version: null
+  source_license: t
+  derivation: original
+  last_verified: "2026-09-10"
+---
+body
+"""
+
+
+def test_knowledge_validate_bounds_the_number_of_risk_ids(client: TestClient) -> None:
+    """Codex nit (round 29, 2026-09-20), reproduced exactly as reported: 9,000
+    one-character malformed risk ids in a ~18 KB document produced 9,010
+    warnings and a ~890 KB response. The list is now bounded, so the response
+    is one schema error, not one warning per entry."""
+    # comma-joined with no spaces: 17,999 bytes, just under the 20,000-byte front-matter cap
+    # (with ", " the cap would reject the document first and this would test nothing)
+    flood = "[" + ",".join(["x"] * 9000) + "]"
+
+    resp = client.post(
+        "/v1/knowledge/validate", json={"content": _KU_WITH_RISK_IDS.format(risk_ids=flood)}
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["valid"] is False
+    assert len(body["warnings"]) < 20, "one warning per submitted id is back"
+    assert any("risk_ids" in e["message"] for e in body["errors"])
+    assert len(resp.content) < 5_000
+
+
+def test_knowledge_validate_still_accepts_a_realistic_number_of_risk_ids(
+    client: TestClient,
+) -> None:
+    ids = "[" + ", ".join(f"PI-{n:03d}" for n in range(1, 21)) + "]"
+
+    resp = client.post(
+        "/v1/knowledge/validate", json={"content": _KU_WITH_RISK_IDS.format(risk_ids=ids)}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["valid"] is True
