@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `e7bad5f` (round-26 fixes, **not yet pushed**)
+- Commit: `466a02b` (round-27 fixes, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **216**
-- Tests: **736** items (735 pass, 1 skip = JA-R02)
+- Tests: **741** items (740 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -15,7 +15,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **twenty-six rounds**, 2026-09-11 -- 2026-09-20. Rounds 1-2
+  audit), **twenty-seven rounds**, 2026-09-11 -- 2026-09-20. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -569,7 +569,7 @@ review; regenerate with `git ls-files` after any change.
   artifact needed rebuilding). See `git log` commit messages ("fix
   round-21 Codex#…") for the itemized mapping.
 
-  **Rounds 22-26 (2026-09-19 -- 2026-09-20, Codex only; Antigravity's
+  **Rounds 22-27 (2026-09-19 -- 2026-09-20, Codex only; Antigravity's
   round-22 PASS on `1437d88` stands).** Round 22 (Codex, CHANGES-REQUIRED,
   3 MEDIUM): rejected credentials echoed in HTTP 422 bodies / CLI stderr;
   schema-derived SQLite column names executed as SQL in the integrity
@@ -589,9 +589,13 @@ review; regenerate with `git ls-files` after any change.
   verdict that is the transcript's final line and refuses a dirty tree or
   one that changed during the review, and this manifest is now checked by
   preflight to name the latest code commit and mention the latest round.
-  Every fix has a regression test that fails against the pre-fix code. A
-  twenty-seventh round re-reviewing everything through this commit is the
-  next step before push.
+  Round 27 (1 MEDIUM, 1 LOW): `POST /v1/knowledge/validate` reflected the
+  submitted `source` and malformed risk ids (now a fixed label / an index),
+  and CLI wrappers enumerated a symlinked knowledge root before the
+  snapshot check rejected it (`iter_knowledge_files()` now returns nothing
+  for one). Every fix has a regression test that fails against the pre-fix
+  code. A twenty-eighth round re-reviewing everything through this commit
+  is the next step before push.
 
 ## Tracked files by area
 
