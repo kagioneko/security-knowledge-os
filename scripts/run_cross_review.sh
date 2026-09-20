@@ -45,11 +45,24 @@ TIMEOUT="${REVIEW_TIMEOUT:-1800}"
 
 WHICH="${1:-both}"
 
+# Review scope (2026-09-20, agreed with the owner after 28 rounds): the
+# reviewers kept reporting attacks that need write access to the state
+# directory / index / rule trees - locations docs/threat-model.md ("Deployment
+# assumptions") puts INSIDE the trust boundary, where the writer can replace a
+# rule directly and a recomputable hash is no defence. Those are listed once as
+# out of scope instead of being reported as findings; crashes or leaks in the
+# handling of a corrupt or tampered file stay in scope (corruption is also
+# innocent). No double quotes, backticks or dollar signs here: it is expanded
+# inside both double-quoted prompts below.
+SCOPE_CLAUSE='SCOPE (docs/threat-model.md, section Deployment assumptions): the state directory, the index database and the knowledge, rules and safe_tests trees are INSIDE the trust boundary - only the service OS user (or root) can write them. Report a finding only if it is exploitable WITHOUT write access to those locations, i.e. through untrusted input (API or CLI inputs, knowledge documents submitted for validation, LLM output, assessed-system content) or by another local account that lacks write access to them. Attacks that require such write access (tampering with the index or database, swapping directories inside the trees, recomputing digests, races coordinated with a writer) are OUT OF SCOPE: do not report them as findings; list them once, briefly, under a heading Out of scope (inside trust boundary) so your coverage stays visible. A crash, fail-open behaviour or information leak in the code that handles a corrupt or tampered file is still IN scope, because corruption also happens innocently.'
+
 CODEX_PROMPT="You are doing a PRE-PUBLICATION CODE AUDIT of this repository
 (Security Knowledge OS, Apache-2.0, commit ${COMMIT}, not yet pushed).
 
 READ FIRST, in this repo: REVIEW_PACKAGE.md, then REVIEW_CHECKLIST.md 'Part A -
-Code audit', then PUBLICATION_MANIFEST.md.
+Code audit', then PUBLICATION_MANIFEST.md, then docs/threat-model.md.
+
+${SCOPE_CLAUSE}
 
 Audit against Part A only: arbitrary code execution paths (rules must be data,
 not code); SQL / SQLite (parameterisation, FTS5 syntax injection, read-only
@@ -72,7 +85,9 @@ pushed). Goal: find how to fool the system itself.
 
 READ FIRST, in this repo: REVIEW_PACKAGE.md (Trust Boundary, Threat Model, A8
 boundary, Human Gate, Fail-closed, Classification), then REVIEW_CHECKLIST.md
-'Part B - Adversarial design audit'.
+'Part B - Adversarial design audit', then docs/threat-model.md.
+
+${SCOPE_CLAUSE}
 
 Audit against Part B only, from an attacker's view: prompt / indirect prompt
 injection against the reviewer; knowledge poisoning (any write path into

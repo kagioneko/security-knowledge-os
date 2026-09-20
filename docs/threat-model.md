@@ -20,6 +20,31 @@ the classification gate, the deterministic engine, and human approval are truste
 User prompts, external / retrieved content, the assessed AI's output, LLM
 observations, and unverified update packs are untrusted.
 
+## Deployment assumptions (operator requirements)
+
+The controls below hold when the tool runs under these assumptions. Anyone
+running it for themselves or for others is responsible for meeting them.
+
+- The **state directory** (index database, lock, staging files) and the
+  **knowledge / rules / safe_tests trees** are writable only by the OS user
+  that runs the service (or root). The code enforces the parts it can: it
+  refuses a state directory or tree root that an untrusted account can write
+  (`untrusted_state_dir_reason`, `untrusted_directory_reason`), refuses
+  symlinked roots, and creates the state directory through descriptor-relative
+  operations that do not follow a symlink planted by another account.
+- The API is **unauthenticated and meant for localhost only**. Do not expose it
+  to other hosts or to accounts that must not read assessment data.
+- Whoever CAN write those locations can already replace a rule, a knowledge
+  unit, or the index directly. Integrity here is a content hash (proof of
+  consistency, not of authenticity), so detecting tampering by such a party is
+  **best-effort, not a guarantee**; a hash they can recompute is not a defence
+  against them. Signed packs / a trusted manifest (Pack Manager, M9-M10) are
+  the intended answer and are out of MVP scope.
+- Corruption also happens innocently (disk errors, a partial copy), so code
+  that handles a corrupt or tampered file must still **fail closed and never
+  leak the file's contents** in errors or logs; that is in scope regardless of
+  who caused the corruption.
+
 ## Threats and controls
 
 | threat | control | where |

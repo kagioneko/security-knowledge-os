@@ -18,6 +18,7 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "run_cross_review.sh"
 
 FAKE_CODEX = r"""#!/usr/bin/env bash
 touch "$FAKE_CODEX_RAN_MARKER"
+printf '%s' "${@: -1}" > "$FAKE_CODEX_PROMPT_FILE"
 C="$(git rev-parse --short HEAD)"
 case "$SCENARIO" in
   pass)      echo "report body"; echo "Overall verdict for commit $C: PASS" ;;
@@ -68,6 +69,7 @@ def _run(repo: Path, scenario: str) -> tuple[int, str, Path]:
         "PATH": f"{repo.parent / 'bin'}:{os.environ['PATH']}",
         "SCENARIO": scenario,
         "FAKE_CODEX_RAN_MARKER": str(marker),
+        "FAKE_CODEX_PROMPT_FILE": str(repo.parent / "codex-prompt.txt"),
     }
     result = subprocess.run(
         ["bash", "scripts/run_cross_review.sh", "codex"],
@@ -141,3 +143,20 @@ def test_a_head_that_moves_during_the_review_invalidates_the_verdict(repo: Path)
     code, out, _ = _run(repo, "newcommit")
     assert code == 1, out
     assert "changed during the review" in out
+
+
+def test_the_reviewer_prompt_states_the_trust_boundary_scope(repo: Path) -> None:
+    """The scope agreed after round 28: attacks that need write access to the
+    state directory / index / rule trees are out of scope, but crashes and leaks
+    in the handling of a corrupt file stay in scope. Records what the reviewer
+    is actually told."""
+    code, out, _ = _run(repo, "pass")
+    assert code == 0, out
+
+    prompt = (repo.parent / "codex-prompt.txt").read_text()
+    assert "INSIDE the trust boundary" in prompt
+    assert "OUT OF SCOPE" in prompt
+    assert "Out of scope (inside trust boundary)" in prompt
+    assert "still IN scope" in prompt
+    assert "docs/threat-model.md" in prompt
+    assert "${SCOPE_CLAUSE}" not in prompt, "the clause was not expanded"
