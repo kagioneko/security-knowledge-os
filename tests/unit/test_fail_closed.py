@@ -769,10 +769,14 @@ def test_digest_distinguishes_a_shifted_field_boundary(tmp_path: Path, corpus_ro
 
     conn = _built(tmp_path, corpus_root)
     try:
-        conn.execute("INSERT INTO chunks_fts_config(k, v) VALUES ('audit', ?)", ("left\x1fright",))
+        conn.execute(
+            "INSERT INTO chunks_fts_config(k, v) VALUES ('audit', ?)", ("left\x1fright",)
+        )
         first = compute_fts_shadow_digest(conn)
         conn.execute("DELETE FROM chunks_fts_config WHERE k = 'audit'")
-        conn.execute("INSERT INTO chunks_fts_config(k, v) VALUES (?, ?)", ("audit\x1fleft", "right"))
+        conn.execute(
+            "INSERT INTO chunks_fts_config(k, v) VALUES (?, ?)", ("audit\x1fleft", "right")
+        )
         second = compute_fts_shadow_digest(conn)
 
         assert first != second
