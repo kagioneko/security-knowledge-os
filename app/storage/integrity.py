@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import re
 import sqlite3
@@ -79,6 +80,23 @@ def _normalise_definition(sql: str) -> str:
     return re.sub(r"(?i)\bif not exists ", "", collapsed).lower()
 
 
+@functools.cache
+def _canonical_columns() -> dict[str, tuple[str, ...]]:
+    """Column names of `chunks` and `meta` exactly as `app.storage.db.SCHEMA`
+    declares them - derived by running that DDL, so it cannot drift."""
+    from app.storage.db import SCHEMA
+
+    scratch = sqlite3.connect(":memory:")
+    try:
+        scratch.executescript(SCHEMA)
+        return {
+            table: tuple(r[1] for r in scratch.execute(f"PRAGMA table_info({table})"))
+            for table in ("chunks", "meta")
+        }
+    finally:
+        scratch.close()
+
+
 class _FtsSchemaInvalid(RuntimeError):
     """`chunks_fts` or one of its shadow tables is not the structure FTS5
     itself creates - the index file was built or altered by something else."""
@@ -110,6 +128,18 @@ def _require_genuine_fts5_schema(conn: sqlite3.Connection) -> None:
         or not _FTS5_VIRTUAL_TABLE_RE.match(row[1])
     ):
         raise _FtsSchemaInvalid("chunks_fts is not an FTS5 virtual table")
+    # Codex#2 (round 29 re-review, 2026-09-20), reproduced exactly as reported:
+    # a corrupt database can declare its own TEXT column named `rowid` in
+    # `chunks`, which then shadows SQLite's real rowid - so a diagnostic that
+    # named a "row ordinal" from `row["rowid"]` printed an arbitrary cell. The
+    # ordinals no longer come from the database at all, and the two ordinary
+    # tables must have exactly the columns the application creates.
+    for table, expected_columns in _canonical_columns().items():
+        actual_columns = tuple(
+            r[1] for r in conn.execute(f"PRAGMA table_info({_quote_ident(table)})")
+        )
+        if actual_columns != expected_columns:
+            raise _FtsSchemaInvalid(f"{table} does not have the columns the application creates")
     if _normalise_definition(row[1]) != _CANONICAL_FTS_DEFINITION:
         raise _FtsSchemaInvalid(
             "chunks_fts is not defined as the application defines it "
@@ -236,9 +266,9 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
         # Codex#2 (round 22, 2026-09-19): establish that chunks_fts really is
         # FTS5 before any query below (MATCH probe, count, digest) touches it.
         _require_genuine_fts5_schema(conn)
-        mismatches: list[str] = []
-        malformed: list[str] = []
-        fts_content_mismatches: list[str] = []
+        mismatches: list[int] = []
+        malformed: list[int] = []
+        fts_content_mismatches: list[int] = []
         actual_count = 0
         for row in conn.execute(
             "SELECT rowid, chunk_id, knowledge_id, title, source_ref, version, section, "
@@ -261,7 +291,7 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                 or not isinstance(row["version"], str)
                 or not isinstance(row["section"], str)
             ):
-                malformed.append(row["rowid"])
+                malformed.append(actual_count)
                 continue
             # Codex cross-review finding #7 (round 4, 2026-09-12): the same
             # non-STRICT-table gap applies to `classification`/`category` -
@@ -276,7 +306,7 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                 row["classification"] not in _VALID_CLASSIFICATIONS
                 or row["category"] not in _VALID_CATEGORIES
             ):
-                malformed.append(row["rowid"])
+                malformed.append(actual_count)
                 continue
             # Codex#1 (round 6, 2026-09-12), reproduced exactly as reported:
             # the hash used to cover ONLY `text` - `UPDATE chunks SET
@@ -300,7 +330,7 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                 text=row["text"],
             )
             if expected != row["hash"]:
-                mismatches.append(row["rowid"])
+                mismatches.append(actual_count)
                 continue
             # Codex cross-review finding #2 (round 5, 2026-09-12): every check
             # above reads `chunks` - none of them prove `chunks_fts` (a
@@ -329,7 +359,7 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                     (row["rowid"], _fts_phrase(search_text)),
                 ).fetchone()
                 if probe is None:
-                    fts_content_mismatches.append(row["rowid"])
+                    fts_content_mismatches.append(actual_count)
         if malformed:
             return stop(
                 PolicyOutcome.POLICY_BLOCKED,
@@ -400,7 +430,7 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
             return stop(
                 PolicyOutcome.POLICY_BLOCKED,
                 "knowledge-index",
-                f"chunk_count mismatch: recorded {recorded_count}, actual {actual_count}",
+                f"chunk_count in meta does not match the chunks table (actual {actual_count})",
             )
 
         # Codex cross-review finding #5 (round 3, 2026-09-12): every check

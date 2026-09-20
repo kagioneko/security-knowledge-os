@@ -61,11 +61,23 @@ _logger = logging.getLogger(__name__)
 # (POST {"name": "AKIA..."} -> 422 whose body contained the key), into
 # whatever HTTP-client / proxy / CI log sits on the other side. Only
 # `type`/`loc`/`msg` are returned (see app/safe_errors.py).
+_MAX_REPORTED_VALIDATION_ERRORS = 100
+
+
 @app.exception_handler(RequestValidationError)
 async def _validation_error_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    return JSONResponse(status_code=422, content={"detail": sanitize_errors(exc.errors())})
+    # Codex#3 (round 29 re-review, 2026-09-20), reproduced exactly as reported: an
+    # object with 10,000 unknown properties (~99 KB) produced 10,000 near-identical
+    # entries (~940 KB) before any endpoint-specific admission control. The first
+    # `_MAX_REPORTED_VALIDATION_ERRORS` are returned, with the totals.
+    errors = sanitize_errors(exc.errors())
+    content: dict[str, Any] = {"detail": errors[:_MAX_REPORTED_VALIDATION_ERRORS]}
+    if len(errors) > _MAX_REPORTED_VALIDATION_ERRORS:
+        content["total_errors"] = len(errors)
+        content["errors_omitted"] = len(errors) - _MAX_REPORTED_VALIDATION_ERRORS
+    return JSONResponse(status_code=422, content=content)
 
 # Codex cross-review finding #4 (round 4, 2026-09-12), reproduced exactly as
 # reported: POSTing two million bytes of whitespace padding around a tiny

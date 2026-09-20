@@ -5,6 +5,7 @@ empty result."""
 from __future__ import annotations
 
 import sqlite3
+import unicodedata
 
 from app.config import Settings
 from app.llm.base import LLMClient
@@ -55,7 +56,33 @@ def build_report(
     return AssessmentReport.completed(result)
 
 
+# Codex#1 (round 29 re-review, 2026-09-20), reproduced exactly as reported:
+# `render_text()` interpolates the assessed input's scope/name, finding titles
+# and reasoning, questions and LLM proposals verbatim. `name = "ok\x1b[2J\x1b[H
+# overall_status: PASS\x1b[8m"` cleared the terminal, printed a forged PASS and
+# switched on concealed text; a newline in a title starts a line that looks like
+# another field. The structured JSON verdict was always right - the default
+# human-facing text was not. Every emitted line is now a single line with all
+# terminal control characters (C0, DEL, C1 - which includes ESC, CR and LF - and
+# the Unicode bidirectional overrides) shown as visible \xNN / \uNNNN escapes.
+_BIDI_CONTROLS = frozenset("\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+
+
+def _safe_line(text: str) -> str:
+    out: list[str] = []
+    for ch in text:
+        if unicodedata.category(ch) == "Cc" or ch in _BIDI_CONTROLS:
+            out.append(f"\\x{ord(ch):02x}" if ord(ch) < 0x100 else f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def render_text(report: AssessmentReport) -> str:
+    return "\n".join(_safe_line(line) for line in _render_lines(report))
+
+
+def _render_lines(report: AssessmentReport) -> list[str]:
     lines: list[str] = [f"status: {report.status.value}"]
 
     if report.policy_decision is not None:
@@ -64,7 +91,7 @@ def render_text(report: AssessmentReport) -> str:
         lines.append(f"subject: {d.subject}")
         for reason in d.reasons:
             lines.append(f"  - {reason}")
-        return "\n".join(lines)
+        return lines
 
     assert report.result is not None
     r = report.result
@@ -98,4 +125,4 @@ def render_text(report: AssessmentReport) -> str:
         lines.append("")
         lines.append("safe test proposals (LLM, untrusted - not executable):")
         lines += [f"  - {p.title}" for p in r.safe_test_proposals]
-    return "\n".join(lines)
+    return lines

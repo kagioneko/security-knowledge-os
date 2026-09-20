@@ -782,3 +782,66 @@ def test_digest_distinguishes_a_shifted_field_boundary(tmp_path: Path, corpus_ro
         assert first != second
     finally:
         conn.close()
+
+
+def test_a_text_rowid_column_cannot_smuggle_a_cell_into_the_diagnostics() -> None:
+    """Codex#2 (re-review of round 29), reproduced exactly as reported: a corrupt
+    database declaring its own TEXT column named `rowid` in `chunks` shadowed
+    SQLite's real rowid, so the "row ordinal" in a diagnostic printed an
+    arbitrary cell (and the API returns the decision in its 422 body)."""
+    import sqlite3
+
+    canary = "LEAK_ME_FROM_CORRUPT_CELL"
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.executescript(
+        """
+        CREATE TABLE chunks(rowid TEXT, chunk_id TEXT, knowledge_id TEXT, title TEXT,
+          source_ref TEXT, classification TEXT, category TEXT, version TEXT,
+          section TEXT, text TEXT, hash TEXT);
+        CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE VIRTUAL TABLE chunks_fts USING fts5(search_text,content='',tokenize='trigram');
+        """
+    )
+    c.execute(
+        "INSERT INTO chunks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (canary, "KU-0001#000", "KU-0001", "t", "s", "public", "methodology", "1", "",
+         sqlite3.Binary(b"bad"), "x"),
+    )
+
+    decision = verify_chunk_hashes(c)
+
+    assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert canary not in " ".join(decision.reasons)
+
+
+def test_the_stored_chunk_count_is_not_echoed_even_when_it_is_a_valid_int(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    conn = _built(tmp_path, corpus_root)
+    try:
+        conn.execute("UPDATE meta SET value = '424242424242' WHERE key = 'chunk_count'")
+        conn.commit()
+
+        decision = verify_chunk_hashes(conn)
+
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        assert "424242424242" not in " ".join(decision.reasons)
+        assert "chunk_count" in " ".join(decision.reasons)
+    finally:
+        conn.close()
+
+
+def test_row_ordinals_are_a_plain_running_count(tmp_path: Path, corpus_root: Path) -> None:
+    conn = _built(tmp_path, corpus_root)
+    try:
+        conn.execute(
+            "UPDATE chunks SET hash = 'tampered' WHERE rowid = (SELECT MIN(rowid) FROM chunks)"
+        )
+        conn.commit()
+
+        decision = verify_chunk_hashes(conn)
+
+        assert "row ordinal(s) [1]" in " ".join(decision.reasons)
+    finally:
+        conn.close()

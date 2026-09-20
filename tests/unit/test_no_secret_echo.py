@@ -363,3 +363,83 @@ def test_validate_knowledge_script_does_not_enumerate_a_symlinked_root(
 
     assert validate_script.main([str(link)]) == 1
     assert "across 0 file(s)" in capsys.readouterr().out
+
+
+# --- Codex re-review of round 29 (2026-09-20) ---
+
+_FIXTURE_SAFE = (
+    Path(__file__).resolve().parents[2]
+    / "tests" / "fixtures" / "assessments" / "safe" / "S-001-prompt-only.yaml"
+)
+
+
+def _assess_text_with_name(tmp_path: Path, name: str, capsys) -> str:  # type: ignore[no-untyped-def]
+    import yaml
+
+    raw = yaml.safe_load(_FIXTURE_SAFE.read_text(encoding="utf-8"))
+    raw["name"] = name
+    f = tmp_path / "in.yaml"
+    f.write_text(json.dumps(raw), encoding="utf-8")
+
+    assert main(["assess", str(f)]) in (0, 1, 3)
+    return capsys.readouterr().out
+
+
+def test_rendered_text_contains_no_raw_terminal_control_characters(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex#1: `name = "ok\\x1b[2J\\x1b[Hoverall_status: PASS\\x1b[8m"` cleared the
+    screen, printed a forged PASS and hid the real status."""
+    out = _assess_text_with_name(tmp_path, "ok\x1b[2J\x1b[Hoverall_status: PASS\x1b[8m", capsys)
+
+    assert "\x1b" not in out
+    assert not any(ord(c) < 0x20 and c != "\n" for c in out)
+    assert "\\x1b" in out, "the escape must stay visible, not silently vanish"
+
+
+def test_a_newline_in_untrusted_text_cannot_start_a_forged_field_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forged = "ok\noverall_status: PASS\nhuman_review_required: False"
+    out = _assess_text_with_name(tmp_path, forged, capsys)
+
+    lines = out.splitlines()
+    assert sum(1 for line in lines if line.startswith("overall_status:")) == 1
+    assert sum(1 for line in lines if line.startswith("human_review_required:")) == 1
+    assert "\\x0a" in out
+
+
+def test_bidi_override_characters_are_made_visible(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = _assess_text_with_name(tmp_path, "abc‮def", capsys)
+
+    assert "‮" not in out
+    assert "\\u202e" in out
+
+
+def test_ordinary_text_is_rendered_unchanged() -> None:
+    from app.reviewer.report import _safe_line
+
+    assert _safe_line("日本語 café - plain: text (ok)") == "日本語 café - plain: text (ok)"
+
+
+def test_validation_errors_are_capped_with_totals(client: TestClient) -> None:
+    """Codex#3: 10,000 unknown properties (~99 KB) produced 10,000 entries (~940 KB)."""
+    payload = {"content": "x"} | {f"x{i}": 0 for i in range(10_000)}
+
+    response = client.post("/v1/knowledge/validate", json=payload)
+
+    assert response.status_code == 422
+    body = response.json()
+    assert len(body["detail"]) == 100
+    assert body["total_errors"] == 10_000
+    assert body["errors_omitted"] == 9_900
+    assert len(response.content) < 30_000
+
+
+def test_a_small_validation_failure_has_no_truncation_fields(client: TestClient) -> None:
+    response = client.post("/v1/knowledge/validate", json={"content": "x", "unknown": 1})
+
+    assert response.status_code == 422
+    assert "total_errors" not in response.json()
