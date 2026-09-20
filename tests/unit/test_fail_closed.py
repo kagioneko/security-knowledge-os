@@ -604,3 +604,177 @@ def test_a_non_text_chunks_fts_schema_fails_closed_not_a_raw_typeerror(
         assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
     finally:
         conn.close()
+
+
+# --- Codex round 28 (2026-09-20): integrity diagnostics + FTS definition + digest encoding ---
+
+_CRED = "AKIA" + "Q" * 16  # built at runtime: no credential-shaped literal in this source file
+
+
+def _built(tmp_path: Path, corpus_root: Path):
+    db = tmp_path / "idx.sqlite"
+    build_index(corpus_root, db)
+    return connect(db)
+
+
+def test_integrity_reasons_never_contain_database_cell_values(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Codex#1 (round 28), reproduced exactly as reported: `UPDATE chunks SET
+    chunk_id = '<credential-shaped>'` made the 422 body of a local `POST
+    /v1/assessments` read `chunk hash mismatch for ['AKIA...']` - every
+    database cell is untrusted input, so a reason may name a row ORDINAL, a
+    count or a type, never a value."""
+    conn = _built(tmp_path, corpus_root)
+    try:
+        conn.execute(
+            "UPDATE chunks SET chunk_id = ? WHERE rowid = (SELECT MIN(rowid) FROM chunks)",
+            (_CRED,),
+        )
+        conn.commit()
+
+        decision = verify_chunk_hashes(conn)
+
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        assert _CRED not in " ".join(decision.reasons)
+        assert "row ordinal" in " ".join(decision.reasons)
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("key", "expected_fragment"),
+    [
+        ("knowledge_revision", "knowledge_revision is not a valid sha256"),
+        ("fts_shadow_digest", "fts_shadow_digest is not a valid sha256"),
+    ],
+)
+def test_forged_meta_values_are_not_echoed_in_the_reason(
+    tmp_path: Path, corpus_root: Path, key: str, expected_fragment: str
+) -> None:
+    conn = _built(tmp_path, corpus_root)
+    try:
+        conn.execute("UPDATE meta SET value = ? WHERE key = ?", (_CRED, key))
+        conn.commit()
+
+        decision = verify_chunk_hashes(conn)
+
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        joined = " ".join(decision.reasons)
+        assert expected_fragment in joined
+        assert _CRED not in joined
+    finally:
+        conn.close()
+
+
+def test_forged_chunk_count_is_not_echoed_in_the_reason(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    conn = _built(tmp_path, corpus_root)
+    try:
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'chunk_count'", (_CRED,))
+        conn.commit()
+
+        decision = verify_chunk_hashes(conn)
+
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        assert _CRED not in " ".join(decision.reasons)
+    finally:
+        conn.close()
+
+
+def test_a_non_canonical_fts_definition_is_rejected_even_with_a_recomputed_digest(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Codex#2 (round 28), reproduced exactly as reported: replace `chunks_fts`
+    with `fts5(search_text)` (default tokenizer, real content table), re-insert
+    the text and recompute the stored digest -> ALLOWED, with substring
+    behaviour silently changed."""
+    from app.storage.integrity import compute_fts_shadow_digest
+
+    conn = _built(tmp_path, corpus_root)
+    try:
+        rows = conn.execute(
+            "SELECT rowid, title, section, text FROM chunks ORDER BY rowid"
+        ).fetchall()
+        conn.execute("DROP TABLE chunks_fts")
+        conn.execute("CREATE VIRTUAL TABLE chunks_fts USING fts5(search_text)")
+        for row in rows:
+            search_text = "\n".join(p for p in (row["title"], row["section"], row["text"]) if p)
+            conn.execute(
+                "INSERT INTO chunks_fts(rowid, search_text) VALUES (?, ?)",
+                (row["rowid"], search_text.strip()),
+            )
+        conn.commit()
+        # the attacker's best case: the stored digest is recomputed to match
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'fts_shadow_digest'", ("0" * 64,))
+        conn.commit()
+        try:
+            digest = compute_fts_shadow_digest(conn)
+        except RuntimeError:
+            digest = None  # the digest itself already refuses a non-canonical table
+        if digest is not None:
+            conn.execute("UPDATE meta SET value = ? WHERE key = 'fts_shadow_digest'", (digest,))
+            conn.commit()
+
+        decision = verify_chunk_hashes(conn)
+
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        assert "not defined as the application defines it" in " ".join(decision.reasons) or (
+            "unexpected chunks_fts_*" in " ".join(decision.reasons)
+        )
+    finally:
+        conn.close()
+
+
+def test_an_unexpected_fts_content_table_is_rejected(tmp_path: Path, corpus_root: Path) -> None:
+    conn = _built(tmp_path, corpus_root)
+    try:
+        conn.execute("CREATE TABLE chunks_fts_content(id INTEGER PRIMARY KEY, c0)")
+        conn.commit()
+
+        decision = verify_chunk_hashes(conn)
+
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+        assert "unexpected chunks_fts_*" in " ".join(decision.reasons)
+    finally:
+        conn.close()
+
+
+def test_digest_distinguishes_an_integer_from_the_same_digits_as_text(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Codex#3 (round 28): INTEGER 4 and TEXT '4' used to hash identically."""
+    from app.storage.integrity import compute_fts_shadow_digest
+
+    conn = _built(tmp_path, corpus_root)
+    try:
+        before = compute_fts_shadow_digest(conn)
+        assert conn.execute(
+            "SELECT typeof(v) FROM chunks_fts_config WHERE k = 'version'"
+        ).fetchone()[0] == "integer"
+        conn.execute("UPDATE chunks_fts_config SET v = CAST(v AS TEXT) WHERE k = 'version'")
+        conn.commit()
+
+        assert compute_fts_shadow_digest(conn) != before
+        assert verify_chunk_hashes(conn).outcome is PolicyOutcome.POLICY_BLOCKED
+    finally:
+        conn.close()
+
+
+def test_digest_distinguishes_a_shifted_field_boundary(tmp_path: Path, corpus_root: Path) -> None:
+    """Codex#3 (round 28): ("audit", "left\\x1fright") and ("audit\\x1fleft",
+    "right") used to produce the same digest input."""
+    from app.storage.integrity import compute_fts_shadow_digest
+
+    conn = _built(tmp_path, corpus_root)
+    try:
+        conn.execute("INSERT INTO chunks_fts_config(k, v) VALUES ('audit', ?)", ("left\x1fright",))
+        first = compute_fts_shadow_digest(conn)
+        conn.execute("DELETE FROM chunks_fts_config WHERE k = 'audit'")
+        conn.execute("INSERT INTO chunks_fts_config(k, v) VALUES (?, ?)", ("audit\x1fleft", "right"))
+        second = compute_fts_shadow_digest(conn)
+
+        assert first != second
+    finally:
+        conn.close()

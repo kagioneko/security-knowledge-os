@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
+import struct
 
 from app.models.knowledge import Classification, KnowledgeCategory
 from app.models.policy_outcome import PolicyDecision, PolicyOutcome, allow, stop
@@ -57,6 +58,26 @@ _FTS5_VIRTUAL_TABLE_RE = re.compile(
     r"^\s*CREATE\s+VIRTUAL\s+TABLE\s+\S+\s+USING\s+fts5\s*\(", re.IGNORECASE
 )
 
+# Codex#2 (round 28, 2026-09-20), reproduced exactly as reported: "an FTS5
+# virtual table" is not enough - `CREATE VIRTUAL TABLE chunks_fts USING
+# fts5(search_text)` (default unicode61 tokenizer, a real content table) with
+# the text re-inserted and the digest recomputed came back ALLOWED, while
+# substring behaviour silently changed (`MATCH '"omp"'` found nothing). The
+# definition this application creates (app.storage.db.SCHEMA) is the only one
+# accepted: one `search_text` column, contentless, trigram tokenizer.
+_CANONICAL_FTS_DEFINITION = (
+    "create virtual table chunks_fts using fts5(search_text,content='',tokenize='trigram')"
+)
+
+
+def _normalise_definition(sql: str) -> str:
+    """Whitespace-, case- and `IF NOT EXISTS`-insensitive form of a CREATE
+    statement, so the stored text compares equal to the canonical one however
+    SQLite (or a formatter) laid it out."""
+    collapsed = re.sub(r"\s+", " ", sql.strip())
+    collapsed = re.sub(r"\s*([(),])\s*", r"\1", collapsed)
+    return re.sub(r"(?i)\bif not exists ", "", collapsed).lower()
+
 
 class _FtsSchemaInvalid(RuntimeError):
     """`chunks_fts` or one of its shadow tables is not the structure FTS5
@@ -89,6 +110,24 @@ def _require_genuine_fts5_schema(conn: sqlite3.Connection) -> None:
         or not _FTS5_VIRTUAL_TABLE_RE.match(row[1])
     ):
         raise _FtsSchemaInvalid("chunks_fts is not an FTS5 virtual table")
+    if _normalise_definition(row[1]) != _CANONICAL_FTS_DEFINITION:
+        raise _FtsSchemaInvalid(
+            "chunks_fts is not defined as the application defines it "
+            "(one search_text column, contentless, trigram tokenizer)"
+        )
+    # A contentless table has exactly these four shadow tables; a `_content`
+    # (or any other) table means a different FTS5 configuration.
+    present = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'chunks\\_fts\\_%' ESCAPE '\\'"
+        )
+    }
+    unexpected = present - set(_FTS_SHADOW_COLUMNS)
+    if unexpected:
+        raise _FtsSchemaInvalid(
+            f"{len(unexpected)} unexpected chunks_fts_* table(s) present"
+        )
     for table, expected in _FTS_SHADOW_COLUMNS.items():
         info = conn.execute(
             "SELECT type FROM sqlite_master WHERE name = ?", (table,)
@@ -132,6 +171,20 @@ def compute_fts_shadow_digest(conn: sqlite3.Connection) -> str:
     to still contain the canonical phrase.
     """
     digest = hashlib.sha256()
+    # Codex#3 (round 28, 2026-09-20), reproduced exactly as reported: the
+    # previous encoding joined values with delimiter bytes and stringified
+    # them, so (a) an INTEGER 4 and the TEXT '4' hashed identically, and (b)
+    # rows ("audit", "left\x1fright") and ("audit\x1fleft", "right") produced the
+    # same bytes. Every value is now encoded as a type tag, an 8-byte length
+    # and its bytes, every table ends with its row count, and the table name is
+    # length-prefixed - so two different sets of stored values can never share
+    # a digest input. (Changes the digest: an index built before this must be
+    # rebuilt - it will fail verification until it is.)
+    def put(tag: bytes, payload: bytes) -> None:
+        digest.update(tag)
+        digest.update(struct.pack(">Q", len(payload)))
+        digest.update(payload)
+
     # Codex#6 (round 8, 2026-09-12), reproduced exactly as reported:
     # `PRAGMA table_info` on a MISSING table returns zero rows rather than
     # raising - that used to reach `columns[0]` as a raw IndexError instead
@@ -141,22 +194,29 @@ def compute_fts_shadow_digest(conn: sqlite3.Connection) -> str:
     # table whose columns are not the fixed FTS5 set.
     _require_genuine_fts5_schema(conn)
     for table, columns in _FTS_SHADOW_COLUMNS.items():
-        digest.update(table.encode("utf-8"))
-        digest.update(b"\x00")
+        put(b"T", table.encode("utf-8"))
+        row_count = 0
         select = (
             f"SELECT {', '.join(_quote_ident(c) for c in columns)} "  # noqa: S608
             f"FROM {_quote_ident(table)} ORDER BY {_quote_ident(columns[0])}"
         )
         for row in conn.execute(select):
+            row_count += 1
             for value in row:
-                if isinstance(value, bytes):
-                    digest.update(value)
-                elif value is None:
-                    digest.update(b"\x00NULL\x00")
+                if value is None:
+                    put(b"N", b"")
+                elif isinstance(value, bool):  # pragma: no cover - sqlite3 never returns bool
+                    put(b"I", struct.pack(">q", int(value)))
+                elif isinstance(value, int):
+                    put(b"I", str(value).encode("ascii"))
+                elif isinstance(value, float):
+                    put(b"F", struct.pack(">d", value))
+                elif isinstance(value, bytes):
+                    put(b"B", value)
                 else:
-                    digest.update(str(value).encode("utf-8"))
-                digest.update(b"\x1f")
-            digest.update(b"\x1e")
+                    put(b"S", str(value).encode("utf-8"))
+            put(b"R", b"")
+        put(b"C", struct.pack(">Q", row_count))
     return digest.hexdigest()
 
 
@@ -201,7 +261,7 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                 or not isinstance(row["version"], str)
                 or not isinstance(row["section"], str)
             ):
-                malformed.append(row["chunk_id"])
+                malformed.append(row["rowid"])
                 continue
             # Codex cross-review finding #7 (round 4, 2026-09-12): the same
             # non-STRICT-table gap applies to `classification`/`category` -
@@ -216,7 +276,7 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                 row["classification"] not in _VALID_CLASSIFICATIONS
                 or row["category"] not in _VALID_CATEGORIES
             ):
-                malformed.append(row["chunk_id"])
+                malformed.append(row["rowid"])
                 continue
             # Codex#1 (round 6, 2026-09-12), reproduced exactly as reported:
             # the hash used to cover ONLY `text` - `UPDATE chunks SET
@@ -240,7 +300,7 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                 text=row["text"],
             )
             if expected != row["hash"]:
-                mismatches.append(row["chunk_id"])
+                mismatches.append(row["rowid"])
                 continue
             # Codex cross-review finding #2 (round 5, 2026-09-12): every check
             # above reads `chunks` - none of them prove `chunks_fts` (a
@@ -269,20 +329,20 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                     (row["rowid"], _fts_phrase(search_text)),
                 ).fetchone()
                 if probe is None:
-                    fts_content_mismatches.append(row["chunk_id"])
+                    fts_content_mismatches.append(row["rowid"])
         if malformed:
             return stop(
                 PolicyOutcome.POLICY_BLOCKED,
                 "knowledge-index",
                 f"malformed row (bad text/hash type or unrecognised classification/category) "
-                f"for {malformed[:5]}"
+                f"at row ordinal(s) {malformed[:5]}"
                 + ("" if len(malformed) <= 5 else f" (+{len(malformed) - 5} more)"),
             )
         if mismatches:
             return stop(
                 PolicyOutcome.POLICY_BLOCKED,
                 "knowledge-index",
-                f"chunk hash mismatch for {mismatches[:5]}"
+                f"chunk hash mismatch at row ordinal(s) {mismatches[:5]}"
                 + ("" if len(mismatches) <= 5 else f" (+{len(mismatches) - 5} more)"),
             )
         if fts_content_mismatches:
@@ -290,7 +350,7 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                 PolicyOutcome.POLICY_BLOCKED,
                 "knowledge-index",
                 f"chunks_fts content mismatch (indexed text does not match the "
-                f"chunk it claims to index) for {fts_content_mismatches[:5]}"
+                f"chunk it claims to index) at row ordinal(s) {fts_content_mismatches[:5]}"
                 + (
                     ""
                     if len(fts_content_mismatches) <= 5
@@ -317,8 +377,8 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
             return stop(
                 PolicyOutcome.POLICY_BLOCKED,
                 "knowledge-index",
-                f"knowledge_revision is not a valid sha256 hex digest: "
-                f"{revision_row['value']!r}",
+                "knowledge_revision is not a valid sha256 hex digest "
+                f"(stored as {type(revision_row['value']).__name__})",
             )
 
         count_row = conn.execute(
@@ -334,7 +394,7 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
             return stop(
                 PolicyOutcome.POLICY_BLOCKED,
                 "knowledge-index",
-                f"chunk_count is not an integer: {count_row['value']!r}",
+                f"chunk_count is not an integer (stored as {type(count_row['value']).__name__})",
             )
         if recorded_count != actual_count:
             return stop(
@@ -393,7 +453,8 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
             return stop(
                 PolicyOutcome.POLICY_BLOCKED,
                 "knowledge-index",
-                f"fts_shadow_digest is not a valid sha256 hex digest: {digest_row['value']!r}",
+                "fts_shadow_digest is not a valid sha256 hex digest "
+                f"(stored as {type(digest_row['value']).__name__})",
             )
         actual_digest = compute_fts_shadow_digest(conn)
         if actual_digest != digest_row["value"]:
@@ -407,7 +468,11 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
         # corrupt or partially written - that is exactly what this function
         # exists to catch, so it must be a policy decision, not a raised
         # exception that skips the caller's fail-closed handling.
-        return stop(PolicyOutcome.POLICY_BLOCKED, "knowledge-index", f"index schema error: {exc}")
+        return stop(
+            PolicyOutcome.POLICY_BLOCKED,
+            "knowledge-index",
+            f"index schema error ({type(exc).__name__})",
+        )
     except _FtsSchemaInvalid as exc:
         return stop(
             PolicyOutcome.POLICY_BLOCKED,
