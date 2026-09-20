@@ -3,10 +3,10 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `61eebc8` (round-29 nit + review scope, **not yet pushed**)
+- Commit: `3934b9c` (round-29 re-review fixes + review scope, **not yet pushed**)
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **216**
-- Tests: **752** items (751 pass, 1 skip = JA-R02)
+- Tests: **761** items (760 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -618,9 +618,18 @@ review; regenerate with `git ls-files` after any change.
   Antigravity **PASS**, both on `720df3e`) left one LOW nit - `risk_ids` was
   unbounded, so `POST /v1/knowledge/validate` could return ~890 KB for an
   ~18 KB document - fixed with a 200-entry bound (`round-29`) and one further
-  scoped Codex run over the fixed commit. Note that the PASS verdicts are for
-  the scoped review; rounds 22-28, before the scope was stated, each ended
-  CHANGES-REQUIRED.
+  scoped Codex run over the fixed commit. That re-run (`ea33755`, same code
+  plus the one-line bound) came back **CHANGES-REQUIRED** with different
+  findings - the two scoped runs disagree, i.e. a single Codex verdict is not
+  a stable signal: untrusted text could forge or hide the human-readable
+  verdict via terminal escape sequences in `render_text()` (now escaped),
+  a corrupt `chunks` table with a TEXT `rowid` column could smuggle a cell
+  into an integrity diagnostic (ordinals no longer come from the database,
+  `chunks`/`meta` schemas are checked, the stored chunk count is not echoed),
+  and validation errors were an unbounded amplifier (capped at 100 with
+  totals). Regression tests fail against the pre-fix code (`round-29`
+  re-review). The PASS verdicts on `720df3e` are for the scoped review;
+  rounds 22-28, before the scope was stated, each ended CHANGES-REQUIRED.
 
 ## Tracked files by area
 
