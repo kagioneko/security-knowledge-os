@@ -128,7 +128,14 @@ def _scan_text(parts: list[str]) -> list[str]:
         try:
             hostname = urlsplit(match.group(0)).hostname
         except ValueError:
-            reasons.append(f"contains a malformed destination authority '{match.group(0)}'")
+            # Codex round-30 (2026-09-25), reproduced exactly as reported:
+            # urlsplit() rejects this authority specifically because it could
+            # not be parsed apart - the raw match can still contain userinfo
+            # ('user:pass@...'), i.e. exactly the credential-shaped content
+            # this module exists to keep out of a safe test. Echoing it back
+            # in the rejection reason defeated that. The reason states that a
+            # destination was unparseable without repeating it.
+            reasons.append("contains a malformed, unparseable destination authority")
             continue
         if hostname:
             _flag_host(hostname, seen, reasons)

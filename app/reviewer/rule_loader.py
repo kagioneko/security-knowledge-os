@@ -50,13 +50,27 @@ def parse_clause(raw: Any) -> Clause:
     """Accept either the explicit ``{field, op, value}`` form or the shorthand
     ``{fact_key: literal}`` (which means ``eq``)."""
     if not isinstance(raw, dict):
-        raise RuleLoadError(f"clause must be a mapping, got {type(raw).__name__}: {raw!r}")
+        # Codex round-30 (2026-09-25), reproduced exactly as reported: `{raw!r}`
+        # echoed the rejected value itself into the error message, which a
+        # rule-loading failure can carry all the way out to server logs (see
+        # the ValidationError `from exc` fix below, same finding). The type
+        # name is enough to diagnose a malformed clause without repeating its
+        # content.
+        raise RuleLoadError(f"clause must be a mapping, got {type(raw).__name__}")
 
     if _CLAUSE_KEYS.issuperset(raw) and "field" in raw and "op" in raw:
         try:
             return Clause.model_validate(raw)
         except ValidationError as exc:
-            raise RuleLoadError(f"invalid clause: {format_validation_error(exc)}") from exc
+            # Codex round-30 (2026-09-25): `from exc` kept the original
+            # ValidationError as __cause__, and pydantic's own str/repr of it
+            # includes the rejected input value even though the message
+            # above (format_validation_error) is already sanitized - any
+            # traceback dump of the chained exception (server logs, an
+            # unhandled-exception handler) leaked it again. `from None`
+            # drops that cause; the sanitized message already carries every
+            # detail this exception type is meant to report.
+            raise RuleLoadError(f"invalid clause: {format_validation_error(exc)}") from None
 
     if len(raw) != 1:
         # Codex#7 (round 10, 2026-09-13), reproduced exactly as reported: the
@@ -68,8 +82,12 @@ def parse_clause(raw: Any) -> Clause:
         # of this function's typed RuleLoadError. Sorting by each key's
         # str() representation is always well-defined, regardless of the mix
         # of types.
+        #
+        # Codex round-30 (2026-09-25): reporting the actual keys (`sorted(raw,
+        # key=str)`) echoed rule-file content into the error message; the
+        # count is enough to diagnose "not exactly one key".
         raise RuleLoadError(
-            f"shorthand clause must have exactly one key, got {sorted(raw, key=str)}"
+            f"shorthand clause must have exactly one key, got {len(raw)}"
         )
     ((fact_key, literal),) = raw.items()
     # Codex#5 (round 23, 2026-09-20), reproduced exactly as reported: only the
@@ -81,7 +99,9 @@ def parse_clause(raw: Any) -> Clause:
     try:
         return Clause(field=str(fact_key), op=Operator.EQ, value=literal)
     except ValidationError as exc:
-        raise RuleLoadError(f"invalid clause: {format_validation_error(exc)}") from exc
+        # Codex round-30 (2026-09-25): same `from None` fix as above - the
+        # chained ValidationError's own str/repr embeds the rejected value.
+        raise RuleLoadError(f"invalid clause: {format_validation_error(exc)}") from None
 
 
 def _as_list(value: Any, *, field: str, source: Path) -> list[Any]:
@@ -132,9 +152,11 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
         # ...") instead of this function's typed RuleLoadError. Sorting by
         # each key's str() representation is always well-defined,
         # regardless of the mix of types.
+        # Codex round-30 (2026-09-25): reporting the actual unknown keys
+        # echoed rule-file content into the error message; the count is
+        # enough to diagnose this alongside the allowed-keys list.
         raise RuleLoadError(
-            f"{source}: unknown key(s) under 'conditions': "
-            f"{sorted(unknown_condition_keys, key=str)}"
+            f"{source}: {len(unknown_condition_keys)} unknown key(s) under 'conditions'"
             f" (only {sorted(_CONDITIONS_KEYS)} are allowed)"
         )
     payload["conditions"] = {
@@ -155,7 +177,10 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
     try:
         rule = RiskRule.model_validate(payload)
     except ValidationError as exc:
-        raise RuleLoadError(f"{source}: invalid rule: {format_validation_error(exc)}") from exc
+        # Codex round-30 (2026-09-25): same `from None` fix as parse_clause()
+        # above - the chained ValidationError's own str/repr embeds the
+        # rejected value regardless of this message's sanitization.
+        raise RuleLoadError(f"{source}: invalid rule: {format_validation_error(exc)}") from None
 
     problems = rule_problems(rule)
     if problems:

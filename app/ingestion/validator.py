@@ -239,13 +239,17 @@ def validate_content(
             )
 
     # --- risk_ids format -------------------------------------------------- #
-    for rid in model.risk_ids:
+    # Codex round-30 (2026-09-25): this echoed the malformed id itself into
+    # the message - the same class of leak validate_markdown() already fixed
+    # for its own risk_ids loop (Codex#1, round 27, 2026-09-20). Its position
+    # identifies it without repeating its content.
+    for index, rid in enumerate(model.risk_ids):
         if not _RULE_ID_RE.match(rid):
             issues.append(
                 ValidationIssue(
                     Level.WARNING,
                     "risk-id-format",
-                    f"risk id '{rid}' does not match {RULE_ID_PATTERN}",
+                    f"risk_ids[{index}] does not match {RULE_ID_PATTERN}",
                     location,
                 )
             )

@@ -419,8 +419,15 @@ def verify_chunk_hashes(conn: sqlite3.Connection) -> PolicyDecision:
                 PolicyOutcome.POLICY_BLOCKED, "knowledge-index", "no chunk_count recorded"
             )
         try:
+            # Codex round-30 (2026-09-25), reproduced exactly as reported:
+            # `meta.value` has REAL affinity for a non-finite float
+            # (`float("inf")`/`nan`), which int() rejects with OverflowError
+            # / ValueError depending on which one - only ValueError was
+            # caught, so a corrupted or forged `chunk_count` could raise
+            # OverflowError straight out of this fail-closed check instead
+            # of producing the documented POLICY_BLOCKED result.
             recorded_count = int(count_row["value"])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return stop(
                 PolicyOutcome.POLICY_BLOCKED,
                 "knowledge-index",

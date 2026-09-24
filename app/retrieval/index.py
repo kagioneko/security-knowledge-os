@@ -10,6 +10,7 @@ import contextlib
 import errno
 import fcntl
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -38,6 +39,10 @@ from app.storage.db import (
 )
 from app.storage.integrity import verify_chunk_hashes
 from app.storage.repository import ChunkRepository
+
+# Matches app/storage/integrity.py's own _HEX_DIGEST_RE: knowledge_revision is
+# always a hashlib.sha256(...).hexdigest() (see round-30 fix below).
+_HEX_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass
@@ -202,6 +207,21 @@ def _current_revision(db_path: Path) -> str | None:
             raise ValueError(
                 f"{db_path}: stored knowledge_revision is not text (got "
                 f"{type(revision).__name__}); refusing to trust this index"
+            )
+        # Codex round-30 (2026-09-25), reproduced exactly as reported: this
+        # only checked the type, not the shape - `knowledge_revision` is
+        # always a `hashlib.sha256(...).hexdigest()` (see
+        # app/storage/integrity.py's own _HEX_DIGEST_RE check for the same
+        # column), but a hand-forged or corrupted value that merely happens
+        # to be a str (e.g. an embedded marker string) passed through
+        # untouched into `ReindexReport.old_revision`, which the API returns
+        # verbatim in its HTTP 422 body and logs on failure. Reject anything
+        # that is not a 64-hex-digit digest here, at the same point the
+        # non-str case above is already rejected.
+        if revision is not None and not _HEX_DIGEST_RE.match(revision):
+            raise ValueError(
+                f"{db_path}: stored knowledge_revision is not a valid sha256 hex "
+                "digest; refusing to trust this index"
             )
         return revision
     finally:
