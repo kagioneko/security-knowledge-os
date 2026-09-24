@@ -3,7 +3,7 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `b2470b9` (round-29 re-review fixes + review scope + history rewrite, **not yet pushed**)
+- Commit: `023ace3` (round-30 fixes: raw-value leaks in error/log paths, **not yet pushed**)
 - History: rewritten once on 2026-09-20, before first publication, to normalise author/committer identity to the
   GitHub no-reply address (one commit message also scrubbed of a local account name). Every commit's tree is
   identical before and after, so the reviewed content is the published content; commit hashes cited in the
@@ -634,6 +634,28 @@ review; regenerate with `git ls-files` after any change.
   totals). Regression tests fail against the pre-fix code (`round-29`
   re-review). The PASS verdicts on `720df3e` are for the scoped review;
   rounds 22-28, before the scope was stated, each ended CHANGES-REQUIRED.
+
+  **Round 30** (scoped, 2026-09-25, audited commit `bd3d956` - a README-only
+  change adding an English-first note and a collapsed Japanese summary for
+  human reviewers; no code changed since round-29's re-review): Codex
+  **CHANGES-REQUIRED**, 3 findings independent of round 29's, all in
+  error/log paths rather than the reviewed README change itself - 2 MEDIUM
+  (`_current_revision()` checked type but not shape, so a forged/corrupted
+  `knowledge_revision` string flowed into `ReindexReport.old_revision` and
+  back out through the HTTP 422 body and logs, now rejected unless it is a
+  64-hex-digit sha256 digest; several rule/knowledge-validation error paths
+  echoed the rejected value itself - `raw!r`, `sorted(raw)`, the malformed
+  `risk_id`, a malformed URL authority that can carry userinfo credentials -
+  and three `RuleLoadError` sites kept the original `ValidationError` as
+  `__cause__` via `from exc`, whose own str/repr embeds the rejected input
+  regardless of the outer message's sanitization; switched to `from None`
+  and to position/count/type-only diagnostics, matching the pattern
+  `validate_markdown()`'s risk_ids loop already used since round 27), 1 LOW
+  (the `chunk_count` integer conversion caught `TypeError`/`ValueError` but
+  not `OverflowError` - a non-finite REAL in a corrupted `meta` table
+  escaped `build_report()` instead of producing the documented
+  `POLICY_BLOCKED` result). All 3 fixed in `023ace3`; 760 passed / 1 skipped,
+  ruff and strict mypy clean. Re-review not yet run.
 
 ## Tracked files by area
 
