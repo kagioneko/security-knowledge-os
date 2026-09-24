@@ -41,13 +41,18 @@ from app.llm.factory import get_client
 from app.models.answer import AnswerPatch
 from app.models.assessment import AssessmentInput, SafeTest
 from app.models.report import AssessmentReport, ReportStatus
-from app.policy.safe_test import load_safe_test_templates
+from app.policy.safe_test import SafeTestLoadError, load_safe_test_templates
 from app.retrieval.index import ReindexReport, reindex_atomic
 from app.reviewer.answers import AnswerValidationError, apply_patch
 from app.reviewer.report import build_report, render_text
-from app.reviewer.rule_loader import RuleCatalogue, load_rules
+from app.reviewer.rule_loader import RuleCatalogue, RuleLoadError, load_rules
 from app.safe_errors import sanitize_errors
-from app.storage.db import connect
+from app.storage.db import (
+    ForeignDatabaseError,
+    FTS5Unavailable,
+    UntrustedStateDirectoryError,
+    connect,
+)
 from app.storage.repository import ChunkRepository
 
 app = FastAPI(title="Security Knowledge OS", version="0.1.0")
@@ -770,7 +775,37 @@ def _admitted_resources(settings: Settings) -> Iterator[_EvaluationResources]:
             "retry shortly",
         )
     try:
-        resources = _load_resources(settings)
+        try:
+            resources = _load_resources(settings)
+        except (
+            RuleLoadError,
+            SafeTestLoadError,
+            sqlite3.Error,
+            ForeignDatabaseError,
+            FTS5Unavailable,
+            UntrustedStateDirectoryError,
+        ) as exc:
+            # Codex round-31 (2026-09-25), reproduced exactly as reported:
+            # this had no except clause at all, so a malformed rule/
+            # safe-test catalogue (RuleLoadError/SafeTestLoadError, already
+            # sanitized) or a corrupt/non-SQLite index file
+            # (sqlite3.DatabaseError, raised lazily on first use inside
+            # connect() -> _has_fts5()) escaped as an untyped 500 instead of
+            # the documented fail-closed response - and the server's own
+            # unhandled-exception logging would print the full chain,
+            # including whichever of these exception types was NOT already
+            # sanitized. Logged once here (type + already-sanitized message
+            # only, never the exception object itself, so no `__cause__`
+            # chain reaches the log); the client gets a generic, value-free
+            # reason.
+            _logger.warning(
+                "assessment resource load failed (%s): %s", type(exc).__name__, exc
+            )
+            raise HTTPException(
+                status_code=422,
+                detail="assessment resources (rules, safe tests, or the knowledge "
+                "index) failed to load; see server logs for details",
+            ) from None
         try:
             yield resources
         finally:

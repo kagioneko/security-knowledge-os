@@ -20,9 +20,12 @@ class ClauseError(ValueError):
 def validate_clause(clause: Clause) -> None:
     fact_type = FACT_SPEC.get(clause.field)
     if fact_type is None:
-        raise ClauseError(
-            f"unknown fact '{clause.field}'; allowed: {sorted(FACT_SPEC)}"
-        )
+        # Codex round-31 (2026-09-25): Clause.field is an unconstrained str
+        # (no format validation), so echoing it here put arbitrary
+        # rule-authored content into a ClauseError message that
+        # rule_problems() folds into RuleLoadError's own message. The fixed,
+        # known-safe allowed-fact list is kept; the offending value is not.
+        raise ClauseError(f"unknown fact (not in the allowed set: {sorted(FACT_SPEC)})")
 
     op = clause.op
     if op is Operator.IS_UNKNOWN:

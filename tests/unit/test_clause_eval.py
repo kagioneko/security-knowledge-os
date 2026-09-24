@@ -52,6 +52,16 @@ def test_validate_clause_rejects_unknown_field() -> None:
         validate_clause(_c("totally_made_up", Operator.EQ, True))
 
 
+def test_validate_clause_unknown_field_error_does_not_echo_the_value() -> None:
+    """Regression for Codex round-31 (2026-09-25): Clause.field is an
+    unconstrained str - the error used to quote it verbatim, and this
+    ClauseError message is folded into RuleLoadError by rule_problems(),
+    which can reach an API caller or server logs."""
+    with pytest.raises(ClauseError, match="unknown fact") as exc_info:
+        validate_clause(_c("AUDIT_DUMMY_CONFIDENTIAL_VALUE", Operator.EQ, True))
+    assert "AUDIT_DUMMY_CONFIDENTIAL_VALUE" not in str(exc_info.value)
+
+
 def test_validate_clause_rejects_operator_type_mismatch() -> None:
     with pytest.raises(ClauseError):  # eq on a list fact
         validate_clause(_c("tool_permissions", Operator.EQ, "read"))

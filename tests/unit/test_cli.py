@@ -71,7 +71,11 @@ def test_validate_safe_tests_catches_a_broken_rule_reference(
 
     assert main(["validate-safe-tests", str(empty_safe_tests)]) == 1
     err = capsys.readouterr().err
-    assert "PI-901 -> ST-DOES-NOT-EXIST" in err
+    # Codex round-31 (2026-09-25): the message no longer repeats
+    # safe_test_template's value (an unconstrained free-text field) - only
+    # the validated rule id.
+    assert "PI-901: safe_test_template does not resolve to a known template" in err
+    assert "ST-DOES-NOT-EXIST" not in err
 
 
 def test_validate_knowledge_on_fixtures_reports_errors() -> None:

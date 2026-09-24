@@ -597,6 +597,48 @@ def test_answers_does_not_500_on_a_foreign_sqlite_database(
     assert resp.status_code != 500
 
 
+def test_create_assessment_does_not_500_on_a_non_sqlite_db_path(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex round-31 (2026-09-25), reproduced exactly as
+    reported: pointing SKOS_DB_PATH at bytes that are not an SQLite database
+    at all (not even a foreign one with the wrong tables, covered by the
+    test above) raises sqlite3.DatabaseError lazily on first use, inside
+    connect()'s own _has_fts5() probe - before _load_resources() (called by
+    _admitted_resources(), with no except clause at all) ever returned. The
+    API must not surface that as an untyped 500."""
+    not_a_db = tmp_path / "not_a_db.sqlite"
+    not_a_db.write_bytes(b"this is not a sqlite file")
+    monkeypatch.setenv("SKOS_DB_PATH", str(not_a_db))
+
+    resp = client.post("/v1/assessments", json=_input("U-002-memory-persistence-unspecified"))
+    assert resp.status_code == 422
+    assert "not_a_db" not in resp.text
+
+
+def test_create_assessment_does_not_500_on_a_broken_rule_catalogue(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex round-31 (2026-09-25): same gap as the DB case
+    above, for RuleLoadError - a rule referencing an unknown fact (a typo, or
+    corruption) raised straight out of load_rules() -> _load_resources() ->
+    _admitted_resources(), an untyped 500, instead of the documented
+    fail-closed response."""
+    rules_root = tmp_path / "rules"
+    rules_root.mkdir()
+    (rules_root / "bad.yaml").write_text(
+        "id: PI-902\ntitle: t\ncategory: prompt-security\nseverity: high\n"
+        "conditions:\n  all:\n    - made_up_fact_xyz: true\n"
+        "checks: [{outbound_enabled: true}]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SKOS_RULES_ROOT", str(rules_root))
+
+    resp = client.post("/v1/assessments", json=_input("U-002-memory-persistence-unspecified"))
+    assert resp.status_code == 422
+    assert "made_up_fact_xyz" not in resp.text
+
+
 def test_assessment_input_rejects_an_oversized_prompt(client: TestClient) -> None:
     """Regression for Codex cross-review finding #6 (round 2, 2026-09-11),
     reproduced close to the reviewer's own repro: an assessment containing a

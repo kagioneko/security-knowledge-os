@@ -147,7 +147,14 @@ def safe_load_bounded(text: str, *, max_bytes: int, what: str = "YAML content") 
     try:
         return yaml.load(text, Loader=_RestrictedSafeLoader)
     except yaml.YAMLError as exc:
-        raise FrontMatterError(f"invalid YAML in {what}: {_describe_yaml_error(exc)}") from exc
+        # Codex round-31 (2026-09-25), reproduced exactly as reported:
+        # _describe_yaml_error() exists specifically because PyYAML's own
+        # str(exc) embeds a snippet of the offending source line (see its
+        # docstring) - but `from exc` kept that raw exception as __cause__
+        # regardless, so any traceback dump of the chain (server logs, an
+        # unhandled-exception handler) leaked the very content this
+        # sanitized message was built to avoid. `from None` drops it.
+        raise FrontMatterError(f"invalid YAML in {what}: {_describe_yaml_error(exc)}") from None
     except ValueError as exc:
         # Codex cross-review finding #8 (round 2, 2026-09-11): a
         # syntactically-shaped but semantically invalid scalar (e.g. the
@@ -160,7 +167,10 @@ def safe_load_bounded(text: str, *, max_bytes: int, what: str = "YAML content") 
         # Codex#3 (round 23 follow-up, 2026-09-20): the message of a constructor
         # ValueError can quote the scalar it choked on (`int()`'s "invalid
         # literal ... 'AKIA...'"), so only the exception type is reported.
-        raise FrontMatterError(f"invalid value in {what} ({type(exc).__name__})") from exc
+        # Codex round-31 (2026-09-25): `from exc` kept that same quoting
+        # exception reachable as __cause__ despite the message above
+        # deliberately omitting it - same fix as the YAMLError branch.
+        raise FrontMatterError(f"invalid value in {what} ({type(exc).__name__})") from None
     except RecursionError as exc:
         # Codex cross-review finding #2, part 2 (round 3, 2026-09-12): a
         # small document with hundreds of nested flow collections

@@ -249,7 +249,13 @@ def rule_problems(rule: RiskRule) -> list[str]:
 
     unknown_evidence = set(rule.required_evidence) - EVIDENCE_KEYS
     if unknown_evidence:
-        problems.append(f"[{rule.id}]: unknown required_evidence {sorted(unknown_evidence)}")
+        # Codex round-31 (2026-09-25): required_evidence is an unconstrained
+        # list[str] (no format validation) - report the count and the fixed,
+        # known-safe allowed set, not the rejected values themselves.
+        problems.append(
+            f"[{rule.id}]: {len(unknown_evidence)} unknown required_evidence "
+            f"key(s) (allowed: {sorted(EVIDENCE_KEYS)})"
+        )
 
     return problems
 
@@ -317,7 +323,11 @@ def load_rules(rules_root: Path | str) -> RuleCatalogue:
                 # exact same bounded loader.
                 raw = safe_load_bounded(text, max_bytes=_MAX_RULE_FILE_BYTES, what="rule file")
             except FrontMatterError as exc:
-                raise RuleLoadError(f"{path}: {exc}") from exc
+                # Codex round-31 (2026-09-25): FrontMatterError's own message
+                # is sanitized (see app/ingestion/parser.py), but `from exc`
+                # is unnecessary chain depth for an already-safe message -
+                # `from None` matches this module's other RuleLoadError sites.
+                raise RuleLoadError(f"{path}: {exc}") from None
             if not isinstance(raw, dict):
                 raise RuleLoadError(f"{path}: a rule file must contain one mapping")
 

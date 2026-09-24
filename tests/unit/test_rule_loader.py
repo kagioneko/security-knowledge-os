@@ -63,6 +63,21 @@ def test_unknown_evidence_key_is_rejected(tmp_path: Path) -> None:
         load_rules(root)
 
 
+def test_unknown_evidence_key_error_does_not_echo_the_value(tmp_path: Path) -> None:
+    """Regression for Codex round-31 (2026-09-25): required_evidence is an
+    unconstrained list[str] - the error used to quote the rejected key(s)
+    verbatim."""
+    root = _write_rule(
+        tmp_path,
+        "id: X-003\ntitle: t\ncategory: agent-security\nseverity: low\n"
+        "checks: [{outbound_enabled: true}]\n"
+        "required_evidence: [AUDIT_DUMMY_CONFIDENTIAL_VALUE]\n",
+    )
+    with pytest.raises(RuleLoadError) as exc_info:
+        load_rules(root)
+    assert "AUDIT_DUMMY_CONFIDENTIAL_VALUE" not in str(exc_info.value)
+
+
 def test_deeply_nested_rule_yaml_fails_closed_not_a_raw_recursionerror(
     tmp_path: Path,
 ) -> None:

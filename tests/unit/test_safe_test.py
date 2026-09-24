@@ -122,6 +122,22 @@ def test_malformed_bracketed_ipv6_authority_fails_closed_not_a_raw_valueerror() 
     assert any("malformed" in reason for reason in decision.reasons)
 
 
+def test_malformed_authority_reason_does_not_echo_embedded_credentials() -> None:
+    """Regression for Codex round-31 (2026-09-25), reproduced exactly as
+    reported: the malformed-authority reason above used to quote
+    `match.group(0)` - the full, unparsed authority - verbatim. Exactly
+    because urlsplit() could not parse it apart, that raw text can still
+    contain userinfo ('user:pass@...'), i.e. credential-shaped content this
+    module exists to keep out of a safe test's rejection reasons."""
+    decision = validate_safe_test(
+        _base(steps=["visit http://AUDIT_DUMMY_USER:AUDIT_DUMMY_PASS@[:::] for the check"])
+    )
+    assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    reasons = " ".join(decision.reasons)
+    assert "AUDIT_DUMMY_USER" not in reasons
+    assert "AUDIT_DUMMY_PASS" not in reasons
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -297,7 +313,12 @@ def test_unresolved_safe_test_references_reports_a_broken_reference() -> None:
     used to fail SILENTLY (assess.py's _safe_tests_for() just skips a
     missing template). This is the loud, load-time counterpart."""
     rule = _rule(safe_test_template="ST-DOES-NOT-EXIST")
-    assert unresolved_safe_test_references([rule], {}) == ["PI-900 -> ST-DOES-NOT-EXIST"]
+    # Codex round-31 (2026-09-25): the message no longer repeats
+    # safe_test_template's value (an unconstrained free-text field) - only
+    # the validated rule id.
+    unresolved = unresolved_safe_test_references([rule], {})
+    assert unresolved == ["PI-900: safe_test_template does not resolve to a known template"]
+    assert "ST-DOES-NOT-EXIST" not in unresolved[0]
 
 
 def test_unresolved_safe_test_references_is_empty_when_everything_resolves(

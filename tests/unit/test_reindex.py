@@ -750,6 +750,36 @@ def test_reindex_fails_closed_on_a_non_text_stored_revision(
     assert _revision(db) == b"\xff"
 
 
+def test_reindex_fails_closed_on_a_forged_non_hex_stored_revision(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex round-31 (2026-09-25), reproduced exactly as
+    reported: `_current_revision()` only checked that the stored
+    knowledge_revision was `str` (round 21 fix above), not that it was a
+    64-hex-digit sha256 digest (the only shape it ever legitimately has) -
+    a forged or corrupted string value passed through untouched into
+    `ReindexReport.old_revision`, returned verbatim in the API's HTTP 422
+    body and logs on a later failure."""
+    db = tmp_path / "idx.sqlite"
+    good = reindex_atomic(corpus_alt_root, db)
+    assert good.ok
+
+    conn = connect(db)
+    conn.execute(
+        "UPDATE meta SET value = 'AUDIT_DUMMY_CONFIDENTIAL_VALUE' "
+        "WHERE key = 'knowledge_revision'"
+    )
+    conn.commit()
+    conn.close()
+
+    report = reindex_atomic(corpus_alt_root, db)  # must not raise
+    assert not report.ok
+    assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert "AUDIT_DUMMY_CONFIDENTIAL_VALUE" not in report.model_dump_json()
+    # the existing (corrupted-metadata) index was never touched.
+    assert _revision(db) == "AUDIT_DUMMY_CONFIDENTIAL_VALUE"
+
+
 def test_reindex_converts_an_unexpected_ingestion_valueerror_to_policy_blocked(
     tmp_path: Path, corpus_alt_root: Path
 ) -> None:

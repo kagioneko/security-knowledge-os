@@ -683,6 +683,30 @@ def test_forged_chunk_count_is_not_echoed_in_the_reason(
         conn.close()
 
 
+def test_non_finite_chunk_count_fails_closed_instead_of_raising_overflowerror(
+    tmp_path: Path, corpus_root: Path
+) -> None:
+    """Regression for Codex round-31 (2026-09-25), reproduced exactly as
+    reported: the chunk_count integer conversion caught TypeError and
+    ValueError but not OverflowError - `meta.value` has REAL affinity, so a
+    non-finite float (e.g. `float("inf")`, corruption or a forged value)
+    made `int(...)` raise OverflowError, which escaped verify_chunk_hashes()
+    (and build_report()) instead of producing the documented POLICY_BLOCKED
+    decision."""
+    conn = _built(tmp_path, corpus_root)
+    try:
+        conn.execute(
+            "UPDATE meta SET value = ? WHERE key = 'chunk_count'", (float("inf"),)
+        )
+        conn.commit()
+
+        decision = verify_chunk_hashes(conn)  # must not raise OverflowError
+
+        assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    finally:
+        conn.close()
+
+
 def test_a_non_canonical_fts_definition_is_rejected_even_with_a_recomputed_digest(
     tmp_path: Path, corpus_root: Path
 ) -> None:

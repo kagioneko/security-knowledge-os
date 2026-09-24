@@ -261,7 +261,13 @@ def load_safe_test_templates(root: Path | str) -> dict[str, SafeTest]:
             try:
                 test = SafeTest.model_validate(raw)
             except ValidationError as exc:
-                raise SafeTestLoadError(f"{path}: {format_validation_error(exc)}") from exc
+                # Codex round-31 (2026-09-25): same fix as
+                # app/reviewer/rule_loader.py's ValidationError sites -
+                # format_validation_error() already sanitizes the message,
+                # but `from exc` kept the raw ValidationError (whose own
+                # str/repr embeds the rejected input) reachable via the
+                # exception chain.
+                raise SafeTestLoadError(f"{path}: {format_validation_error(exc)}") from None
             decision = validate_safe_test(test)
             if not decision.is_allowed:
                 raise SafeTestLoadError(f"{path}: {decision.outcome.value}: {decision.reasons}")
@@ -286,11 +292,19 @@ def unresolved_safe_test_references(
     is the loud, load-time counterpart: callers that load both catalogues
     together (the CLI's `validate-safe-tests`, a startup check) can fail on
     a non-empty result instead of only ever seeing recommendations quietly
-    vanish. Returns `"<rule_id> -> <safe_test_template>"` for each broken
-    reference, in rule order.
+    vanish. Returns one message per broken reference, in rule order.
+
+    Codex round-31 (2026-09-25), reproduced exactly as reported:
+    `safe_test_template` is an unconstrained `str | None` field (no format
+    validation, unlike `rule.id`), so echoing its value here put arbitrary
+    rule-authored content into a message that reaches the API caller
+    directly - `assess()` raises this as a POLICY_BLOCKED reason, returned
+    verbatim in the HTTP 422 body. `rule.id` (validated against a fixed
+    pattern) identifies the broken reference without repeating the
+    template value.
     """
     return [
-        f"{rule.id} -> {rule.safe_test_template}"
+        f"{rule.id}: safe_test_template does not resolve to a known template"
         for rule in rules
         if rule.safe_test_template and rule.safe_test_template not in templates
     ]
