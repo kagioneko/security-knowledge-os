@@ -1,5 +1,43 @@
 # Security Knowledge OS
 
+> **Language note / 言語について**: This repository (code, docs, commit history) is
+> **English-first by design** — it is written to be consumed by AI coding agents and
+> cites international standards (OWASP, MITRE ATLAS, NIST) directly. The section
+> below is a short Japanese summary for human reviewers; everything else in this repo
+> stays English-only.
+>
+> 本リポジトリ（コード・docs・コミット履歴）は**英語がベース**です。AIコーディング
+> エージェントに読ませる一次資料として書かれており、OWASP・MITRE ATLAS・NISTなどの
+> 国際標準をそのまま引用しています。下の日本語要約は人間のレビュー用の窓口で、それ以外
+> の部分（docs配下含む）は今後も英語のままにする方針です。
+
+<details>
+<summary>🇯🇵 日本語要約（クリックで開く）</summary>
+
+**これは何か**: 既存のセキュリティ知識（メモ・GitHub・インシデント記録・実験ログ）を
+バージョン管理された「Knowledge Unit」に変換し、決定論的なルールエンジンで
+Prompt / RAG / Agent / Tool / Memory / Credential 面の一次AIセキュリティ査定を行うPoC。
+LLMは**任意（デフォルトoff）の推論層**で、証拠集め・ルール照合・ギャップの指摘までを担当し、
+最終判断は常に人間に返す設計。「AIが独断で"安全"と判定するツールではない」ことが前提。
+
+**安全設計のポイント**:
+- `PASS` はセキュリティの保証ではない。「評価範囲・入手した証拠・ルールセットの中で重大な
+  問題が見つからなかった」という意味にとどまる。
+- `UNKNOWN`（証拠不十分で推測しない）は正式な判定結果。
+- フィクスチャ（人工テストデータ）での指標は実世界の有効性を証明しない。
+- デプロイ承認・リスク受容など高インパクトな判断は必ず人間の担当者。自動実行はせず
+  `HUMAN_APPROVAL_REQUIRED` を返す。
+- 査定中、ナレッジリポジトリは読み取り専用。同じAIエージェントに自分のルール・知識を
+  書き換える権限は与えない（知識汚染対策）。
+- 未検証の入力に含まれる「このルールを無視して」等の指示は常にデータとして扱い、
+  命令としては扱わない（プロンプトインジェクション対策）。
+- 外部LLMに生の秘密情報（APIキー等）を送らない保証は、NGワードでのフィルタではなく
+  **構造的**（宛先名・ツール名は最初から匿名ラベルに置換してからLLMへ渡す）。
+
+**現状**: M1〜M8のマイルストーンはすべて完了（`done`）。ライセンスはApache-2.0。
+
+</details>
+
 **Deterministic security-assessment engine + knowledge retrieval + optional LLM assistance.**
 
 A PoC that converts existing security knowledge (notes, GitHub, incident records,
