@@ -3,14 +3,14 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `023ace3` (round-30 fixes: raw-value leaks in error/log paths, **not yet pushed**)
+- Commit: `e782171` (round-31 fixes: remaining raw-value leaks + unhandled resource-load errors, **not yet pushed**)
 - History: rewritten once on 2026-09-20, before first publication, to normalise author/committer identity to the
   GitHub no-reply address (one commit message also scrubbed of a local account name). Every commit's tree is
   identical before and after, so the reviewed content is the published content; commit hashes cited in the
   review records below are the **pre-rewrite** ones - see `docs/history-rewrite-map.md` for old -> new.
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **217**
-- Tests: **761** items (760 pass, 1 skip = JA-R02)
+- Tests: **768** items (767 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -655,7 +655,29 @@ review; regenerate with `git ls-files` after any change.
   not `OverflowError` - a non-finite REAL in a corrupted `meta` table
   escaped `build_report()` instead of producing the documented
   `POLICY_BLOCKED` result). All 3 fixed in `023ace3`; 760 passed / 1 skipped,
-  ruff and strict mypy clean. Re-review not yet run.
+  ruff and strict mypy clean.
+
+  **Round 31** (scoped, 2026-09-25, audited commit `326fd65` - round-30's
+  fixes plus the manifest update, no other code changed): Codex
+  **CHANGES-REQUIRED**, 3 findings independent of round-30's, the same class
+  gone deeper - 2 MEDIUM (`unresolved_safe_test_references()` echoed
+  `safe_test_template`, an unconstrained `str`, into a message `assess()`
+  raises as a POLICY_BLOCKED reason returned verbatim in the HTTP 422 body;
+  `clause_eval.py`'s "unknown fact" and `rule_loader.py`'s "unknown
+  required_evidence" similarly echoed unconstrained rule-file values into
+  messages folded into `RuleLoadError`; three more `from exc` chains -
+  `parser.py`'s two `safe_load_bounded()` branches, `rule_loader.py`'s
+  `FrontMatterError` branch, `safe_test.py`'s `ValidationError` branch -
+  kept the original exception, whose str/repr embeds content the outer
+  sanitized message deliberately omits, reachable via the chain), 1 LOW
+  (`_admitted_resources()` had no except clause around `_load_resources()`
+  at all - a malformed catalogue or a corrupt/non-SQLite index file, the
+  latter raising `sqlite3.DatabaseError` lazily inside `connect()`'s own
+  `_has_fts5()` probe, escaped as an untyped 500 with a raw traceback in
+  server logs instead of the documented fail-closed response; now caught
+  and converted to a sanitized 422). All 3 fixed in `e782171`, each with a
+  regression test confirmed to fail against the pre-fix code; 767 passed /
+  1 skipped, ruff and strict mypy clean. Re-review not yet run.
 
 ## Tracked files by area
 
