@@ -104,3 +104,42 @@ def test_oversized_raw_input_is_rejected_before_field_scanning() -> None:
     errors = info.value.errors()
     assert len(errors) == 1
     assert "total limit" in errors[0]["msg"]
+
+
+_ALIAS_BOMB_CHILD = """
+import resource, sys
+resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
+from app.ingestion.parser import safe_load_bounded
+from app.models.assessment import AssessmentInput
+text = "name: t\\nx0: &x0 [a,a,a,a,a,a,a,a,a,a]\\n" + "".join(
+    f"x{i}: &x{i} [" + ",".join([f"*x{i - 1}"] * 10) + "]\\n" for i in range(1, 7)
+) + "user_prompts: [" + ",".join(["*x6"] * 10) + "]\\n"
+data = safe_load_bounded(text, max_bytes=500_000)
+try:
+    AssessmentInput.model_validate({"name": "t", "user_prompts": data["user_prompts"]})
+except Exception as exc:
+    print(type(exc).__name__)
+"""
+
+
+def test_yaml_alias_bomb_is_rejected_without_expanding_it() -> None:
+    """Regression for Codex round-33 (2026-09-26), reproduced exactly as
+    reported: round 32's early size check measured the input with
+    json.dumps(), which fully expands a YAML alias bomb - a few hundred
+    bytes of nested anchors that load as a small shared graph but serialize
+    to ~10^8 elements - and ran out of memory (~8 s) where the pre-round-32
+    code rejected the same input instantly. Run in a child process under a
+    512 MiB address-space cap and a timeout, so a regression fails this
+    test instead of exhausting the test runner's memory or hanging it."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    result = subprocess.run(
+        [sys.executable, "-c", _ALIAS_BOMB_CHILD],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.stdout.strip() == "ValidationError", (result.stdout, result.stderr[-500:])

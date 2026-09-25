@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -50,6 +49,39 @@ _Text = Annotated[str, Field(max_length=50_000), AfterValidator(reject_credentia
 # alone. This bounds the total request, independent of how the bytes are
 # distributed across fields.
 _MAX_SERIALIZED_BYTES = 300_000
+
+
+def _serialized_size_exceeds(value: Any, limit: int) -> bool:
+    """True if `value`'s compact JSON serialization is certainly longer
+    than `limit` bytes. Counts a LOWER bound (string escapes and unknown
+    types count as their minimum), so it never rejects anything the exact
+    `after` check would accept - the raw input has no defaults filled in
+    and no extra keys (extra="forbid"), so it is never larger than the
+    validated model. Every visited node adds at least one byte, so the walk
+    stops after at most `limit + 1` nodes however much a shared/aliased
+    structure would expand (Codex round-33)."""
+    total = 0
+    stack: list[Any] = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            total += len(item.encode("utf-8", errors="replace")) + 2
+        elif isinstance(item, dict):
+            total += 1 + len(item)  # braces, and a colon or comma per entry
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            total += 1 + len(item)  # brackets and commas
+            stack.extend(item)
+        elif isinstance(item, bool) or item is None:
+            total += 4
+        elif isinstance(item, (int, float)):
+            total += 1
+        else:
+            total += 1
+        if total > limit:
+            return True
+    return False
 
 
 class RagInput(BaseModel):
@@ -137,20 +169,21 @@ class AssessmentInput(BaseModel):
         was scanned in full before being rejected. This cheap pre-check
         rejects an oversized raw payload BEFORE any field-level scanning; the
         `after` check stays as the authoritative bound on the validated
-        model. A value that cannot be JSON-serialized here (a Python caller
-        passing non-JSON objects) is left to the normal field validation."""
-        try:
-            # Compact separators, like model_dump_json(): the raw input (no
-            # defaults filled in yet, extra keys forbidden) is never larger
-            # than the validated model, so this never rejects anything the
-            # authoritative `after` bound would accept.
-            size = len(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        except (TypeError, ValueError):
-            return data
-        if size > _MAX_SERIALIZED_BYTES:
+        model.
+
+        Codex round-33 (2026-09-26), reproduced exactly as reported: the
+        first version of this check measured the input with `json.dumps()`,
+        which fully expands a YAML alias bomb - a 391-byte file whose
+        anchors nest ten references per level (`x1: [*x0, *x0, ...]`, ...)
+        loads as a small shared graph but serializes to ~10^8 elements, so
+        the size check itself ran out of memory (MemoryError after ~8 s)
+        where the pre-round-32 code rejected the same input instantly.
+        `_serialized_size_exceeds()` walks the value but stops as soon as
+        its running total passes the limit, so the work is bounded by the
+        limit, not by the expanded size."""
+        if _serialized_size_exceeds(data, _MAX_SERIALIZED_BYTES):
             raise ValueError(
-                f"assessment input is at least {size} bytes, exceeding the "
-                f"{_MAX_SERIALIZED_BYTES}-byte total limit"
+                f"assessment input exceeds the {_MAX_SERIALIZED_BYTES}-byte total limit"
             )
         return data
 
