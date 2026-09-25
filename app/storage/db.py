@@ -69,6 +69,23 @@ class UntrustedStateDirectoryError(RuntimeError):
     untrusted_state_dir_reason()."""
 
 
+def describe_db_error(exc: BaseException) -> str:
+    """Codex round-32 (2026-09-25), reproduced exactly as reported: a
+    corrupt index's `sqlite3.DatabaseError` message quotes content FROM the
+    file (e.g. `malformed database schema (<object name>) - ...`), and that
+    message was logged verbatim by the assessment resource loader and
+    embedded in reindex reasons that are logged too. For a `sqlite3.Error`
+    only the exception type and SQLite's fixed result-code name
+    (`SQLITE_CORRUPT`, `SQLITE_NOTADB`, ...) are reported - a category,
+    never file content. Every other exception keeps its own message: those
+    are built by this application (paths, fixed text) and deliberately
+    logged server-side (see the reindex endpoint in app/main.py)."""
+    if isinstance(exc, sqlite3.Error):
+        code = getattr(exc, "sqlite_errorname", None)
+        return f"{type(exc).__name__} ({code})" if code else type(exc).__name__
+    return str(exc)
+
+
 def untrusted_state_dir_reason(parent: Path) -> str | None:
     """Codex#6 (round 11, 2026-09-13), reproduced exactly as reported: the
     write-path identity check in connect() below (pre-open O_NOFOLLOW

@@ -1402,3 +1402,39 @@ def test_reindex_refuses_a_pre_existing_foreign_state_directory_before_touching_
     assert report.decision.outcome is PolicyOutcome.POLICY_BLOCKED
     assert "injected foreign owner" in " ".join(report.decision.reasons)
     assert list(state.iterdir()) == []
+
+
+def _corrupt_schema(db: Path, canary: str) -> None:
+    """Codex round-32's own repro: rename the `chunks` entry in
+    sqlite_master to a canary string with an unparseable definition, so any
+    later open of the file fails with `malformed database schema (<canary>)`."""
+    import sqlite3
+
+    raw = sqlite3.connect(db)
+    try:
+        raw.execute("PRAGMA writable_schema=ON")
+        raw.execute(
+            "UPDATE sqlite_master SET name=?, sql='CREATE TABLE' WHERE name='chunks'", (canary,)
+        )
+        raw.commit()
+    finally:
+        raw.close()
+
+
+def test_reindex_reason_does_not_quote_corrupt_schema_content(
+    tmp_path: Path, corpus_alt_root: Path
+) -> None:
+    """Regression for Codex round-32 (2026-09-25), reproduced exactly as
+    reported: a corrupt existing index made reindex_atomic() embed the raw
+    sqlite3.DatabaseError message - which quotes content from the file -
+    in decision.reasons, which the reindex endpoint then logs."""
+    db = tmp_path / "idx.sqlite"
+    assert reindex_atomic(corpus_alt_root, db).ok
+    _corrupt_schema(db, "synthetic_private_canary")
+
+    report = reindex_atomic(corpus_alt_root, db)
+
+    assert not report.ok
+    reasons = " ".join(report.decision.reasons)
+    assert "synthetic_private_canary" not in reasons
+    assert "SQLITE_CORRUPT" in reasons

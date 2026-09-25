@@ -179,6 +179,21 @@ def safe_load_bounded(text: str, *, max_bytes: int, what: str = "YAML content") 
         # so it also escaped as an HTTP 500 instead of a controlled
         # {valid: false} response.
         raise FrontMatterError(f"{what} is too deeply nested") from exc
+    except Exception as exc:
+        # Codex round-32 (2026-09-25), reproduced exactly as reported: an
+        # explicit YAML tag hands its scalar straight to a PyYAML
+        # constructor, and several of those fail with exception types none
+        # of the clauses above catch - `!!bool <word>` (KeyError),
+        # `!!int ''` (IndexError), `!!timestamp not-a-date`
+        # (AttributeError), `!!float` with ~200 sexagesimal `:` parts
+        # (OverflowError). They escaped as an HTTP 500 from
+        # /v1/knowledge/validate, and the KeyError's own message/traceback
+        # quoted the submitted scalar. Hostile YAML can reach constructor
+        # code paths PyYAML never promises to guard, so rather than
+        # enumerating one more exception type per round, ANY other
+        # exception from the loader becomes the same sanitized, type-only
+        # FrontMatterError, with the quoting original dropped (`from None`).
+        raise FrontMatterError(f"invalid value in {what} ({type(exc).__name__})") from None
 
 
 def split_front_matter(text: str) -> tuple[dict[str, Any], str]:

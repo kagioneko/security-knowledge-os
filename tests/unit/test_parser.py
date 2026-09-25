@@ -79,3 +79,25 @@ def test_a_key_repeated_across_sibling_mappings_is_not_flagged() -> None:
     text = "---\nid: KU-0001\na:\n  x: 1\nb:\n  x: 2\n---\nbody"
     data, _ = split_front_matter(text)
     assert data == {"id": "KU-0001", "a": {"x": 1}, "b": {"x": 2}}
+
+
+@pytest.mark.parametrize(
+    "fm",
+    [
+        "x: !!bool synthetic_private_canary",
+        "x: !!int ''",
+        "x: !!timestamp not-a-date",
+        "x: !!float " + ":".join(["1"] * 201),
+    ],
+)
+def test_tagged_scalar_constructor_failures_become_sanitized_errors(fm: str) -> None:
+    """Regression for Codex round-32 (2026-09-25), reproduced exactly as
+    reported: these escaped the loader as KeyError / IndexError /
+    AttributeError / OverflowError. Each must become a FrontMatterError whose
+    message and printed traceback never contain the submitted value."""
+    import traceback
+
+    with pytest.raises(FrontMatterError) as info:
+        split_front_matter(f"---\n{fm}\n---\nbody")
+    printed = "".join(traceback.format_exception(info.value))
+    assert "synthetic_private_canary" not in printed

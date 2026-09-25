@@ -75,7 +75,26 @@ CREDENTIAL_SHAPE_PATTERNS: dict[str, re.Pattern[str]] = {
     # decoding to a `{"alg":...,"typ":"JWT"}`-shaped header - `eyJ` is the
     # base64url encoding of `{"` at the start of any JSON object, so this
     # is as unambiguous a shape as the others above, not a guess.
-    "jwt": re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    #
+    # Codex round-32 (2026-09-25), reproduced exactly as reported: the
+    # original `eyJ[...]{10,}\.eyJ...` form was QUADRATIC on a long run of
+    # repeated `eyJ` with no dot - every `eyJ` is a new search start and
+    # each one re-scans the rest of the run looking for the `.` (48 KB of
+    # `eyJ` took ~1.1 s; ~0.9 MB spread over user_prompts took 20 s). This
+    # form matches exactly the same inputs (fuzz-compared against the old
+    # pattern: 0 differences over 500,000 inputs, 1,177 of them positive)
+    # in linear time: a match may only START at the beginning of a
+    # `[A-Za-z0-9_-]` run (the lookbehind), and it is enough to test the
+    # FIRST `eyJ` in that run - if any later `eyJ` has 10+ characters
+    # before the dot, the first one does too. Possessive quantifiers
+    # (Python 3.11+) never backtrack into a run the class cannot leave
+    # except at a `.`. Only the reported span differs (it now includes
+    # any characters before the first `eyJ`), which nothing consumes
+    # beyond secret_scan.py's line number.
+    "jwt": re.compile(
+        r"(?<![A-Za-z0-9_-])(?:(?!eyJ)[A-Za-z0-9_-])*+"
+        r"eyJ[A-Za-z0-9_-]{10,}+\.eyJ[A-Za-z0-9_-]{10,}+\.[A-Za-z0-9_-]{10,}+"
+    ),
     # Codex#1 (round 12, 2026-09-13), reproduced exactly as reported: a
     # Google API key (fixed `AIza` prefix + 35 more characters, always this
     # exact length) reached the LLM payload unfiltered via

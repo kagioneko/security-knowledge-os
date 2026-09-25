@@ -52,6 +52,7 @@ from app.storage.db import (
     FTS5Unavailable,
     UntrustedStateDirectoryError,
     connect,
+    describe_db_error,
 )
 from app.storage.repository import ChunkRepository
 
@@ -798,8 +799,14 @@ def _admitted_resources(settings: Settings) -> Iterator[_EvaluationResources]:
             # only, never the exception object itself, so no `__cause__`
             # chain reaches the log); the client gets a generic, value-free
             # reason.
+            # Codex round-32 (2026-09-25): `exc` itself was interpolated
+            # here, and a sqlite3.Error's message quotes content from the
+            # corrupt file - describe_db_error() reduces that to the type
+            # and SQLite's result-code name.
             _logger.warning(
-                "assessment resource load failed (%s): %s", type(exc).__name__, exc
+                "assessment resource load failed (%s): %s",
+                type(exc).__name__,
+                describe_db_error(exc),
             )
             raise HTTPException(
                 status_code=422,

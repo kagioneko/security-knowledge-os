@@ -1730,3 +1730,69 @@ def test_knowledge_validate_still_accepts_a_realistic_number_of_risk_ids(
 
     assert resp.status_code == 200
     assert resp.json()["valid"] is True
+
+
+def test_corrupt_index_schema_content_is_not_logged(
+    client: TestClient,
+    tmp_path: Path,
+    corpus_alt_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Regression for Codex round-32 (2026-09-25), reproduced exactly as
+    reported: the response for a corrupt index was already generic (round
+    31), but the server-side warning interpolated the sqlite3.DatabaseError
+    itself - `malformed database schema (<object name from the file>)` -
+    into the log. Only the type and SQLite's result-code name may appear."""
+    from app.retrieval.index import reindex_atomic
+    from tests.unit.test_reindex import _corrupt_schema
+
+    db = tmp_path / "idx.sqlite"
+    assert reindex_atomic(corpus_alt_root, db).ok
+    _corrupt_schema(db, "synthetic_private_canary")
+    monkeypatch.setenv("SKOS_DB_PATH", str(db))
+
+    with caplog.at_level("WARNING"):
+        resp = client.post("/v1/assessments", json=_input("U-002-memory-persistence-unspecified"))
+
+    assert resp.status_code == 422
+    assert "synthetic_private_canary" not in resp.text
+    assert "synthetic_private_canary" not in caplog.text
+    assert "SQLITE_CORRUPT" in caplog.text
+
+
+def test_knowledge_validate_does_not_500_on_tagged_scalars(client: TestClient) -> None:
+    """Regression for Codex round-32 (2026-09-25), reproduced exactly as
+    reported: explicitly tagged scalars reach PyYAML constructor code that
+    fails with KeyError/IndexError/AttributeError/OverflowError, none of
+    which the loader caught - an HTTP 500, with the KeyError quoting the
+    submitted value. The endpoint must return a controlled rejection."""
+    for fm in (
+        "x: !!bool synthetic_private_canary",
+        "x: !!int ''",
+        "x: !!timestamp not-a-date",
+        "x: !!float " + ":".join(["1"] * 201),
+    ):
+        resp = client.post(
+            "/v1/knowledge/validate", json={"content": f"---\n{fm}\n---\nbody"}
+        )
+        assert resp.status_code == 200, (fm[:30], resp.status_code)
+        assert resp.json()["valid"] is False
+        assert "synthetic_private_canary" not in resp.text
+
+
+def test_quadratic_jwt_input_is_rejected_quickly(client: TestClient) -> None:
+    """Regression for Codex round-32 (2026-09-25), reproduced exactly as
+    reported: ~0.9 MB of repeated `eyJ` spread over user_prompts took ~20 s
+    to reject - the JWT credential-shape regex was quadratic on it, and the
+    whole-input size bound only ran after every field had been scanned.
+    Bounded generously (the fixed path takes milliseconds) so a regression
+    fails here instead of passing slowly."""
+    import time
+
+    start = time.perf_counter()
+    resp = client.post("/v1/assessments", json={"user_prompts": ["eyJ" * 16000] * 19})
+    elapsed = time.perf_counter() - start
+
+    assert resp.status_code in (413, 422)
+    assert elapsed < 3.0, elapsed

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
@@ -124,6 +125,34 @@ class AssessmentInput(BaseModel):
     outbound: OutboundInput = Field(default_factory=OutboundInput)
     human_approval: dict[_Short, bool] = Field(default_factory=dict, max_length=200)
     credentials: CredentialInput = Field(default_factory=CredentialInput)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _bound_raw_size_first(cls, data: Any) -> Any:
+        """Codex round-32 (2026-09-25), reproduced exactly as reported: the
+        total-size bound below is an `after` validator, so it only ran once
+        every field validator - including the credential-shape regex scan of
+        each free-text field - had already processed the full input: a
+        ~0.9 MB request (under the transport limit, over this 300 KB bound)
+        was scanned in full before being rejected. This cheap pre-check
+        rejects an oversized raw payload BEFORE any field-level scanning; the
+        `after` check stays as the authoritative bound on the validated
+        model. A value that cannot be JSON-serialized here (a Python caller
+        passing non-JSON objects) is left to the normal field validation."""
+        try:
+            # Compact separators, like model_dump_json(): the raw input (no
+            # defaults filled in yet, extra keys forbidden) is never larger
+            # than the validated model, so this never rejects anything the
+            # authoritative `after` bound would accept.
+            size = len(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        except (TypeError, ValueError):
+            return data
+        if size > _MAX_SERIALIZED_BYTES:
+            raise ValueError(
+                f"assessment input is at least {size} bytes, exceeding the "
+                f"{_MAX_SERIALIZED_BYTES}-byte total limit"
+            )
+        return data
 
     @model_validator(mode="after")
     def _bound_total_size(self) -> AssessmentInput:

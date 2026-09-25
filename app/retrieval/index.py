@@ -31,6 +31,7 @@ from app.storage.db import (
     FTS5Unavailable,
     UntrustedStateDirectoryError,
     connect,
+    describe_db_error,
     ensure_dir_no_follow,
     existing_ancestors_untrusted_reason,
     open_no_follow,
@@ -540,7 +541,7 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
                 PolicyOutcome.POLICY_BLOCKED,
                 "reindex",
                 f"could not read the existing index or validate the knowledge "
-                f"root: {exc}",
+                f"root: {describe_db_error(exc)}",
             )
         )
 
@@ -773,12 +774,12 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
         if published:
             restored = _restore_or_remove(db_path, backup, had_existing)
             _cleanup(staging)
-            reason = f"publication failed: {exc}" + _restore_note(
+            reason = f"publication failed: {describe_db_error(exc)}" + _restore_note(
                 restored, had_existing, backup, db_path
             )
         else:
             _cleanup(staging, backup)
-            reason = f"publication failed: {exc}"
+            reason = f"publication failed: {describe_db_error(exc)}"
         return ReindexReport(
             decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", reason),
             old_revision=old_revision,
