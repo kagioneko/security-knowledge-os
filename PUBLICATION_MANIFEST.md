@@ -19,7 +19,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **twenty-eight rounds**, 2026-09-11 -- 2026-09-20. Rounds 1-2
+  audit), **thirty-four rounds** (through round-34), 2026-09-11 -- 2026-09-26. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -709,6 +709,24 @@ review; regenerate with `git ls-files` after any change.
   `json.dumps()`: 0 false rejections), plus a regression test that runs the
   bomb in a memory-capped child process; 778 passed / 1 skipped, ruff check
   and strict mypy clean. No completed Codex verdict exists for round 33.
+
+  **Round 34** (scoped, 2026-09-26, audited commit `0c721a2`): **Antigravity
+  PASS** (adversarial design audit, the first since `720df3e`), **Codex
+  CHANGES-REQUIRED** with 2 MEDIUM findings, both about diagnostics from
+  malformed/corrupted TRUSTED files (Codex's own note: not an assumption
+  that an attacker can write them) - (1) a corrupt index's raw
+  `sqlite3.DatabaseError` text still reaches the CLI (`skos assess --db`,
+  uncaught traceback) and the reindex staging-build reason
+  (`app/retrieval/index.py` `str(abort)`), paths round 32's
+  `describe_db_error()` did not cover; (2) `app/policy/safe_test.py`'s
+  destination check interpolates the full hostname into its reason, so a
+  credential-shaped hostname in a safe-test template reaches the server log
+  via `SafeTestLoadError`. **Not fixed - accepted and recorded** under the
+  stop condition agreed with the maintainer before this round (fix round
+  32's findings, re-review once, record anything MEDIUM or lower and stop):
+  both require a corrupted or credential-bearing file inside the trust
+  boundary, and neither reaches an HTTP response. Candidates for the next
+  maintenance pass.
 
 ## Tracked files by area
 
