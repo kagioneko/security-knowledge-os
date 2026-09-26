@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -53,60 +54,104 @@ _ALLOWED_DATA_EXT = {".yaml", ".yml", ".md"}
 _FORBIDDEN_SEGMENTS = {"private", "internal", "confidential", "secret"}
 
 
-def test_bundled_source_is_publishable() -> None:
-    """Regression for Codex round-35/36 (2026-09-26): hatchling force-include
-    copies a directory recursively and ignores .gitignore/exclude, so anything
-    left in a bundled tree ships in the PUBLIC wheel. Guard, as an allowlist:
-    only _ALLOWED_BUNDLE_ROOTS may be bundled, and every path element (the
-    force-include root included, directories included) must avoid a
-    private/internal segment or a hidden name, contain no symlink, and every
-    file must be a data type."""
+def _bad_segment(seg: str) -> bool:
+    return seg in _FORBIDDEN_SEGMENTS or (seg.startswith(".") and seg != ".gitkeep")
+
+
+def _bundled_publishability_problems(repo: Path, bundled: Iterable[str]) -> list[str]:
+    """Return why the force-included trees are not publish-safe (empty = clean).
+
+    Every force-include tree that ships in the PUBLIC wheel is checked: only
+    allowlisted roots, no private/internal/hidden path segment anywhere (the
+    src root and every directory included), no symlink at any level - including
+    an ancestor of the root, e.g. a `knowledge` symlink pointing outside the
+    repo (Codex round-37) - and every file a data type."""
     import os
-    import tomllib
-
-    repo = Path(__file__).resolve().parents[2]
-    cfg = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))
-    bundled = cfg["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
-    assert bundled, "no force-include entries found"
-
-    # Every bundled root must be explicitly allowlisted (catches a future
-    # `knowledge/private` entry that per-file checks below would not see).
-    assert set(bundled) <= _ALLOWED_BUNDLE_ROOTS, (
-        f"force-include has non-allowlisted roots: {set(bundled) - _ALLOWED_BUNDLE_ROOTS}"
-    )
-
-    def bad_segment(seg: str) -> bool:
-        return seg in _FORBIDDEN_SEGMENTS or (seg.startswith(".") and seg != ".gitkeep")
 
     problems: list[str] = []
     for src in bundled:
-        # Check the force-include root's own path segments too (e.g. a
-        # `knowledge/private` root, or a hidden component in the src path).
         for seg in Path(src).parts:
-            if bad_segment(seg):
+            if _bad_segment(seg):
                 problems.append(f"{src}: forbidden path segment '{seg}'")
+        # Reject a symlink at ANY ancestor from repo down to the root, so a
+        # `repo/knowledge -> /outside` link cannot smuggle in outside content
+        # via an otherwise-normal-looking `knowledge/public`.
+        cur = repo
+        for seg in Path(src).parts:
+            cur = cur / seg
+            if cur.is_symlink():
+                problems.append(
+                    f"{src}: ancestor '{cur.relative_to(repo).as_posix()}' is a symlink"
+                )
         root = repo / src
-        assert root.is_dir() and not root.is_symlink(), f"bundled source missing/symlink: {src}"
-        # os.walk with followlinks=False so symlinked dirs are not descended,
-        # and every dir/file name is inspected (a hidden dir like `.internal`
-        # is not silently skipped).
+        if not root.is_dir():
+            problems.append(f"{src}: missing")
+            continue
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             here = Path(dirpath)
             for seg in here.relative_to(root).parts:
-                if bad_segment(seg):
+                if _bad_segment(seg):
                     problems.append(f"{here.relative_to(repo).as_posix()}: forbidden dir '{seg}'")
             for name in dirnames + filenames:
                 p = here / name
                 rel = p.relative_to(repo).as_posix()
                 if p.is_symlink():
                     problems.append(f"{rel}: symlink not allowed in bundled data")
-                if bad_segment(name):
+                if _bad_segment(name):
                     problems.append(f"{rel}: forbidden/hidden name")
                 if name in filenames and name != ".gitkeep" and p.suffix not in _ALLOWED_DATA_EXT:
                     problems.append(f"{rel}: unexpected file type '{p.suffix}'")
-    assert not problems, "non-publishable files in bundled data:\n" + "\n".join(
-        sorted(set(problems))
+    return sorted(set(problems))
+
+
+def _force_include_roots(repo: Path) -> dict[str, str]:
+    import tomllib
+
+    cfg = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))
+    roots = cfg["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    assert isinstance(roots, dict)
+    return roots
+
+
+def test_bundled_source_is_publishable() -> None:
+    """The real force-included trees ship nothing private/internal in the wheel."""
+    repo = Path(__file__).resolve().parents[2]
+    bundled = _force_include_roots(repo)
+    assert bundled, "no force-include entries found"
+    roots = set(bundled)
+    assert roots <= _ALLOWED_BUNDLE_ROOTS, (
+        f"force-include has non-allowlisted roots: {roots - _ALLOWED_BUNDLE_ROOTS}"
     )
+    problems = _bundled_publishability_problems(repo, bundled)
+    assert not problems, "non-publishable files in bundled data:\n" + "\n".join(problems)
+
+
+def test_guard_rejects_a_symlinked_ancestor(tmp_path: Path) -> None:
+    """Codex round-37 (2026-09-26): a symlinked ANCESTOR of the bundle root
+    (repo/knowledge -> outside) must be rejected, not just the root itself."""
+    outside = tmp_path / "outside"
+    (outside / "public").mkdir(parents=True)
+    (outside / "public" / "leak.md").write_text("internal", encoding="utf-8")
+    (tmp_path / "knowledge").symlink_to(outside, target_is_directory=True)
+    problems = _bundled_publishability_problems(tmp_path, ["knowledge/public"])
+    assert any("symlink" in p for p in problems), problems
+
+
+def test_guard_rejects_private_hidden_symlink_and_bad_type(tmp_path: Path) -> None:
+    """Negative cases for the per-tree checks."""
+    rules = tmp_path / "rules"
+    (rules / "private").mkdir(parents=True)
+    (rules / "private" / "memo.md").write_text("x", encoding="utf-8")  # forbidden dir
+    (rules / ".internal").mkdir()  # hidden dir
+    (rules / ".internal" / "note.md").write_text("x", encoding="utf-8")
+    (rules / "script.py").write_text("x", encoding="utf-8")  # non-data type
+    target = tmp_path / "elsewhere.md"
+    target.write_text("x", encoding="utf-8")
+    (rules / "link.md").symlink_to(target)  # symlinked file
+    problems = _bundled_publishability_problems(tmp_path, ["rules"])
+    joined = "\n".join(problems)
+    assert "private" in joined and ".internal" in joined
+    assert "script.py" in joined and "symlink" in joined
 
 
 def test_empty_or_whitespace_env_falls_through(
