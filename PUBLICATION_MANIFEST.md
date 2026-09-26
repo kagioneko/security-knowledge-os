@@ -3,7 +3,7 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `bad49d9` (packaging: bundle default data into the wheel + config fallback so pip install works standalone; allowlist guard rejects private/hidden/symlink incl. ancestor symlinks; sdist ships only tracked public files, **not yet pushed**)
+- Commit: `4c004ab` (packaging: bundle default data into the wheel + config fallback so pip install works standalone; allowlist guard rejects private/hidden/symlink incl. ancestor symlinks; sdist ships only tracked public files; cross-review PASS round 38, not yet pushed)
 - History: rewritten once on 2026-09-20, before first publication, to normalise author/committer identity to the
   GitHub no-reply address (one commit message also scrubbed of a local account name). Every commit's tree is
   identical before and after, so the reviewed content is the published content; commit hashes cited in the
@@ -19,7 +19,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **thirty-seven rounds** (through round-37), 2026-09-11 -- 2026-09-26. Rounds 1-2
+  audit), **thirty-eight rounds** (through round-38), 2026-09-11 -- 2026-09-26. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -766,6 +766,13 @@ review; regenerate with `git ls-files` after any change.
   down to each bundle root for a symlink, with negative tests (symlinked
   ancestor; a tree with a private dir / hidden dir / non-data file / symlinked
   file). 791 pass / 1 skip. Re-review pending.
+
+  **Round 38** (scoped, 2026-09-26, re-audited the packaging change): Codex
+  **PASS** - no publication-blocking issue; the built artifacts were verified
+  clean (wheel 0 private/internal entries, sdist 0 untracked files == the
+  public GitHub tree). One LOW doc nit ("fails the build" -> the guard is a
+  pytest test run by the release gate) fixed in `4c004ab` (comment only). This is
+  the packaging change's cross-review PASS for the PyPI release.
 
 ## Tracked files by area
 
