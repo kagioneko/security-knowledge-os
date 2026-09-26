@@ -61,6 +61,24 @@ skos = "app.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
+# Ship the default data so `pip install` + `skos assess` works without a
+# checkout. app/config.py's _root_default() prefers a same-named dir in the
+# current directory (a source checkout) and falls back to these bundled copies.
+[tool.hatch.build.targets.wheel.force-include]
+"rules" = "app/_bundled/rules"
+"knowledge" = "app/_bundled/knowledge"
+"safe_tests" = "app/_bundled/safe_tests"
+
+[tool.hatch.build.targets.sdist]
+# Internal cross-review outputs (multi-MB Codex/Antigravity logs) are
+# gitignored working-tree files; never ship them in the source distribution.
+exclude = [
+    "/reviews",
+    "/dist",
+    "/var",
+    "/.venv",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
