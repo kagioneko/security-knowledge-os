@@ -1,5 +1,14 @@
 # Security Knowledge OS
 
+[![PyPI](https://img.shields.io/pypi/v/security-knowledge-os)](https://pypi.org/project/security-knowledge-os/)
+[![Python](https://img.shields.io/pypi/pyversions/security-knowledge-os)](https://pypi.org/project/security-knowledge-os/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+```bash
+pip install security-knowledge-os
+skos assess your-agent.yaml   # deterministic, offline by default; bundled rules/knowledge
+```
+
 > **Language note / 言語について**: This repository (code, docs, commit history) is
 > **English-first by design** — it is written to be consumed by AI coding agents and
 > cites international standards (OWASP, MITRE ATLAS, NIST) directly. The section
@@ -113,7 +122,18 @@ treated as data, never as a control instruction. Details in
 | **M7 — Fixtures + Evaluation + starter KUs** | done | `knowledge/public/**` (14 KUs), `tests/fixtures/assessments/{safe,vulnerable,unknown}/`, `app/eval/metrics.py`, `scripts/evaluate.py`, JA retrieval (trigram) |
 | **M8 — Docs + hardening** | done | Security disclaimer (AC-15–18), KU `provenance` schema, `docs/{attribution,threat-model,architecture}.md`, `sbom.json`, `scripts/{secret_scan,generate_sbom,preflight}.py` |
 
-## Quickstart (M1)
+## Install
+
+From PyPI (ships the default rules / knowledge / safe-test data, so `skos assess`
+works with no checkout):
+
+```bash
+pip install security-knowledge-os          # engine + CLI
+pip install "security-knowledge-os[api]"   # + the local FastAPI app
+skos assess your-agent.yaml
+```
+
+## Quickstart (M1, from a source checkout)
 
 ```bash
 python3.12 -m venv .venv
