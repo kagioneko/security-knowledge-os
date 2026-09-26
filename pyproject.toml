@@ -70,9 +70,10 @@ packages = ["app"]
 # listed here. knowledge/ has a confidential `private/` tier - ONLY
 # knowledge/public is bundled (never knowledge/private). rules/ and
 # safe_tests/ hold only vetted public data. tests/unit/test_config.py's
-# test_bundled_source_is_publishable reads this exact list and fails the build
-# if any bundled tree gains a private/internal path, a stray dotfile, or a
-# non-data file type.
+# test_bundled_source_is_publishable reads this exact list and fails the test
+# suite - which scripts/preflight.py (the release gate) runs before a build is
+# published - if any bundled tree gains a private/internal path, a stray
+# dotfile, or a non-data file type.
 [tool.hatch.build.targets.wheel.force-include]
 "rules" = "app/_bundled/rules"
 "knowledge/public" = "app/_bundled/knowledge/public"
