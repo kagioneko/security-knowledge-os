@@ -1,0 +1,51 @@
+name: Publish to PyPI
+
+# Publishes on a version tag (e.g. `v0.1.1`). Uses PyPI Trusted Publishing
+# (OIDC) - NO API token / secret is stored in the repo. One-time setup on
+# PyPI: project -> Publishing -> add a GitHub trusted publisher for
+# repo `kagioneko/security-knowledge-os`, workflow `publish.yml`,
+# environment `pypi`. Until that is configured, the publish step is a no-op
+# failure and nothing is uploaded.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # TODO: pin these actions to a full commit SHA for supply-chain safety.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify the tag matches the packaged version
+        run: |
+          pip install build
+          python -m build
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(ls dist/*.whl | sed -E 's/.*-([0-9]+\.[0-9]+\.[0-9]+)-.*/\1/')
+          echo "tag=$tag packaged=$pkg"
+          test "$tag" = "$pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # OIDC token for PyPI Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
