@@ -37,5 +37,5 @@ them to the LLM as read-only context. To rebuild the index:
 ## Human review note
 
 `status: reviewed` here means "summarised from a reviewed public standard".
-ねこさん should still do a final pass before any of these are published under the
-project's own name.
+The maintainer should still do a final pass before any of these are published
+under the project's own name.
