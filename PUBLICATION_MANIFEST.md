@@ -3,14 +3,14 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `3750069` (round-34 fixes: remaining raw-content diagnostics in CLI/scripts/reindex/safe-test loader, **not yet pushed**)
+- Commit: `2e158d1` (packaging: bundle default data into the wheel + config fallback so pip install works standalone; sdist drops internal review logs, **not yet pushed**)
 - History: rewritten once on 2026-09-20, before first publication, to normalise author/committer identity to the
   GitHub no-reply address (one commit message also scrubbed of a local account name). Every commit's tree is
   identical before and after, so the reviewed content is the published content; commit hashes cited in the
   review records below are the **pre-rewrite** ones - see `docs/history-rewrite-map.md` for old -> new.
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **217**
-- Tests: **784** items (783 pass, 1 skip = JA-R02)
+- Tracked files: **218**
+- Tests: **788** items (787 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -744,7 +744,7 @@ check enforces (total tracked files, total tests) are kept current above.
 | area | files | notes |
 | --- | --- | --- |
 | `app/` | 59 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
-| `tests/` | 82 | 51 test modules + fixtures |
+| `tests/` | 83 | 52 test modules + fixtures |
 | `knowledge/` | 24 | 14 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
 | `rules/` | 13 | 7 rule YAMLs + category `.gitkeep`s |
 | `safe_tests/` | 4 | 4 vetted templates |
