@@ -3,7 +3,7 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `2305914` (PyPI 0.1.0 published; README badges/install, test CI, and tag->PyPI publish CI via Trusted Publishing)
+- Commit: `32a155f` (PyPI 0.1.0 published; README badges/install, test CI, and tag->PyPI publish CI via Trusted Publishing)
 - History: rewritten once on 2026-09-20, before first publication, to normalise author/committer identity to the
   GitHub no-reply address (one commit message also scrubbed of a local account name). Every commit's tree is
   identical before and after, so the reviewed content is the published content; commit hashes cited in the
