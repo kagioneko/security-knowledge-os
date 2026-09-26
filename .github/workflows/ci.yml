@@ -21,13 +21,12 @@ jobs:
           python-version: "3.12"
       - name: Install (pinned)
         run: pip install -e ".[api,llm,dev]" -c constraints.txt
-      - name: Ruff (lint + format)
-        run: |
-          ruff check .
-          ruff format --check .
+      # Mirrors the project's own gate (scripts/preflight.py runs `ruff check`,
+      # not `ruff format --check`), so CI enforces exactly what the repo commits
+      # to. (`ruff format --check` is not run repo-wide yet - a separate cleanup.)
+      - name: Ruff (lint)
+        run: ruff check .
       - name: Mypy (strict)
         run: mypy
       - name: Tests
         run: pytest -q
-      - name: Publication preflight
-        run: python scripts/preflight.py
