@@ -3,14 +3,14 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `5970f68` (packaging: bundle default data into the wheel + config fallback so pip install works standalone; only knowledge/public bundled; sdist drops internal review logs, **not yet pushed**)
+- Commit: `1a8ea4d` (packaging: bundle default data into the wheel + config fallback so pip install works standalone; only knowledge/public bundled with an allowlist guard; sdist ships only tracked public files, **not yet pushed**)
 - History: rewritten once on 2026-09-20, before first publication, to normalise author/committer identity to the
   GitHub no-reply address (one commit message also scrubbed of a local account name). Every commit's tree is
   identical before and after, so the reviewed content is the published content; commit hashes cited in the
   review records below are the **pre-rewrite** ones - see `docs/history-rewrite-map.md` for old -> new.
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **218**
-- Tests: **789** items (788 pass, 1 skip = JA-R02)
+- Tests: **790** items (789 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -19,7 +19,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **thirty-five rounds** (through round-35), 2026-09-11 -- 2026-09-26. Rounds 1-2
+  audit), **thirty-six rounds** (through round-36), 2026-09-11 -- 2026-09-26. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -746,6 +746,18 @@ review; regenerate with `git ls-files` after any change.
   bundled tree gains a private/internal path, a stray dotfile, or a non-data
   file type; the cwd-vs-bundle precedence test was also strengthened. Re-review
   pending.
+
+  **Round 36** (scoped, 2026-09-26, re-audited the packaging change): Codex
+  **CHANGES-REQUIRED** on the round-35 fix's own guard. The publishability test
+  checked only paths below each force-include root, so a `knowledge/private`
+  root, a hidden `.internal/` dir, or a symlink to a private file would pass;
+  the sdist excluded only reviews/dist/var/.venv. Fixed in `1a8ea4d`: the guard is
+  now an allowlist (only rules / knowledge/public / safe_tests may be bundled)
+  and walks every path element including the root and directories via
+  os.walk(followlinks=False), rejecting private/internal/hidden segments and
+  symlinks; the sdist exclude mirrors the sensitive .gitignore entries and was
+  verified to contain zero untracked files (== the public GitHub tree). 789
+  pass / 1 skip. Re-review pending.
 
 ## Tracked files by area
 
