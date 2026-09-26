@@ -3,14 +3,14 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `a2634a8` (round-33 fix: alias-safe early size check, on top of round-32's fixes, **not yet pushed**)
+- Commit: `3750069` (round-34 fixes: remaining raw-content diagnostics in CLI/scripts/reindex/safe-test loader, **not yet pushed**)
 - History: rewritten once on 2026-09-20, before first publication, to normalise author/committer identity to the
   GitHub no-reply address (one commit message also scrubbed of a local account name). Every commit's tree is
   identical before and after, so the reviewed content is the published content; commit hashes cited in the
   review records below are the **pre-rewrite** ones - see `docs/history-rewrite-map.md` for old -> new.
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **217**
-- Tests: **779** items (778 pass, 1 skip = JA-R02)
+- Tests: **784** items (783 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -721,12 +721,18 @@ review; regenerate with `git ls-files` after any change.
   `describe_db_error()` did not cover; (2) `app/policy/safe_test.py`'s
   destination check interpolates the full hostname into its reason, so a
   credential-shaped hostname in a safe-test template reaches the server log
-  via `SafeTestLoadError`. **Not fixed - accepted and recorded** under the
-  stop condition agreed with the maintainer before this round (fix round
-  32's findings, re-review once, record anything MEDIUM or lower and stop):
-  both require a corrupted or credential-bearing file inside the trust
-  boundary, and neither reaches an HTTP response. Candidates for the next
-  maintenance pass.
+  via `SafeTestLoadError`. First recorded as accepted under the agreed
+  stop condition (MEDIUM or lower after one re-review -> record and stop);
+  the maintainer then asked for both to be fixed anyway. **Both fixed in
+  `3750069`**: the CLI and both scripts catch a shared `INDEX_OPEN_ERRORS`
+  tuple (exit 3, category only), the staging reason goes through
+  `describe_db_error()`, destination reasons carry only an ordinal, and the
+  duplicate safe-test id error names the file instead of the unconstrained
+  id. 5 new regression tests + 1 updated assertion, each confirmed to fail
+  against the pre-fix code; 783 passed / 1 skipped, ruff check and strict
+  mypy clean. **These fixes have not themselves been cross-reviewed**
+  (the stop condition was already reached; the change is limited to
+  error-message text and exception handling at four boundaries).
 
 ## Tracked files by area
 
