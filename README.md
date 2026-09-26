@@ -124,13 +124,13 @@ treated as data, never as a control instruction. Details in
 
 ## Install
 
-From PyPI (ships the default rules / knowledge / safe-test data, so `skos assess`
-works with no checkout):
+Requires **Python 3.12+**. From PyPI (ships the default rules / knowledge /
+safe-test data, so `skos assess` works with no checkout):
 
 ```bash
 pip install security-knowledge-os          # engine + CLI
 pip install "security-knowledge-os[api]"   # + the local FastAPI app
-skos assess your-agent.yaml
+skos assess your-agent.yaml                # your-agent.yaml is an input you write
 ```
 
 ## Quickstart (M1, from a source checkout)

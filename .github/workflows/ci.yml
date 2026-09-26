@@ -12,7 +12,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # TODO: pin these actions to a full commit SHA for supply-chain safety.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
