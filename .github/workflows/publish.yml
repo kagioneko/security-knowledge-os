@@ -4,8 +4,9 @@ name: Publish to PyPI
 # (OIDC) - NO API token / secret is stored in the repo. One-time setup on
 # PyPI: project -> Publishing -> add a GitHub trusted publisher for
 # repo `kagioneko/security-knowledge-os`, workflow `publish.yml`,
-# environment `pypi`. Until that is configured, the publish step is a no-op
-# failure and nothing is uploaded.
+# environment `pypi`. Until that is configured the publish JOB simply FAILS
+# (it is not skipped) and nothing is uploaded - a failed release, never a
+# silent or partial one.
 on:
   push:
     tags: ["v*"]
