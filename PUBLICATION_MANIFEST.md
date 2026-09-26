@@ -3,14 +3,14 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `2e158d1` (packaging: bundle default data into the wheel + config fallback so pip install works standalone; sdist drops internal review logs, **not yet pushed**)
+- Commit: `5970f68` (packaging: bundle default data into the wheel + config fallback so pip install works standalone; only knowledge/public bundled; sdist drops internal review logs, **not yet pushed**)
 - History: rewritten once on 2026-09-20, before first publication, to normalise author/committer identity to the
   GitHub no-reply address (one commit message also scrubbed of a local account name). Every commit's tree is
   identical before and after, so the reviewed content is the published content; commit hashes cited in the
   review records below are the **pre-rewrite** ones - see `docs/history-rewrite-map.md` for old -> new.
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
 - Tracked files: **218**
-- Tests: **788** items (787 pass, 1 skip = JA-R02)
+- Tests: **789** items (788 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -19,7 +19,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **thirty-four rounds** (through round-34), 2026-09-11 -- 2026-09-26. Rounds 1-2
+  audit), **thirty-five rounds** (through round-35), 2026-09-11 -- 2026-09-26. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -733,6 +733,19 @@ review; regenerate with `git ls-files` after any change.
   mypy clean. **These fixes have not themselves been cross-reviewed**
   (the stop condition was already reached; the change is limited to
   error-message text and exception handling at four boundaries).
+
+  **Round 35** (scoped, 2026-09-26, audited the packaging change for PyPI -
+  `app/config.py` + `pyproject.toml` + `tests/unit/test_config.py`): Codex
+  **CHANGES-REQUIRED**. Main finding: hatchling `force-include` copies a
+  directory recursively and ignores `.gitignore`/`exclude`, and the change
+  bundled the whole `knowledge/` tree - including the confidential
+  `knowledge/private/` tier (README + `.gitkeep` placeholders) - into the
+  public wheel. Fixed in `5970f68`: bundle `knowledge/public` only (wheel now
+  has 0 private/internal entries), and `test_bundled_source_is_publishable`
+  reads the exact force-include list from pyproject and fails the build if any
+  bundled tree gains a private/internal path, a stray dotfile, or a non-data
+  file type; the cwd-vs-bundle precedence test was also strengthened. Re-review
+  pending.
 
 ## Tracked files by area
 
