@@ -83,3 +83,23 @@ def test_a_clean_run_still_prints_the_result_and_exits_zero(
     assert code == 0
     out = capsys.readouterr().out
     assert '"overall_status"' in out
+
+
+def test_a_corrupt_index_file_exits_cleanly_without_its_content(
+    tmp_path: Path, corpus_alt_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Regression for Codex round-34 (2026-09-26): same gap as `skos
+    assess` - a corrupt --db index raised sqlite3.DatabaseError out of this
+    script as a raw traceback quoting content from the file."""
+    from app.retrieval.index import reindex_atomic
+    from tests.unit.test_reindex import _corrupt_schema
+
+    db = tmp_path / "idx.sqlite"
+    assert reindex_atomic(corpus_alt_root, db).ok
+    _corrupt_schema(db, "synthetic_private_canary")
+
+    code = main([str(_REAL_INPUT), "--db", str(db)])
+
+    captured = capsys.readouterr()
+    assert code == 3
+    assert "synthetic_private_canary" not in captured.out + captured.err

@@ -29,7 +29,7 @@ from app.policy.safe_test import load_safe_test_templates  # noqa: E402
 from app.reviewer.assess import assess  # noqa: E402
 from app.reviewer.rule_loader import load_rules  # noqa: E402
 from app.safe_errors import format_validation_error  # noqa: E402
-from app.storage.db import connect  # noqa: E402
+from app.storage.db import INDEX_OPEN_ERRORS, connect, describe_db_error  # noqa: E402
 
 _LABELS = {"vulnerable", "safe", "unknown"}
 
@@ -40,7 +40,7 @@ _LABELS = {"vulnerable", "safe", "unknown"}
 _MAX_ASSESSMENT_YAML_BYTES = 500_000
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     settings = Settings.from_env()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, default=Path(settings.db_path))
@@ -118,6 +118,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {path}")
     print(f"\ngates_pass          : {m.gates_pass}")
     return 0 if m.gates_pass and not skipped else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    # Codex round-34 (2026-09-26): same gap as app/cli.py's - a corrupt
+    # --db index raised sqlite3.DatabaseError (lazily, on first use) out of
+    # this script as a raw traceback quoting content from the file.
+    try:
+        return _main(argv)
+    except INDEX_OPEN_ERRORS as exc:
+        print(f"knowledge index unusable: {describe_db_error(exc)}", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":

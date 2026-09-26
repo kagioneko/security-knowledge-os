@@ -1438,3 +1438,27 @@ def test_reindex_reason_does_not_quote_corrupt_schema_content(
     reasons = " ".join(report.decision.reasons)
     assert "synthetic_private_canary" not in reasons
     assert "SQLITE_CORRUPT" in reasons
+
+
+def test_staging_build_failure_reason_does_not_quote_sqlite_text(
+    tmp_path: Path, corpus_alt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Codex round-34 (2026-09-26), reproduced exactly as
+    reported: a real sqlite3.Error raised while building/checking the
+    staging index was reported as `str(abort)`, so its text - which for a
+    corrupt file quotes content from it - reached decision.reasons and the
+    reindex endpoint's log."""
+    import sqlite3
+
+    import app.retrieval.index as index_mod
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise sqlite3.DatabaseError("malformed database schema (synthetic_private_canary)")
+
+    monkeypatch.setattr(index_mod, "verify_chunk_hashes", _boom)
+    report = reindex_atomic(corpus_alt_root, tmp_path / "idx.sqlite")
+
+    assert not report.ok
+    reasons = " ".join(report.decision.reasons)
+    assert "synthetic_private_canary" not in reasons
+    assert "DatabaseError" in reasons

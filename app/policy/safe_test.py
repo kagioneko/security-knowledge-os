@@ -102,7 +102,13 @@ def _flag_host(host: str, seen: set[str], reasons: list[str]) -> None:
     if not host or host in seen or _SAFE_HOST.match(host):
         return
     seen.add(host)
-    reasons.append(f"names an external destination '{host}'")
+    # Codex round-34 (2026-09-26), reproduced exactly as reported: the host
+    # itself was interpolated here - a credential-shaped hostname
+    # (`https://AKIA....test`) was correctly rejected by _FORBIDDEN's own
+    # categorical reason, but this second reason carried the full value
+    # into SafeTestLoadError and from there into the server log. Only the
+    # destination's ordinal is reported; the template author has the file.
+    reasons.append(f"names an external destination (#{len(seen)})")
 
 
 def _scan_text(parts: list[str]) -> list[str]:
@@ -272,7 +278,10 @@ def load_safe_test_templates(root: Path | str) -> dict[str, SafeTest]:
             if not decision.is_allowed:
                 raise SafeTestLoadError(f"{path}: {decision.outcome.value}: {decision.reasons}")
             if test.id in templates:
-                raise SafeTestLoadError(f"duplicate safe-test id {test.id}")
+                # Codex round-34 (2026-09-26): SafeTest.id is an
+                # unconstrained str (unlike RiskRule.id), so it is not
+                # echoed - the file path identifies the duplicate instead.
+                raise SafeTestLoadError(f"{path}: duplicate safe-test id")
             templates[test.id] = test
     finally:
         shutil.rmtree(snapshot_root, ignore_errors=True)

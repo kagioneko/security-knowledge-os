@@ -686,7 +686,10 @@ def _reindex_atomic_locked_on_snapshot(knowledge_root: Path, db_path: Path) -> R
         # into a `_ReindexAbort`, but this remains a defensive backstop.
         _cleanup(staging)
         return ReindexReport(
-            decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", str(abort)),
+            # Codex round-34 (2026-09-26): str(abort) put a real
+            # sqlite3.Error's text - which quotes content from the corrupt
+            # file - into the reason the reindex endpoint logs.
+            decision=stop(PolicyOutcome.POLICY_BLOCKED, "reindex", describe_db_error(abort)),
             old_revision=old_revision,
         )
 

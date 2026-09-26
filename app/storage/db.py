@@ -603,6 +603,19 @@ class FTS5Unavailable(RuntimeError):
     """The linked SQLite build has no FTS5 extension."""
 
 
+# Every exception type opening/probing the knowledge index can raise:
+# SQLite's own errors (a corrupt or non-SQLite file raises lazily, inside
+# connect()'s _has_fts5() probe) plus this module's RuntimeError
+# subclasses. Callers that must fail closed on an unusable index catch
+# this tuple and report describe_db_error(), never the exception itself.
+INDEX_OPEN_ERRORS: tuple[type[BaseException], ...] = (
+    sqlite3.Error,
+    ForeignDatabaseError,
+    FTS5Unavailable,
+    UntrustedStateDirectoryError,
+)
+
+
 def _has_fts5(conn: sqlite3.Connection) -> bool:
     try:
         conn.execute("CREATE VIRTUAL TABLE temp._skos_fts_probe USING fts5(x)")

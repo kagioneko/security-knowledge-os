@@ -246,3 +246,26 @@ def test_test_command_fails_when_a_fixture_result_does_not_match_its_label(
     out = capsys.readouterr().out
     assert exit_code == 1
     assert "unexpected for a 'vulnerable' fixture" in out
+
+
+def test_assess_with_a_corrupt_index_does_not_print_its_content(
+    tmp_path: Path, corpus_alt_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Regression for Codex round-34 (2026-09-26), reproduced exactly as
+    reported: `skos assess <input> --db <corrupt index>` raised
+    sqlite3.DatabaseError as a raw traceback whose message quotes content
+    from the file. It must exit with the fail-closed code and print only
+    the error category."""
+    from app.retrieval.index import reindex_atomic
+    from tests.unit.test_reindex import _corrupt_schema
+
+    db = tmp_path / "idx.sqlite"
+    assert reindex_atomic(corpus_alt_root, db).ok
+    _corrupt_schema(db, "synthetic_private_canary")
+
+    code = main(["assess", str(S1), "--db", str(db)])
+
+    captured = capsys.readouterr()
+    assert code == 3
+    assert "synthetic_private_canary" not in captured.out + captured.err
+    assert "SQLITE_CORRUPT" in captured.err

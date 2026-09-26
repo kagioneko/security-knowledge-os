@@ -37,7 +37,7 @@ from app.retrieval.index import reindex_atomic
 from app.reviewer.report import build_report, render_text
 from app.reviewer.rule_loader import RuleLoadError, load_rules
 from app.safe_errors import format_validation_error
-from app.storage.db import connect
+from app.storage.db import INDEX_OPEN_ERRORS, connect, describe_db_error
 
 # Codex#8 (round 11, 2026-09-13): a hand-authored assessment YAML file is at
 # most a few KB in real use (AssessmentInput's own post-parse total-size
@@ -371,6 +371,14 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeDecodeError) as exc:
         print(f"could not read input file: {exc}", file=sys.stderr)
         return 2
+    # Codex round-34 (2026-09-26), reproduced exactly as reported: a corrupt
+    # `--db` index raised sqlite3.DatabaseError (lazily, inside connect()'s
+    # FTS5 probe) straight out of `skos assess` as a raw traceback, whose
+    # message quotes content from the file. Same exit code as a
+    # POLICY_BLOCKED report; only describe_db_error()'s category is printed.
+    except INDEX_OPEN_ERRORS as exc:
+        print(f"knowledge index unusable: {describe_db_error(exc)}", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":
