@@ -19,7 +19,7 @@ review; regenerate with `git ls-files` after any change.
   environment, ignoring only its timestamp, without preflight itself
   rewriting that tracked file to check it, round 11 Codex#12)
 - Cross-AI review: Codex (code audit) + Antigravity (adversarial design
-  audit), **thirty-eight rounds** (through round-38), 2026-09-11 -- 2026-09-26. Rounds 1-2
+  audit), **thirty-nine rounds** (through round-39), 2026-09-11 -- 2026-09-26. Rounds 1-2
   (2026-09-11): CHANGES-REQUIRED both times, 19 then 13 findings, all
   fixed — see `REVIEW_CHECKLIST.md` sign-off tables. Rounds 3-6
   (2026-09-12): CHANGES-REQUIRED each time, independent findings each
@@ -773,6 +773,13 @@ review; regenerate with `git ls-files` after any change.
   public GitHub tree). One LOW doc nit ("fails the build" -> the guard is a
   pytest test run by the release gate) fixed in `4c004ab` (comment only). This is
   the packaging change's cross-review PASS for the PyPI release.
+
+  **Round 39** (2026-09-26, post-publication: reviewed the README PyPI
+  badges/install additions and the new test CI workflow before pushing them):
+  Codex **PASS-with-nits** - no secrets, no dangerous CI settings (contents:
+  read, no pull_request_target, no secret use on untrusted PRs). Nits applied:
+  `persist-credentials: false` on checkout (+ a SHA-pin TODO), and README notes
+  Python 3.12+ and that the assessed YAML is a user-provided input.
 
 ## Tracked files by area
 
