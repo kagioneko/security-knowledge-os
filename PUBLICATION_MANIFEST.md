@@ -3,13 +3,13 @@
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `06d85c7` (PyPI 0.1.0 published; README PyPI badges/install + test CI workflow, cross-review PASS-with-nits applied)
+- Commit: `2305914` (PyPI 0.1.0 published; README badges/install, test CI, and tag->PyPI publish CI via Trusted Publishing)
 - History: rewritten once on 2026-09-20, before first publication, to normalise author/committer identity to the
   GitHub no-reply address (one commit message also scrubbed of a local account name). Every commit's tree is
   identical before and after, so the reviewed content is the published content; commit hashes cited in the
   review records below are the **pre-rewrite** ones - see `docs/history-rewrite-map.md` for old -> new.
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **219**
+- Tracked files: **220**
 - Tests: **792** items (791 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
