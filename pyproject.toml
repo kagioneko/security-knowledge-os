@@ -79,13 +79,29 @@ packages = ["app"]
 "safe_tests" = "app/_bundled/safe_tests"
 
 [tool.hatch.build.targets.sdist]
-# Internal cross-review outputs (multi-MB Codex/Antigravity logs) are
-# gitignored working-tree files; never ship them in the source distribution.
+# The sdist is the source tree that is already public on GitHub; it must not
+# pick up gitignored working-tree files (Codex round-36). Hatchling's default
+# sdist did include the gitignored, multi-MB reviews/ logs, so this mirrors the
+# sensitive .gitignore entries as an explicit exclude: build artifacts, local
+# indexes, review logs, and any secret-classified content or credential file
+# that could be sitting untracked in the tree. The knowledge/private skeleton
+# that IS tracked (README + .gitkeep) is intentionally public and stays.
+# Verified: with these excludes the sdist contains zero untracked files.
 exclude = [
     "/reviews",
     "/dist",
-    "/var",
+    "/build",
     "/.venv",
+    "/var",
+    "/packs",
+    "/active",
+    "/secret",
+    ".env",
+    "*.key",
+    "*.pem",
+    "*.sqlite",
+    "*.sqlite3",
+    "*.db",
 ]
 
 [tool.ruff]
