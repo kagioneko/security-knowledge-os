@@ -8,7 +8,8 @@ or whose operator does not match the field's type (used at rule-load time).
 from __future__ import annotations
 
 from app.models.rule_clause import Clause, ClauseOutcome, Operator
-from app.reviewer.facts import FACT_SPEC, Fact, FactType
+from app.reviewer.facts import Fact, FactType
+from app.reviewer.vocabulary import CORE_VOCABULARY, Vocabulary
 
 _UNKNOWN_STR = "unknown"
 
@@ -17,16 +18,27 @@ class ClauseError(ValueError):
     """A clause is not evaluable: unknown field or operator/type mismatch."""
 
 
-def validate_clause(clause: Clause) -> None:
-    fact_type = FACT_SPEC.get(clause.field)
+def validate_clause(clause: Clause, vocabulary: Vocabulary = CORE_VOCABULARY) -> None:
+    fact_type = vocabulary.facts.get(clause.field)
     if fact_type is None:
         # Codex round-31 (2026-09-25): Clause.field is an unconstrained str
         # (no format validation), so echoing it here put arbitrary
         # rule-authored content into a ClauseError message that
         # rule_problems() folds into RuleLoadError's own message. The fixed,
         # known-safe allowed-fact list is kept; the offending value is not.
-        raise ClauseError(f"unknown fact (not in the allowed set: {sorted(FACT_SPEC)})")
+        raise ClauseError(f"unknown fact (not in the allowed set: {sorted(vocabulary.facts)})")
+    _validate_shape(clause, fact_type)
+    allowed = vocabulary.fact_values.get(clause.field)
+    if allowed is not None and clause.value is not None:
+        # An enum-constrained (pack) str fact: a literal outside the declared
+        # values can never match, so a typo would silently turn the clause
+        # into a constant - reject it at load time instead.
+        literals = clause.value if isinstance(clause.value, list) else [clause.value]
+        if any(v != _UNKNOWN_STR and v not in allowed for v in literals):
+            raise ClauseError(f"value is not one of the declared values {sorted(allowed)}")
 
+
+def _validate_shape(clause: Clause, fact_type: FactType) -> None:
     op = clause.op
     if op is Operator.IS_UNKNOWN:
         if fact_type is FactType.STR_LIST:

@@ -3,7 +3,7 @@
   "specVersion": "1.5",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-09-13T12:25:29.856543+00:00",
+    "timestamp": "2026-09-27T12:49:47.503924+00:00",
     "component": {
       "type": "application",
       "name": "security-knowledge-os",
@@ -191,6 +191,26 @@
     },
     {
       "type": "library",
+      "name": "cffi",
+      "version": "2.1.1",
+      "purl": "pkg:pypi/cffi@2.1.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT-0"
+          }
+        }
+      ],
+      "scope": "required",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "runtime"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "charset-normalizer",
       "version": "3.5.1",
       "purl": "pkg:pypi/charset-normalizer@3.5.1",
@@ -226,6 +246,26 @@
         {
           "name": "skos:dependency-group",
           "value": "api"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "cryptography",
+      "version": "50.0.1",
+      "purl": "pkg:pypi/cryptography@50.0.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache-2.0 OR BSD-3-Clause"
+          }
+        }
+      ],
+      "scope": "required",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "runtime"
         }
       ]
     },
@@ -846,6 +886,26 @@
         {
           "name": "skos:dependency-group",
           "value": "dev"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pycparser",
+      "version": "3.0",
+      "purl": "pkg:pypi/pycparser@3.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD-3-Clause"
+          }
+        }
+      ],
+      "scope": "required",
+      "properties": [
+        {
+          "name": "skos:dependency-group",
+          "value": "runtime"
         }
       ]
     },

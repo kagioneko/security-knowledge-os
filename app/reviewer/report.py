@@ -102,9 +102,23 @@ def _render_lines(report: AssessmentReport) -> list[str]:
         f"knowledge_revision: {r.knowledge_revision}",
         f"model: {r.model_info.llm_provider} "
         f"(deterministic_only={r.model_info.deterministic_only})",
-        "",
-        "findings:",
+        "packs: "
+        + (
+            ", ".join(
+                f"{p.name} {p.version} [{p.tier.value}, {p.trust.value}]" for p in r.packs_applied
+            )
+            or "none"
+        ),
     ]
+    if r.extensions_ignored:
+        lines.append("extensions: IGNORED (--no-packs) - pack-specific inputs were not assessed")
+    if r.group_summaries:
+        lines.append("")
+        lines.append("groups:")
+        for g in r.group_summaries:
+            worst = g.worst_status.value if g.worst_status else "-"
+            lines.append(f"  {g.pack}/{g.group:14} {worst:7} ({g.finding_count} finding(s))")
+    lines += ["", "findings:"]
     for f in r.findings:
         lines.append(f"  [{f.status.value:7}] {f.risk_id:12} {f.title}  ({f.origin})")
         if f.reasoning_summary:

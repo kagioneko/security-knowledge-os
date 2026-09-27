@@ -10,7 +10,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "security-knowledge-os"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deterministic security assessment engine + knowledge retrieval + optional LLM assistance"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -19,6 +19,9 @@ license-files = ["LICENSE", "NOTICE"]
 dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6.0",
+    # Service packs (docs/pack-schema.md): Ed25519 verification of pack
+    # manifests and commercial license files. Floor = the version tested.
+    "cryptography>=50.0",
 ]
 
 # Codex cross-review finding #5 (round 4, 2026-09-12): the declared floor

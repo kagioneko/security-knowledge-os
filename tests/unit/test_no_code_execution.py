@@ -11,15 +11,23 @@ from pathlib import Path
 import pytest
 
 from app.models.rule_clause import Clause, Operator
+from app.packs import config as pack_config
+from app.packs import discovery as pack_discovery
+from app.packs import license as pack_license
+from app.packs import loader as pack_loader
+from app.packs import manifest as pack_manifest
+from app.packs import signing as pack_signing
 from app.reviewer import (
     assess,
     attack_surface,
     clause_eval,
+    extensions,
     facts,
     normalize,
     rollup,
     rule_engine,
     rule_loader,
+    vocabulary,
 )
 from app.reviewer.clause_eval import evaluate_clause
 
@@ -33,6 +41,17 @@ _EVAL_PATH_MODULES = [
     attack_surface,
     rollup,
     assess,
+    vocabulary,
+    extensions,
+    # Service packs: everything that discovers, verifies and loads a pack is
+    # data-only. app/packs/commands.py - the one module that imports pack
+    # code, for `skos <pack> <command>` only - is deliberately NOT listed.
+    pack_config,
+    pack_discovery,
+    pack_license,
+    pack_loader,
+    pack_manifest,
+    pack_signing,
 ]
 
 

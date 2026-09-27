@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from app.models._credential_shapes import reject_credential_shapes, reject_non_identifier_shapes
+from app.models.pack import AppliedPack, GroupSummary
 from app.models.risk import Finding, FindingStatus, Severity
 
 # Codex cross-review finding #6 (round 2, 2026-09-11): AssessmentInput had no
@@ -40,6 +41,20 @@ _Short = Annotated[
     AfterValidator(reject_non_identifier_shapes),
 ]
 _Text = Annotated[str, Field(max_length=50_000), AfterValidator(reject_credential_shapes)]
+
+# Pack extension blocks (docs/pack-schema.md): `extensions.<pack>.<key>`. The
+# key shapes match what a pack manifest may declare; the values are
+# type-checked against the pack's declared facts in app/packs/extensions.py
+# (this model cannot know which packs are installed).
+_PackName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9]{1,15}$")]
+_ExtKey = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,47}$")]
+_ExtText = Annotated[
+    str,
+    Field(max_length=2_000),
+    AfterValidator(reject_credential_shapes),
+    AfterValidator(reject_non_identifier_shapes),
+]
+ExtensionValue = bool | _ExtText | list[_Short] | None
 
 # Codex cross-review finding #3 (round 3, 2026-09-12): the per-field bounds
 # above cap any ONE field, but nothing capped the serialized size of the
@@ -157,6 +172,9 @@ class AssessmentInput(BaseModel):
     outbound: OutboundInput = Field(default_factory=OutboundInput)
     human_approval: dict[_Short, bool] = Field(default_factory=dict, max_length=200)
     credentials: CredentialInput = Field(default_factory=CredentialInput)
+    extensions: dict[
+        _PackName, Annotated[dict[_ExtKey, ExtensionValue], Field(max_length=100)]
+    ] = Field(default_factory=dict, max_length=16)
 
     @model_validator(mode="before")
     @classmethod
@@ -322,6 +340,11 @@ class AssessmentResult(BaseModel):
     human_review_required: bool
     knowledge_revision: str | None = None
     retrieved_knowledge_ids: list[str] = Field(default_factory=list)
+    # Service packs (docs/pack-schema.md): which packs' rules took part, and
+    # whether extension blocks were present but ignored (`--no-packs`).
+    packs_applied: list[AppliedPack] = Field(default_factory=list)
+    extensions_ignored: bool = False
+    group_summaries: list[GroupSummary] = Field(default_factory=list)
     model_info: ModelInfo
 
     # Codex#4 (round 9, 2026-09-12), reproduced exactly as reported: nothing

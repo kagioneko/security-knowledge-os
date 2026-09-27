@@ -6,8 +6,12 @@
     skos ingest [ROOT]
     skos reindex [ROOT] [--db PATH]
     skos assess FILE [--db PATH] [--json] [--strict]
+    skos assess FILE --no-packs      # core rules only; extensions blocks are ignored
     skos report FILE                 # pretty-print a saved report JSON
     skos test [--db PATH]            # run the assessment fixtures as a smoke test
+    skos packs [list]                # installed service packs and their trust state
+    skos packs enable|disable|verify NAME
+    skos <pack> <command> [ARGS...]  # a trusted pack's own command
 
 Exit codes: 0 ok, 1 findings failure with --strict, 2 usage/input error,
 3 POLICY_BLOCKED (an assessment or reindex was stopped by policy).
@@ -28,6 +32,16 @@ from app.ingestion.validator import Level, iter_knowledge_files, validate_tree
 from app.llm.factory import get_client
 from app.models.assessment import AssessmentInput, OverallStatus
 from app.models.report import AssessmentReport, ReportStatus
+from app.packs.commands import PackCommandError, run_command
+from app.packs.config import PackConfigError, load_config, save_config
+from app.packs.loader import (
+    LoadedPack,
+    PackLoadError,
+    PackState,
+    PackStatus,
+    apply_packs,
+    inspect_all,
+)
 from app.policy.safe_test import (
     SafeTestLoadError,
     load_safe_test_templates,
@@ -214,8 +228,17 @@ def _cmd_reindex(args: argparse.Namespace, s: Settings) -> int:
     return 3
 
 
-def _run(inp: AssessmentInput, s: Settings, db: Path | None) -> AssessmentReport:
+def _run(
+    inp: AssessmentInput, s: Settings, db: Path | None, *, packs: bool | None = None
+) -> AssessmentReport:
+    """``packs``: True = core + trusted packs (``skos assess``), False =
+    core only with extensions ignored (``--no-packs``), None = core only
+    (``skos test``; an extensions block is then rejected)."""
     catalogue = load_rules(s.rules_root)
+    if packs:
+        catalogue = apply_packs(catalogue, inspect_all())
+    elif packs is False:
+        catalogue.ignore_extensions = True
     safe_tests = load_safe_test_templates(s.safe_tests_root)
     client = get_client(s)
     conn = connect(db, read_only=True) if db else None
@@ -232,7 +255,7 @@ def _cmd_assess(args: argparse.Namespace, s: Settings) -> int:
     if not args.file.exists():
         print(f"input not found: {args.file}", file=sys.stderr)
         return 2
-    report = _run(_load_input(args.file), s, args.db)
+    report = _run(_load_input(args.file), s, args.db, packs=not args.no_packs)
     if args.json:
         print(report.model_dump_json(indent=2))
     else:
@@ -293,6 +316,73 @@ def _cmd_test(args: argparse.Namespace, s: Settings) -> int:
     return 1 if failures else 0
 
 
+def _pack_row(st: PackStatus) -> str:
+    m = st.manifest
+    name = m.name if m else st.label
+    version = m.version if m else "-"
+    tier = f"[{m.tier.value}]" if m else "-"
+    return f"  {name:12} {version:10} {tier:13} {st.state.value:9} {st.reason}  ({st.source})"
+
+
+def _find(
+    inspected: list[tuple[PackStatus, LoadedPack | None]], name: str
+) -> list[PackStatus]:
+    return [
+        st for st, _ in inspected
+        if (st.manifest.name if st.manifest else st.label) == name
+    ]
+
+
+def _cmd_packs(args: argparse.Namespace, s: Settings) -> int:
+    inspected = inspect_all()
+    if args.action == "list":
+        if not inspected:
+            print("no service packs installed")
+            return 0
+        for st, _ in inspected:
+            print(_pack_row(st))
+        return 1 if any(st.state is PackState.ERROR for st, _ in inspected) else 0
+
+    if not args.name:
+        print(f"skos packs {args.action}: a pack name is required", file=sys.stderr)
+        return 2
+    matches = _find(inspected, args.name)
+    if len(matches) != 1:
+        found = "no pack" if not matches else f"{len(matches)} packs"
+        print(f"{found} named {args.name!r} installed", file=sys.stderr)
+        return 2
+    st = matches[0]
+    config = load_config()
+
+    if args.action == "verify":
+        print(_pack_row(st))
+        if st.manifest_sha256:
+            print(f"  manifest sha256: {st.manifest_sha256}")
+        return 0 if st.state is PackState.ACTIVE else 1
+
+    if args.action == "disable":
+        config.enabled.pop(args.name, None)
+        if args.name not in config.disabled:
+            config.disabled.append(args.name)
+        print(f"disabled {args.name!r} ({save_config(config)})")
+        return 0
+
+    # enable
+    if st.manifest is None or st.manifest_sha256 is None:
+        print(f"cannot enable {args.name!r}: {st.reason}", file=sys.stderr)
+        return 1
+    m = st.manifest
+    config.disabled = [n for n in config.disabled if n != args.name]
+    config.enabled[args.name] = st.manifest_sha256
+    path = save_config(config)
+    print(f"enabled {m.name} {m.version} [{m.tier.value}] publisher={m.publisher}")
+    print(f"  pinned manifest sha256: {st.manifest_sha256}")
+    if m.commands:
+        print(f"  NOTE: this pack ships code for commands: {', '.join(sorted(m.commands))}")
+    print(f"  ({path})")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="skos", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -324,6 +414,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", type=Path)
     p.add_argument("--json", action="store_true")
     p.add_argument("--strict", action="store_true")
+    p.add_argument(
+        "--no-packs", action="store_true",
+        help="assess with the core rules only; extensions blocks are ignored",
+    )
     p.set_defaults(func=_cmd_assess)
 
     p = sub.add_parser("report")
@@ -334,14 +428,52 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", type=Path)
     p.set_defaults(func=_cmd_test)
 
+    p = sub.add_parser("packs", help="list and manage installed service packs")
+    p.add_argument(
+        "action", nargs="?", default="list", choices=["list", "enable", "disable", "verify"]
+    )
+    p.add_argument("name", nargs="?")
+    p.set_defaults(func=_cmd_packs)
+
     return parser
 
 
+# Every subcommand _build_parser() defines; anything else in argv[0] is looked
+# up as a pack name (tests/unit/test_packs_cli.py keeps the two in sync).
+BUILTIN_COMMANDS = frozenset(
+    {
+        "validate-knowledge", "validate-rules", "validate-safe-tests", "ingest", "reindex",
+        "assess", "report", "test", "packs",
+    }
+)
+
+
+def _run_pack_command(argv: list[str]) -> int:
+    name, rest = argv[0], argv[1:]
+    matches = [st for st in _find(inspect_all(), name) if st.state is PackState.ACTIVE]
+    if len(matches) != 1:
+        print(f"unknown command or inactive pack: {name!r} (see `skos packs`)", file=sys.stderr)
+        return 2
+    if not rest:
+        m = matches[0].manifest
+        assert m is not None
+        print(f"usage: skos {name} <command> - commands: {', '.join(sorted(m.commands)) or 'none'}")
+        return 2
+    return run_command(matches[0], rest[0], rest[1:])
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-    settings = Settings.from_env()
+    argv = sys.argv[1:] if argv is None else argv
+    parser = _build_parser()
     try:
+        if argv and not argv[0].startswith("-") and argv[0] not in BUILTIN_COMMANDS:
+            return _run_pack_command(argv)
+        args = parser.parse_args(argv)
+        settings = Settings.from_env()
         return int(args.func(args, settings))
+    except (PackLoadError, PackConfigError, PackCommandError) as exc:
+        print(f"pack error: {exc}", file=sys.stderr)
+        return 2
     except (RuleLoadError, SafeTestLoadError) as exc:
         print(f"catalogue error: {exc}", file=sys.stderr)
         return 2

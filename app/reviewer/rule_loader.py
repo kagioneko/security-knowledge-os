@@ -16,10 +16,11 @@ from pydantic import ValidationError
 
 from app.ingestion.parser import FrontMatterError, _read_text_no_follow, safe_load_bounded
 from app.ingestion.snapshot import snapshot_tree
+from app.models.pack import AppliedPack, ReportGroup
 from app.models.risk import LLM_OBS_PREFIX, RiskRule
 from app.models.rule_clause import Clause, Operator
 from app.reviewer.clause_eval import ClauseError, validate_clause
-from app.reviewer.evidence import EVIDENCE_KEYS
+from app.reviewer.vocabulary import CORE_VOCABULARY, Vocabulary
 from app.safe_errors import format_validation_error
 
 _CLAUSE_KEYS = {"field", "op", "value"}
@@ -38,6 +39,16 @@ class RuleLoadError(Exception):
 @dataclass
 class RuleCatalogue:
     rules: list[RiskRule] = field(default_factory=list)
+    # The names these rules may reference. A catalogue merged with packs
+    # (app/packs/loader.py) carries the extended vocabulary; everything that
+    # validates or evaluates the catalogue reads it from here.
+    vocabulary: Vocabulary = CORE_VOCABULARY
+    # Pack provenance, filled in by app/packs/loader.py only.
+    packs_applied: list[AppliedPack] = field(default_factory=list)
+    report_groups: list[ReportGroup] = field(default_factory=list)
+    # True when the operator chose `--no-packs`: extensions blocks in the
+    # input are then ignored (and the report says so) instead of rejected.
+    ignore_extensions: bool = False
 
     def by_id(self, rule_id: str) -> RiskRule:
         for rule in self.rules:
@@ -117,7 +128,9 @@ def _as_list(value: Any, *, field: str, source: Path) -> list[Any]:
     return value
 
 
-def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
+def _parse_rule(
+    data: dict[str, Any], source: Path, vocabulary: Vocabulary = CORE_VOCABULARY
+) -> RiskRule:
     payload = dict(data)
     conditions = payload.get("conditions")
     # Codex cross-review finding #1 (round 4, 2026-09-12): the previous
@@ -182,13 +195,13 @@ def _parse_rule(data: dict[str, Any], source: Path) -> RiskRule:
         # rejected value regardless of this message's sanitization.
         raise RuleLoadError(f"{source}: invalid rule: {format_validation_error(exc)}") from None
 
-    problems = rule_problems(rule)
+    problems = rule_problems(rule, vocabulary)
     if problems:
         raise RuleLoadError(f"{source}: " + "; ".join(problems))
     return rule
 
 
-def rule_problems(rule: RiskRule) -> list[str]:
+def rule_problems(rule: RiskRule, vocabulary: Vocabulary = CORE_VOCABULARY) -> list[str]:
     """Every structural problem with an already-constructed ``RiskRule``,
     independent of how it was built.
 
@@ -243,18 +256,18 @@ def rule_problems(rule: RiskRule) -> list[str]:
 
     for clause in rule.clauses():
         try:
-            validate_clause(clause)
+            validate_clause(clause, vocabulary)
         except ClauseError as exc:
             problems.append(f"[{rule.id}]: {exc}")
 
-    unknown_evidence = set(rule.required_evidence) - EVIDENCE_KEYS
+    unknown_evidence = set(rule.required_evidence) - vocabulary.evidence_keys
     if unknown_evidence:
         # Codex round-31 (2026-09-25): required_evidence is an unconstrained
         # list[str] (no format validation) - report the count and the fixed,
         # known-safe allowed set, not the rejected values themselves.
         problems.append(
             f"[{rule.id}]: {len(unknown_evidence)} unknown required_evidence "
-            f"key(s) (allowed: {sorted(EVIDENCE_KEYS)})"
+            f"key(s) (allowed: {sorted(vocabulary.evidence_keys)})"
         )
 
     return problems
@@ -272,11 +285,21 @@ def validate_rule_catalogue(catalogue: RuleCatalogue) -> list[str]:
         if rule.id in seen:
             problems.append(f"duplicate rule id {rule.id}")
         seen.add(rule.id)
-        problems.extend(rule_problems(rule))
+        problems.extend(rule_problems(rule, catalogue.vocabulary))
     return problems
 
 
-def load_rules(rules_root: Path | str) -> RuleCatalogue:
+def load_rules(
+    rules_root: Path | str,
+    vocabulary: Vocabulary = CORE_VOCABULARY,
+    *,
+    id_prefix: str | None = None,
+) -> RuleCatalogue:
+    """Load every ``*.yaml`` rule under ``rules_root``.
+
+    ``vocabulary`` is the set of facts/evidence keys the rules may reference
+    (a pack passes core + its own). ``id_prefix``, when given, is required on
+    every rule id (a pack's ``<NAME>-``)."""
     rules_root = Path(rules_root)
     # Codex cross-review finding #1 (2026-09-11): Path.rglob() on a missing or
     # empty directory silently yields nothing - previously that produced an
@@ -305,7 +328,7 @@ def load_rules(rules_root: Path | str) -> RuleCatalogue:
             from exc
 
     try:
-        catalogue = RuleCatalogue()
+        catalogue = RuleCatalogue(vocabulary=vocabulary)
         seen: dict[str, Path] = {}
 
         for snap_path in sorted(snapshot_root.rglob("*.yaml")):
@@ -331,7 +354,9 @@ def load_rules(rules_root: Path | str) -> RuleCatalogue:
             if not isinstance(raw, dict):
                 raise RuleLoadError(f"{path}: a rule file must contain one mapping")
 
-            rule = _parse_rule(raw, path)
+            rule = _parse_rule(raw, path, vocabulary)
+            if id_prefix is not None and not rule.id.startswith(id_prefix):
+                raise RuleLoadError(f"{path}: rule id must start with {id_prefix!r}")
             if rule.id in seen:
                 raise RuleLoadError(
                     f"duplicate rule id {rule.id} in {path} and {seen[rule.id]}"

@@ -31,6 +31,7 @@ from app.models.assessment import (
     UntrustedSafeTestProposal,
 )
 from app.models.knowledge import Classification
+from app.models.pack import GroupSummary
 from app.models.policy_outcome import PolicyOutcome, PolicyStop, stop
 from app.models.retrieval import RetrievedChunk
 from app.models.risk import Finding, FindingStatus
@@ -42,6 +43,7 @@ from app.policy.safe_test import (
 from app.retrieval.bm25 import Bm25Retriever
 from app.reviewer.attack_surface import extract_attack_surface
 from app.reviewer.evidence import available_evidence
+from app.reviewer.extensions import extension_evidence, extension_facts, extension_problems
 from app.reviewer.facts import build_facts
 from app.reviewer.llm_review import (
     LLMReviewResult,
@@ -140,10 +142,26 @@ def assess(
             )
         )
 
+    vocabulary = catalogue.vocabulary
+    extensions_ignored = bool(inp.extensions) and catalogue.ignore_extensions
+    if not catalogue.ignore_extensions:
+        ext_problems = extension_problems(inp, vocabulary)
+        if ext_problems:
+            raise PolicyStop(
+                stop(
+                    PolicyOutcome.POLICY_BLOCKED,
+                    "extensions",
+                    f"assessment input extensions are not assessable: {'; '.join(ext_problems)}",
+                )
+            )
+
     context = to_context(inp)
     facts = build_facts(context)
     surface = extract_attack_surface(context)
     evidence = available_evidence(inp)
+    if not catalogue.ignore_extensions:
+        facts.update(extension_facts(inp, vocabulary))
+        evidence |= extension_evidence(inp, vocabulary)
 
     evaluations = evaluate_rules_detailed(catalogue.rules, facts, evidence)
     rule_findings = [ev.finding for ev in evaluations if ev.finding is not None]
@@ -178,7 +196,7 @@ def assess(
         llm_findings.append(degraded)
     findings = merge_findings(rule_findings, llm_findings)
 
-    missing = build_missing_information(evaluations)
+    missing = build_missing_information(evaluations, vocabulary)
     questions = build_questions(missing, review.observations)
     mitigations = _mitigations(catalogue, rule_findings)
     attached_tests = _safe_tests_for(catalogue, rule_findings, safe_tests)
@@ -209,6 +227,9 @@ def assess(
         ),
         knowledge_revision=knowledge_revision,
         retrieved_knowledge_ids=retrieved_ids,
+        packs_applied=list(catalogue.packs_applied),
+        extensions_ignored=extensions_ignored,
+        group_summaries=_group_summaries(catalogue, findings),
         model_info=ModelInfo(
             llm_provider=settings.llm_provider.value,
             llm_model=settings.llm_model,
@@ -229,6 +250,32 @@ def assess_deterministic(
     if knowledge_revision is not None:
         result.knowledge_revision = knowledge_revision
     return result
+
+
+_STATUS_RANK = {
+    FindingStatus.FAIL: 0,
+    FindingStatus.WARN: 1,
+    FindingStatus.UNKNOWN: 2,
+    FindingStatus.PASS: 3,
+    FindingStatus.NA: 4,
+}
+
+
+def _group_summaries(catalogue: RuleCatalogue, findings: list[Finding]) -> list[GroupSummary]:
+    by_id: dict[str, list[Finding]] = {}
+    for finding in findings:
+        if finding.origin == "rule":
+            by_id.setdefault(finding.risk_id, []).append(finding)
+    out: list[GroupSummary] = []
+    for group in catalogue.report_groups:
+        members = [f for rule_id in group.rule_ids for f in by_id.get(rule_id, [])]
+        worst = min((f.status for f in members), key=_STATUS_RANK.__getitem__, default=None)
+        out.append(
+            GroupSummary(
+                pack=group.pack, group=group.group, worst_status=worst, finding_count=len(members)
+            )
+        )
+    return out
 
 
 def _mitigations(catalogue: RuleCatalogue, findings: list[Finding]) -> list[Mitigation]:
