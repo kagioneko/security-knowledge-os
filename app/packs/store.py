@@ -38,6 +38,7 @@ from app.ingestion.snapshot import snapshot_tree
 from app.models.assessment import AssessmentInput
 from app.models.pack import PackClassification, PackTrust
 from app.models.report import ReportStatus
+from app.models.risk import RiskRule
 from app.packs.archive import MAX_ENTRY_BYTES, read_pack_zip, read_zip_bytes
 from app.packs.diff import PackDiff, diff_rules
 from app.packs.manifest import allowed_pack_path
@@ -233,6 +234,82 @@ class ActivePack:
     problem: PackVerifyError | None = None
 
 
+def _verify_installed(
+    home: Path,
+    pack_id: str,
+    record: InstalledPack,
+    *,
+    trusted: dict[str, TrustedKey] | None,
+    today: date | None,
+    require_license: bool = True,
+) -> VerifiedPack:
+    """Verify the active files of ``pack_id`` AS the installation ``record``
+    describes. Used for loading and - with the license check off - for the
+    baseline that install/rollback diff against: a tampered baseline must
+    never decide whether a change needs approval (Codex re-review F25)."""
+    target = _active_target(home, pack_id)
+    if target is None:
+        raise PackVerifyError(
+            Problem.INVALID, "installed but not active (run `skos pack rollback`)"
+        )
+    files = read_pack_dir(target)
+    # Identity first, before any check that could end in a skippable outcome
+    # (an expired license must not mask a replayed version - F02).
+    m, sha = parse_manifest(files)
+    if (
+        m.pack_id != pack_id
+        or m.version != record.version
+        or target.name != record.version
+        or sha != record.manifest_sha256
+        or m.classification is not record.classification
+    ):
+        raise PackVerifyError(
+            Problem.INVALID,
+            "active files do not match the recorded installation "
+            f"({record.version}, manifest {record.manifest_sha256[:12]}...)",
+        )
+    # Operator approval exists only for installs the operator approved; a
+    # signed install must keep verifying as signed (F17).
+    operator_approved = record.trust is PackTrust.OPERATOR_APPROVED
+    verified = verify_pack(
+        files,
+        trusted=TRUSTED_KEYS if trusted is None else trusted,
+        engine_version=ENGINE_VERSION,
+        today=today or date.today(),
+        approved=frozenset({record.manifest_sha256}) if operator_approved else frozenset(),
+        require_license=require_license,
+    )
+    if verified.trust is not record.trust:
+        raise PackVerifyError(
+            Problem.INVALID,
+            f"trust changed from {record.trust.value} to {verified.trust.value}",
+        )
+    return verified
+
+
+def _baseline_rules(
+    home: Path,
+    pack_id: str,
+    record: InstalledPack | None,
+    *,
+    trusted: dict[str, TrustedKey] | None,
+    today: date | None,
+) -> list[RiskRule]:
+    """The rules of what is active now, verified strictly, for diffing."""
+    if record is None:
+        return []
+    try:
+        return _verify_installed(
+            home, pack_id, record, trusted=trusted, today=today, require_license=False
+        ).catalogue.rules
+    except (PackVerifyError, OSError) as exc:
+        raise PackStoreError(
+            f"the installed {pack_id} {record.version} failed verification ({exc}); it cannot "
+            "serve as the baseline for approving changes - repair it first with "
+            "`skos pack rollback` or `skos pack remove`"
+        ) from None
+
+
 def verify_active(
     home: Path | None = None,
     *,
@@ -266,43 +343,7 @@ def verify_active(
                     "active but missing from installed.json (state lost?) - reinstall it or "
                     "`skos pack remove` it",
                 )
-            target = _active_target(home, pack_id)
-            if target is None:
-                raise PackVerifyError(
-                    Problem.INVALID, "installed but not active (run `skos pack rollback`)"
-                )
-            files = read_pack_dir(target)
-            # Identity first, before any check that could end in a skippable
-            # outcome (an expired license must not mask a replayed version -
-            # Codex re-review F02).
-            m, sha = parse_manifest(files)
-            if (
-                m.pack_id != pack_id
-                or m.version != record.version
-                or target.name != record.version
-                or sha != record.manifest_sha256
-                or m.classification is not record.classification
-            ):
-                raise PackVerifyError(
-                    Problem.INVALID,
-                    "active files do not match the recorded installation "
-                    f"({record.version}, manifest {record.manifest_sha256[:12]}...)",
-                )
-            # Operator approval exists only for installs the operator approved;
-            # a signed install must keep verifying as signed (F17).
-            operator_approved = record.trust is PackTrust.OPERATOR_APPROVED
-            verified = verify_pack(
-                files,
-                trusted=TRUSTED_KEYS if trusted is None else trusted,
-                engine_version=ENGINE_VERSION,
-                today=today or date.today(),
-                approved=frozenset({record.manifest_sha256}) if operator_approved else frozenset(),
-            )
-            if verified.trust is not record.trust:
-                raise PackVerifyError(
-                    Problem.INVALID,
-                    f"trust changed from {record.trust.value} to {verified.trust.value}",
-                )
+            verified = _verify_installed(home, pack_id, record, trusted=trusted, today=today)
             out.append(ActivePack(pack_id, verified))
         except PackVerifyError as exc:
             out.append(ActivePack(pack_id, None, exc))
@@ -372,21 +413,9 @@ def plan_install(
     )
     state = load_state(home)
     previous = state.packs.get(verified.manifest.pack_id)
-    old_rules = []
-    if previous is not None:
-        target = _active_target(home, verified.manifest.pack_id)
-        if target is not None:
-            old_files = read_pack_dir(target)
-            old = verify_pack(
-                old_files,
-                trusted=TRUSTED_KEYS if trusted is None else trusted,
-                engine_version=ENGINE_VERSION,
-                today=today or date.today(),
-                approved=frozenset(state.approved_manifests),
-                allow_unsigned=True,  # only used for diffing, never activated here
-                require_license=False,
-            )
-            old_rules = old.catalogue.rules
+    old_rules = _baseline_rules(
+        home, verified.manifest.pack_id, previous, trusted=trusted, today=today
+    )
     diff = diff_rules(old_rules, verified.catalogue.rules)
     needs = _needs_approval(diff, verified)
     return ChangePlan(verified, files, archive, previous, diff, needs)
@@ -468,11 +497,20 @@ def install(
             ]
             _smoke_test(core, [*others, restaged])
             if not reuse:
+                # Keep the old copy until the verified one is in place, and
+                # put it back if publishing fails (Codex re-review F26).
+                aside = None
                 if final.exists():
-                    aside = versions / f".damaged-{m.version}-{secrets.token_hex(4)}"
+                    aside = versions / f".replaced-{m.version}-{secrets.token_hex(4)}"
                     os.rename(final, aside)
+                try:
+                    os.rename(staging, final)
+                except BaseException:
+                    if aside is not None:
+                        os.rename(aside, final)
+                    raise
+                if aside is not None:
                     shutil.rmtree(aside, ignore_errors=True)
-                os.rename(staging, final)
         except BaseException as exc:
             shutil.rmtree(staging, ignore_errors=True)
             audit(home, "install", install_result=f"failed: {type(exc).__name__}", **audit_base)
@@ -535,14 +573,7 @@ def rollback(
                 read_pack_dir(target), trusted=trusted_keys, engine_version=ENGINE_VERSION,
                 today=today or date.today(), approved=frozenset(state.approved_manifests),
             )
-            active = _active_target(home, pack_id)
-            old_rules = []
-            if active is not None:
-                old_rules = verify_pack(
-                    read_pack_dir(active), trusted=trusted_keys, engine_version=ENGINE_VERSION,
-                    today=today or date.today(), approved=frozenset(state.approved_manifests),
-                    allow_unsigned=True, require_license=False,
-                ).catalogue.rules
+            old_rules = _baseline_rules(home, pack_id, current, trusted=trusted, today=today)
             diff = diff_rules(old_rules, verified.catalogue.rules)
             needs = _needs_approval(diff, verified)
             if needs and not approve_sensitive:
@@ -585,6 +616,6 @@ def remove(pack_id: str, *, home: Path | None = None) -> None:
         if current is None and not (home / "active" / pack_id).is_symlink():
             raise PackStoreError(f"pack {pack_id!r} is not installed")
         _switch(home, old_state, state, pack_id, None)
-        audit(home, "remove", pack_id=pack_id, old_version=current.version if current else None,
-              new_version=None,
-              install_result="ok")
+        _final_audit(home, "remove", "removed", pack_id=pack_id,
+                     old_version=current.version if current else None, new_version=None,
+                     install_result="ok")

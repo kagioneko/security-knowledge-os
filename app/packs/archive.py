@@ -39,7 +39,7 @@ def _entry_problem(info: zipfile.ZipInfo) -> str | None:
     mode = info.external_attr >> 16
     if stat.S_ISLNK(mode):
         return "symlink entry"
-    if info.flag_bits & 0x1:
+    if info.flag_bits & 0x41:  # bit 0 traditional / bit 6 strong encryption
         return "encrypted entry"
     if info.compress_type not in _ALLOWED_METHODS:
         return "unsupported compression method"
@@ -71,7 +71,7 @@ def read_pack_zip(data: bytes) -> dict[str, bytes]:
         raise PackArchiveError(f"pack ZIP exceeds {MAX_ZIP_BYTES} bytes")
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
-    except (zipfile.BadZipFile, OSError):
+    except (zipfile.BadZipFile, OSError, NotImplementedError, ValueError):
         raise PackArchiveError("not a valid ZIP file") from None
     files: dict[str, bytes] = {}
     total = 0
@@ -90,7 +90,10 @@ def read_pack_zip(data: bytes) -> dict[str, bytes]:
             try:
                 with zf.open(info) as fh:
                     data = fh.read(MAX_ENTRY_BYTES + 1)
-            except (zipfile.BadZipFile, OSError, EOFError, ValueError, zlib.error):
+            except (
+                zipfile.BadZipFile, OSError, EOFError, ValueError, zlib.error,
+                NotImplementedError,  # a ZIP feature the reader does not support
+            ):
                 raise PackArchiveError(f"{info.filename}: corrupt entry") from None
             if len(data) > MAX_ENTRY_BYTES:
                 raise PackArchiveError(f"{info.filename}: exceeds {MAX_ENTRY_BYTES} bytes")

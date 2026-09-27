@@ -204,6 +204,12 @@ signed install must keep verifying as signed - removing its signature or
 revoking its key does not degrade it to "operator-approved". An active link with no registry entry
 (a lost or emptied `installed.json`) is an error, not "nothing installed".
 
+The version install/rollback diffs against (the one active now) goes through
+the same strict check; if it fails, the change is refused until the
+installation is repaired - a tampered baseline must never decide that a
+change needs no approval. A kept version directory is replaced only after the
+verified copy is in place, and restored if that fails.
+
 `skos pack rollback PACK_ID VERSION` re-verifies the kept version, diffs,
 smoke-tests and swaps back. `skos pack remove PACK_ID` deactivates the pack and
 keeps its archives and versions as history.
@@ -233,9 +239,12 @@ in only when the config establishes it: what the client sends or connects to
 is not taken as a server property (an auth header does not prove the server
 requires auth; a loopback URL does not prove a loopback-only bind), known
 server capabilities apply only to exact registry package identities (aliases,
-URLs, git and path specs stay unknown), and container options that are not
+URLs, git and path specs, and any launcher option other than `-y`/`-q` - a
+registry/index override, `-p`/`--from` - leave the package unidentified), and container options that are not
 fully understood leave isolation and pinning unknown. Credential detection
-proves presence, never absence: `secrets_in_config` is `true` or `null`, and
+proves presence, never absence: `secrets_in_config` is `true` (a literal
+credential was found; `${VAR}` references, also after `Bearer `, do not count)
+or `null`, and
 `token_scope` is never claimed to be `none`. No config value other than
 server names is written, printed, or used in an error message.
 

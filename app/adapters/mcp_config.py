@@ -50,10 +50,8 @@ FACT_KEYS = (
 
 _SECRET_NAME = r"(?i)(key|token|secret|passw|pat\b|credential|auth|cookie|session|sig)"
 _ENV_REFERENCE = r"^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$"
-_SECRET_ARG = (
-    r"(?i)^--?(api[-_]?key|token|secret|password|auth)(=|$)"
-    r"|^(sk-|ghp_|gho_|github_pat_|xox[bpas]-|AKIA|AIza)"
-)
+_SECRET_FLAG = r"(?i)--?(api[-_]?key|token|secret|password|auth)(?P<eq>=(?P<value>.*))?"
+_TOKEN_PREFIX = r"^(sk-|ghp_|gho_|github_pat_|xox[bpas]-|AKIA|AIza)"
 # Plain registry specs only. Aliases (`name@npm:other`), URLs, git and path
 # specs change what is actually installed, so they are not identified at all
 # (Codex re-review F08).
@@ -100,6 +98,10 @@ _KNOWN: dict[tuple[str, str], _Profile] = {
 # Reference servers published by the MCP project itself.
 _FIRST_PARTY_NPM_SCOPE = "@modelcontextprotocol/"
 _FIRST_PARTY_PYPI = {"mcp-server-fetch", "mcp-server-git", "mcp-server-time"}
+
+_NPX_SAFE_FLAGS = {"-y", "--yes", "-q", "--quiet"}
+_UVX_SAFE_FLAGS = {"-q", "--quiet"}
+_AUTH_SCHEME = r"(?i)^(bearer|basic|token|bot)\s+"
 
 # docker/podman `run` options that take a separate value argument.
 _VALUE_FLAGS = {
@@ -162,23 +164,44 @@ def _host_scope(host: str | None) -> str | None:
     return "public"
 
 
+def _is_literal_value(value: object) -> bool:
+    """A non-empty value that is not just a ${VAR} reference (an auth scheme
+    prefix such as "Bearer " is ignored: "Bearer ${TOKEN}" is a reference)."""
+    if not isinstance(value, str):
+        return False
+    v = re.sub(_AUTH_SCHEME, "", value.strip())
+    return v != "" and re.fullmatch(_ENV_REFERENCE, v) is None
+
+
 def _is_literal_secret(name: str, value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and value.strip() != ""
-        and re.search(_SECRET_NAME, name) is not None
-        and re.fullmatch(_ENV_REFERENCE, value.strip()) is None
-    )
+    return re.search(_SECRET_NAME, name) is not None and _is_literal_value(value)
 
 
-def _arg_carries_secret(arg: str) -> bool:
-    """A launch argument that visibly carries a credential: a known flag or
-    token prefix, NAME=VALUE with a credential-like NAME (docker -e, env
-    assignments), or a URL with userinfo."""
-    if re.search(_SECRET_ARG, arg) or re.search(_URL_USERINFO, arg):
-        return True
-    m = re.fullmatch(_ASSIGNMENT, arg)
-    return m is not None and _is_literal_secret(m.group("name"), m.group("value"))
+def _args_carry_secret(args: list[str]) -> tuple[bool, bool]:
+    """(literal credential seen, credential-bearing argument seen).
+
+    A literal is: a known token prefix; `--token=VALUE` / `--token VALUE` with
+    a literal VALUE; NAME=VALUE with a credential-like NAME (docker -e, env
+    assignments); or a URL with userinfo. `--token ${TOKEN}` is a reference,
+    not a literal (Codex re-review F28)."""
+    literal = mentioned = False
+    for i, arg in enumerate(args):
+        if re.search(_TOKEN_PREFIX, arg) or re.search(_URL_USERINFO, arg):
+            literal = mentioned = True
+            continue
+        flag = re.fullmatch(_SECRET_FLAG, arg)
+        if flag is not None:
+            mentioned = True
+            value = flag.group("value") if flag.group("eq") else (
+                args[i + 1] if i + 1 < len(args) else None
+            )
+            literal = literal or _is_literal_value(value)
+            continue
+        m = re.fullmatch(_ASSIGNMENT, arg)
+        if m is not None and re.search(_SECRET_NAME, m.group("name")):
+            mentioned = True
+            literal = literal or _is_literal_value(m.group("value"))
+    return literal, mentioned
 
 
 def _str_list(value: object, what: str) -> list[str]:
@@ -205,25 +228,29 @@ def _launcher(command: str, args: list[str]) -> tuple[str, str | None, list[str]
     rest = list(args)
     if base in ("pnpm", "yarn", "npm") and rest[:1] in (["dlx"], ["exec"]):
         base, rest = "npx", rest[1:]
+    # Only the launcher options below are understood. Anything else - a
+    # registry/index override, `-p/--from` naming a different package than
+    # the executable, ... - can change what actually runs, so the package is
+    # then not identified at all (Codex re-review F08).
     if base in ("npx", "bunx"):
-        i = 0
-        while i < len(rest):
-            arg = rest[i]
-            if arg in ("-p", "--package"):
-                i += 2
+        for i, arg in enumerate(rest):
+            if arg in _NPX_SAFE_FLAGS:
                 continue
-            if not arg.startswith("-"):
-                return "npm", arg, rest[i + 1 :]
-            i += 1
+            if arg.startswith("-"):
+                return "npm", None, []
+            return "npm", arg, rest[i + 1 :]
         return "npm", None, []
     if base in ("uvx", "pipx"):
-        if base == "pipx" and rest[:1] == ["run"]:
+        if base == "pipx":
+            if rest[:1] != ["run"]:
+                return "pypi", None, []
             rest = rest[1:]
         for i, arg in enumerate(rest):
-            if arg == "--from" and i + 1 < len(rest):
-                return "pypi", rest[i + 1], rest[i + 2 :]
-            if not arg.startswith("-"):
-                return "pypi", arg, rest[i + 1 :]
+            if arg in _UVX_SAFE_FLAGS:
+                continue
+            if arg.startswith("-"):
+                return "pypi", None, []
+            return "pypi", arg, rest[i + 1 :]
         return "pypi", None, []
     if base in ("docker", "podman"):
         return "container", None, rest
@@ -424,9 +451,9 @@ def scan_server(label: str, cfg: object, taken: set[str]) -> ServerScan:
                         facts[key] = getattr(profile, key)
                     positional = [a for a in rest if not a.startswith("-")]
                     facts["fs_scope"] = _fs_scope(positional) if profile.touches_fs else "none"
-        for arg in args:
-            if _arg_carries_secret(arg):
-                secret_seen = token_seen = True
+        literal, mentioned = _args_carry_secret(args)
+        secret_seen = secret_seen or literal
+        token_seen = token_seen or mentioned
     else:
         raise ConfigError(f"server {name!r} has neither 'command' nor 'url'")
 

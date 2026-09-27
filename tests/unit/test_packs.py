@@ -921,3 +921,91 @@ def test_f24_damaged_kept_version_is_repaired_on_reinstall(
     _install(zip_a, catalogue, trusted, approve_sensitive=True)
     merged, _ = load_with_packs(catalogue, trusted=trusted, today=TODAY)
     assert merged.packs_applied[0].version == "2026.10.0"
+
+
+# ------------------------------------------------ re-review round 3 ----
+
+
+def test_f25_tampered_baseline_cannot_waive_approval(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    """Tamper the active version so it already looks like the weaker new one
+    (content + recomputed checksums, signature dropped): install must refuse
+    to diff against it instead of finding 'no sensitive change'."""
+    flipped = _RULE.replace("demo_auth_required: true", "demo_auth_required: false")
+
+    def tamper(version_dir: Path) -> None:
+        (version_dir / "rules" / "DEMO-001.yaml").write_text(flipped)
+        manifest = json.loads((version_dir / "manifest.json").read_text())
+        manifest["files"]["rules/DEMO-001.yaml"] = hashlib.sha256(flipped.encode()).hexdigest()
+        (version_dir / "manifest.json").write_text(json.dumps(manifest))
+        (version_dir / "checksums.sha256").unlink()
+        (version_dir / "signature.sig").unlink()
+
+    # install: the active version is the tampered baseline
+    _install(_zip(tmp_path / "a", key), catalogue, trusted)
+    tamper(home / "versions" / "demo" / "2026.10.0")
+    with pytest.raises(PackStoreError, match="cannot serve as the baseline"):
+        _install(_v2(tmp_path / "b", key, flipped), catalogue, trusted)
+
+
+def test_f25_tampered_baseline_cannot_waive_rollback_approval(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    flipped = _RULE.replace("demo_auth_required: true", "demo_auth_required: false")
+    _install(_zip(tmp_path / "a", key, rule=flipped), catalogue, trusted)
+    _install(_v2(tmp_path / "b", key, _RULE), catalogue, trusted, approve_sensitive=True)
+    active = home / "versions" / "demo" / "2026.11.0"
+    (active / "rules" / "DEMO-001.yaml").write_text(flipped)  # now looks like the target
+    with pytest.raises(PackStoreError, match="cannot serve as the baseline"):
+        rollback("demo", "2026.10.0", catalogue, trusted=trusted, today=TODAY)
+
+
+def test_f26_failed_repair_restores_the_kept_version(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    zip_a = _zip(tmp_path / "a", key)
+    _install(zip_a, catalogue, trusted)
+    _install(_v2(tmp_path / "b", key, _RULE), catalogue, trusted)  # A is now only kept
+    kept = home / "versions" / "demo" / "2026.10.0"
+    (kept / "changelog.md").write_text("damaged\n")  # forces the repair path
+    real_rename = store_mod.os.rename
+
+    def rename(src: object, dst: object) -> None:
+        if ".staging-" in str(src):
+            raise OSError("simulated publish failure")
+        real_rename(src, dst)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store_mod.os, "rename", rename)
+    with pytest.raises(OSError, match="simulated"):
+        _install(zip_a, catalogue, trusted)
+    monkeypatch.setattr(store_mod.os, "rename", real_rename)
+    assert kept.is_dir() and (kept / "changelog.md").read_text() == "damaged\n"
+
+
+def test_f27_remove_audit_failure_is_reported_as_committed(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install(_zip(tmp_path, key), catalogue, trusted)
+
+    def broken(*_: object, **__: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store_mod, "audit", broken)
+    with pytest.raises(store_mod.AuditIncompleteError, match="removed successfully"):
+        remove("demo")
+    assert load_state(home).packs == {}
+
+
+def test_f15_strong_encryption_flag_is_a_typed_error() -> None:
+    data = bytearray(_raw_zip([("rules/a.yaml", b"x")]))
+    # general-purpose flag field: local header offset 6, central dir offset 8
+    data[6:8] = (0x40).to_bytes(2, "little")
+    cd = data.rindex(b"PK\x01\x02")
+    data[cd + 8 : cd + 10] = (0x40).to_bytes(2, "little")
+    with pytest.raises(PackArchiveError):
+        read_pack_zip(bytes(data))

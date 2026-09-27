@@ -285,3 +285,41 @@ def test_f19_embedded_credentials_are_found(tmp_path: Path, server: dict[str, An
 def test_f19_absence_is_never_claimed(tmp_path: Path) -> None:
     facts = _scan(tmp_path, {"mcpServers": {"s": {"command": "node", "args": ["s.js"]}}})
     assert facts["s"]["secrets_in_config"] is None and facts["s"]["token_scope"] is None
+
+
+@pytest.mark.parametrize(
+    ("command", "args"),
+    [
+        ("npx", ["--registry=https://example.invalid",
+                 "@modelcontextprotocol/server-memory@1.2.3"]),
+        ("npx", ["-p", "@modelcontextprotocol/server-memory", "other-bin"]),
+        ("uvx", ["--index-url=https://example.invalid", "mcp-server-time==1.2.3"]),
+        ("uvx", ["--from", "mcp-server-time", "python", "-c", "print(1)"]),
+    ],
+)
+def test_f08_launcher_overrides_prevent_identification(
+    tmp_path: Path, command: str, args: list[str]
+) -> None:
+    facts = _scan(tmp_path, {"mcpServers": {"s": {"command": command, "args": args}}})
+    assert facts["s"]["third_party"] is None and facts["s"]["shell_exec"] is None
+    assert facts["s"]["version_pinned"] is None
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        {"command": "node", "args": ["server.js", "--token", "${TOKEN}"]},
+        {"command": "node", "args": ["server.js", "--token=$TOKEN"]},
+        {"type": "http", "url": "https://mcp.example.com/",
+         "headers": {"Authorization": "Bearer ${TOKEN}"}},
+    ],
+)
+def test_f28_references_are_not_literal_secrets(tmp_path: Path, server: dict[str, Any]) -> None:
+    facts = _scan(tmp_path, {"mcpServers": {"s": server}})
+    assert facts["s"]["secrets_in_config"] is None
+
+
+def test_f28_literal_flag_values_still_count(tmp_path: Path) -> None:
+    facts = _scan(tmp_path, {"mcpServers": {"s": {
+        "command": "node", "args": ["server.js", "--token", "plain-literal-value"]}}})
+    assert facts["s"]["secrets_in_config"] is True
