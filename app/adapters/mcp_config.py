@@ -2,25 +2,29 @@
 (``.mcp.json``, ``claude_desktop_config.json``, ``~/.claude.json``).
 
 One input per configured server, carrying ``extensions.mcp`` facts for the
-``mcp`` Update Pack. Only what the configuration actually shows is filled in;
-everything else stays ``null`` (= not stated) so the assessment asks for it
-instead of guessing.
+``mcp`` Update Pack. A fact is filled in only when the configuration
+establishes it; everything else stays ``null`` (= not stated) so the
+assessment asks for it instead of guessing. In particular, what the CLIENT
+sends or connects to is not taken as a property of the SERVER: an
+Authorization header does not prove the server requires authentication, and
+connecting via 127.0.0.1 does not prove the server listens only there.
 
-Secrets: environment values, header values and arguments are inspected only
-to decide ``secrets_in_config`` (true/false). No value from the configuration
-- secret or not, other than the server name and the package name - is ever
-written to the output.
+Secrets: environment values, header values, URL userinfo/query and
+arguments are inspected only to decide ``secrets_in_config`` (true/false).
+No value from the configuration - secret or not, other than server names -
+is ever written, printed, or placed in an error message.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import json
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 MAX_CONFIG_BYTES = 20_000_000
 
@@ -42,18 +46,17 @@ FACT_KEYS = (
     "version_pinned",
 )
 
-_SECRET_NAME = r"(?i)(key|token|secret|passw|pat\b|credential|auth|cookie|session)"
+_SECRET_NAME = r"(?i)(key|token|secret|passw|pat\b|credential|auth|cookie|session|sig)"
 _ENV_REFERENCE = r"^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$"
 _SECRET_ARG = (
     r"(?i)^--?(api[-_]?key|token|secret|password|auth)(=|$)"
     r"|^(sk-|ghp_|gho_|github_pat_|xox[bpas]-|AKIA|AIza)"
 )
-_PINNED_NPM = r"^(@[a-z0-9._-]+/)?[a-z0-9._-]+@\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$"
-_PINNED_PY = r"^[A-Za-z0-9._-]+(\[[A-Za-z0-9,._-]+\])?==\d+(\.\d+)*$"
-
-# Reference servers published by the MCP project itself.
-_FIRST_PARTY_PREFIXES = ("@modelcontextprotocol/",)
-_FIRST_PARTY_PY = {"mcp-server-fetch", "mcp-server-git", "mcp-server-time"}
+_NPM_SPEC = r"^(?P<name>(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*)(@(?P<version>.+))?$"
+_EXACT_SEMVER = r"^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$"
+_PY_SPEC = r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(\[[A-Za-z0-9,._-]+\])?(?P<rest>.*)$"
+_EXACT_PY = r"^==\d+(\.\d+)*$"
+_DIGEST_IMAGE = r"^[^@\s]+@sha256:[0-9a-f]{64}$"
 
 
 @dataclass(frozen=True)
@@ -62,31 +65,46 @@ class _Profile:
     can_write: bool | None = None
     can_send: bool | None = None
     ingests_untrusted_content: bool | None = None
-    touches_fs: bool = False  # derive fs_scope from path arguments
+    touches_fs: bool = False  # positional arguments are the allowed paths
 
 
-# Capabilities of well-known servers, by package name without scope/version.
-_KNOWN: dict[str, _Profile] = {
-    "server-filesystem": _Profile(False, True, False, None, touches_fs=True),
-    "server-fetch": _Profile(False, False, True, True),
-    "mcp-server-fetch": _Profile(False, False, True, True),
-    "server-github": _Profile(False, True, True, True),
-    "github-mcp-server": _Profile(False, True, True, True),
-    "server-gitlab": _Profile(False, True, True, True),
-    "server-slack": _Profile(False, True, True, True),
-    "server-puppeteer": _Profile(False, False, True, True),
-    "mcp": _Profile(False, False, True, True),  # @playwright/mcp
-    "server-brave-search": _Profile(False, False, True, True),
-    "server-git": _Profile(False, True, False, None, touches_fs=True),
-    "mcp-server-git": _Profile(False, True, False, None, touches_fs=True),
-    "server-memory": _Profile(False, True, False, False),
-    "mcp-server-time": _Profile(False, False, False, False),
-    "desktop-commander": _Profile(True, True, True, None, touches_fs=True),
+# Capabilities of well-known servers, by exact (ecosystem, package) identity.
+# Anything else keeps its capabilities unknown.
+_KNOWN: dict[tuple[str, str], _Profile] = {
+    ("npm", "@modelcontextprotocol/server-filesystem"): _Profile(False, True, False, None, True),
+    ("npm", "@modelcontextprotocol/server-github"): _Profile(False, True, True, True),
+    ("npm", "@modelcontextprotocol/server-gitlab"): _Profile(False, True, True, True),
+    ("npm", "@modelcontextprotocol/server-slack"): _Profile(False, True, True, True),
+    ("npm", "@modelcontextprotocol/server-puppeteer"): _Profile(False, False, True, True),
+    ("npm", "@modelcontextprotocol/server-brave-search"): _Profile(False, False, True, True),
+    ("npm", "@modelcontextprotocol/server-memory"): _Profile(False, True, False, False),
+    ("npm", "@playwright/mcp"): _Profile(False, False, True, True),
+    ("npm", "@wonderwhy-er/desktop-commander"): _Profile(True, True, True, None, True),
+    ("pypi", "mcp-server-fetch"): _Profile(False, False, True, True),
+    ("pypi", "mcp-server-git"): _Profile(False, True, False, None, True),
+    ("pypi", "mcp-server-time"): _Profile(False, False, False, False),
+}
+# Reference servers published by the MCP project itself.
+_FIRST_PARTY_NPM_SCOPE = "@modelcontextprotocol/"
+_FIRST_PARTY_PYPI = {"mcp-server-fetch", "mcp-server-git", "mcp-server-time"}
+
+# docker/podman `run` options that take a separate value argument.
+_VALUE_FLAGS = {
+    "-v", "--volume", "-e", "--env", "--env-file", "--name", "--network", "--net", "-p",
+    "--publish", "--mount", "-w", "--workdir", "-u", "--user", "--entrypoint", "-h",
+    "--hostname", "--add-host", "--cap-add", "--cap-drop", "--security-opt", "--device",
+    "-l", "--label", "--pid", "--ipc", "--uts", "--userns", "-m", "--memory", "--cpus",
+    "--platform", "--pull", "--restart", "--log-driver", "--tmpfs", "--ulimit",
+    "--group-add", "--dns", "--runtime", "--volumes-from", "--cgroupns",
 }
 
 
+_HOST_NAMESPACE_FLAGS = ("--network", "--net", "--pid", "--ipc", "--uts", "--userns")
+
+
 class ConfigError(ValueError):
-    """The file is not a readable MCP client configuration."""
+    """The file is not a readable MCP client configuration. Messages never
+    contain configuration values."""
 
 
 @dataclass
@@ -110,6 +128,7 @@ def _safe_name(raw: str, taken: set[str]) -> str:
 
 
 def _host_scope(host: str | None) -> str | None:
+    """Where the server is reachable FROM, as far as the URL proves it."""
     if not host:
         return None
     if host == "localhost":
@@ -134,59 +153,148 @@ def _is_literal_secret(name: str, value: object) -> bool:
     )
 
 
-def _package_arg(command: str, args: list[str]) -> tuple[str | None, str]:
-    """(package spec, ecosystem) for launcher commands, else (None, "")."""
+def _str_list(value: object, what: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, (str, int, float)) for v in value):
+        raise ConfigError(f"{what} must be a list of strings")
+    return [str(v) for v in value]
+
+
+def _str_dict(value: object, what: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{what} must be an object")
+    return {str(k): v for k, v in value.items()}
+
+
+def _launcher(command: str, args: list[str]) -> tuple[str, str | None, list[str]]:
+    """(ecosystem, package spec, arguments after the spec).
+
+    ecosystem: "npm" / "pypi" / "container" / "" (a plain command)."""
     base = PurePosixPath(command).name
     rest = list(args)
     if base in ("pnpm", "yarn", "npm") and rest[:1] in (["dlx"], ["exec"]):
-        rest = rest[1:]
-        base = "npx"
+        base, rest = "npx", rest[1:]
     if base in ("npx", "bunx"):
-        skip_next = False
-        for arg in rest:
-            if skip_next:
-                skip_next = False
-                continue
+        i = 0
+        while i < len(rest):
+            arg = rest[i]
             if arg in ("-p", "--package"):
-                skip_next = True
+                i += 2
                 continue
             if not arg.startswith("-"):
-                return arg, "npm"
-        return None, "npm"
+                return "npm", arg, rest[i + 1 :]
+            i += 1
+        return "npm", None, []
     if base in ("uvx", "pipx"):
         if base == "pipx" and rest[:1] == ["run"]:
             rest = rest[1:]
         for i, arg in enumerate(rest):
             if arg == "--from" and i + 1 < len(rest):
-                return rest[i + 1], "pypi"
+                return "pypi", rest[i + 1], rest[i + 2 :]
             if not arg.startswith("-"):
-                return arg, "pypi"
-        return None, "pypi"
+                return "pypi", arg, rest[i + 1 :]
+        return "pypi", None, []
     if base in ("docker", "podman"):
-        return None, "container"
-    return None, ""
+        return "container", None, rest
+    return "", None, rest
 
 
-def _package_base(spec: str, ecosystem: str) -> str:
+def _identity(ecosystem: str, spec: str) -> tuple[str | None, bool | None]:
+    """(exact package name, pinned?) or (None, None) if the spec is not understood."""
     if ecosystem == "npm":
-        name = spec[1:].split("@", 1)[0] if spec.startswith("@") else spec.split("@", 1)[0]
-        if spec.startswith("@"):
-            name = "@" + name
-        return name.rsplit("/", 1)[-1]
-    return re.split(r"[=<>\[@ ]", spec, maxsplit=1)[0]
+        m = re.fullmatch(_NPM_SPEC, spec)
+        if m is None:
+            return None, None
+        version = m.group("version")
+        return m.group("name"), bool(version) and re.fullmatch(_EXACT_SEMVER, version) is not None
+    m = re.fullmatch(_PY_SPEC, spec)
+    if m is None:
+        return None, None
+    return m.group("name").lower(), re.fullmatch(_EXACT_PY, m.group("rest")) is not None
 
 
-def _fs_scope(args: list[str], package: str | None) -> str | None:
+def _container(args: list[str]) -> tuple[bool | None, bool | None, list[str]]:
+    """(sandboxed, version_pinned, notes) for `docker|podman run ...`."""
+    if args[:1] != ["run"]:
+        return None, None, ["container command other than `run`: not analysed"]
+    opts: list[tuple[str, str | None]] = []
+    image: str | None = None
+    i = 1
+    while i < len(args):
+        arg = args[i]
+        if arg.startswith("-"):
+            if "=" in arg:
+                flag, value = arg.split("=", 1)
+                opts.append((flag, value))
+            elif arg in _VALUE_FLAGS:
+                opts.append((arg, args[i + 1] if i + 1 < len(args) else None))
+                i += 1
+            else:
+                opts.append((arg, None))
+            i += 1
+            continue
+        image = arg
+        break
+    pinned = None if image is None else re.fullmatch(_DIGEST_IMAGE, image) is not None
+
     home = str(Path.home())
-    paths = [a for a in args if a.startswith(("/", "~", "$HOME")) and a != package]
+    dangerous = False
+    mounts = False
+    for flag, optval in opts:
+        v = (optval or "").strip()
+        if (
+            flag == "--privileged"
+            or (flag in _HOST_NAMESPACE_FLAGS and v == "host")
+            or (flag == "--cap-add" and v.upper() in ("ALL", "SYS_ADMIN", "SYS_PTRACE"))
+            or (flag == "--security-opt" and "unconfined" in v)
+        ):
+            dangerous = True
+        elif flag in ("-v", "--volume", "--mount", "--device", "--volumes-from"):
+            mounts = True
+            src = v.split(":", 1)[0] if flag != "--mount" else ""
+            if flag == "--mount":
+                for part in v.split(","):
+                    if part.startswith(("source=", "src=")):
+                        src = part.split("=", 1)[1]
+            norm = posixpath.normpath(src) if src.startswith("/") else src
+            if norm in ("/", home, "/home", "/Users", "/root") or "docker.sock" in norm:
+                dangerous = True
+    if dangerous:
+        sandboxed: bool | None = False
+    elif mounts:
+        sandboxed = None  # isolation depends on what is mounted
+    else:
+        sandboxed = True
+    return sandboxed, pinned, []
+
+
+def _fs_scope(paths: list[str]) -> str | None:
+    """Scope of the positional path arguments of a filesystem-style server;
+    None if any path cannot be resolved from the config alone."""
     if not paths:
         return None
-    scopes = []
-    for p in paths:
-        norm = p.rstrip("/") or "/"
+    home = str(Path.home())
+    scopes: list[str] = []
+    for raw in paths:
+        p = raw
+        for prefix in ("${HOME}", "$HOME", "~"):
+            if p == prefix or p.startswith(prefix + "/"):
+                p = home + p[len(prefix) :]
+                break
+        if "$" in p or not p.startswith("/"):
+            return None  # relative or unexpanded: depends on the client's cwd/env
+        norm = posixpath.normpath(p)
         if norm == "/":
             scopes.append("root")
-        elif norm in ("~", "$HOME", "${HOME}", home) or re.fullmatch(r"/(home|Users)/[^/]+", norm):
+        elif (
+            norm == home
+            or home.startswith(norm + "/")  # an ancestor of the home dir
+            or re.fullmatch(r"/(home|Users)/[^/]+", norm)
+            or norm == "/root"
+        ):
             scopes.append("home")
         else:
             scopes.append("project")
@@ -196,74 +304,94 @@ def _fs_scope(args: list[str], package: str | None) -> str | None:
     return None  # pragma: no cover
 
 
-def scan_server(raw_name: str, cfg: dict[str, Any], taken: set[str]) -> ServerScan:
+def scan_server(label: str, cfg: object, taken: set[str]) -> ServerScan:
+    name = _safe_name(label, taken)
+    if not isinstance(cfg, dict):
+        raise ConfigError(f"server {name!r}: entry must be an object")
     facts: dict[str, Any] = {k: None for k in FACT_KEYS}
     notes: list[str] = []
-    url = cfg.get("url")
-    kind = str(cfg.get("type", "")).lower()
     package: str | None = None
     secret_seen = False
     token_seen = False
+    url = cfg.get("url")
+    kind = str(cfg.get("type", "")).lower()
 
-    if isinstance(url, str) or kind in ("http", "sse", "streamable-http"):
+    if url is not None or kind in ("http", "sse", "streamable-http"):
+        if not isinstance(url, str):
+            raise ConfigError(f"server {name!r}: 'url' must be a string")
         facts["transport"] = "sse" if kind == "sse" else "http"
-        host = urlsplit(url).hostname if isinstance(url, str) else None
-        facts["bind_scope"] = _host_scope(host)
-        raw_headers = cfg.get("headers")
-        headers: dict[str, Any] = raw_headers if isinstance(raw_headers, dict) else {}
+        try:
+            parts = urlsplit(url)
+            host = parts.hostname
+            has_userinfo = parts.username is not None or parts.password is not None
+            query_keys = [k for k, _ in parse_qsl(parts.query, keep_blank_values=True)]
+        except ValueError:
+            # The exception text can quote the URL (and credentials in it).
+            raise ConfigError(f"server {name!r}: 'url' is not a valid URL") from None
+        scope = _host_scope(host)
+        if scope == "loopback":
+            notes.append("reached via loopback; the server's own listen address is not visible")
+        else:
+            facts["bind_scope"] = scope  # reachable at least from there
+        if has_userinfo:
+            secret_seen = token_seen = True
+        if any(re.search(_SECRET_NAME, k) for k in query_keys):
+            secret_seen = token_seen = True
+        headers = _str_dict(cfg.get("headers"), f"server {name!r}: 'headers'")
         for hname, hval in headers.items():
-            if re.search(_SECRET_NAME, str(hname)):
+            if re.search(_SECRET_NAME, hname):
                 token_seen = True
-                facts["auth_required"] = True
-                if _is_literal_secret(str(hname), hval):
+                if _is_literal_secret(hname, hval):
                     secret_seen = True
-        if isinstance(url, str) and url.startswith("http://") and facts["bind_scope"] != "loopback":
+        if token_seen:
+            notes.append(
+                "the client sends credentials; whether the server REQUIRES them is not visible"
+            )
+        if url.startswith("http://") and scope not in (None, "loopback"):
             notes.append("remote server over plain http (no TLS)")
     elif isinstance(cfg.get("command"), str):
         facts["transport"] = "stdio"
-        command = cfg["command"]
-        args = [str(a) for a in cfg.get("args", []) if isinstance(a, (str, int, float))]
-        spec, ecosystem = _package_arg(command, args)
+        args = _str_list(cfg.get("args"), f"server {name!r}: 'args'")
+        ecosystem, spec, rest = _launcher(cfg["command"], args)
         if ecosystem == "container":
-            facts["sandboxed"] = not any(
-                a in ("--privileged", "--network=host") or a.startswith("-v/:") for a in args
-            )
-            facts["version_pinned"] = any("@sha256:" in a for a in args)
+            facts["sandboxed"], facts["version_pinned"], extra = _container(rest)
+            notes += extra
         elif spec is not None:
-            package = _package_base(spec, ecosystem)
-            pattern = _PINNED_NPM if ecosystem == "npm" else _PINNED_PY
-            facts["version_pinned"] = re.fullmatch(pattern, spec) is not None
-            facts["third_party"] = not (
-                spec.startswith(_FIRST_PARTY_PREFIXES) or package in _FIRST_PARTY_PY
-            )
-            profile = _KNOWN.get(package)
-            if profile is not None:
-                for key in ("shell_exec", "can_write", "can_send", "ingests_untrusted_content"):
-                    facts[key] = getattr(profile, key)
-                facts["fs_scope"] = _fs_scope(args, spec) if profile.touches_fs else "none"
-        else:
-            facts["third_party"] = None  # a local script: who wrote it is not visible here
+            package, pinned = _identity(ecosystem, spec)
+            if package is not None:
+                facts["version_pinned"] = pinned
+                facts["third_party"] = not (
+                    (ecosystem == "npm" and package.startswith(_FIRST_PARTY_NPM_SCOPE))
+                    or (ecosystem == "pypi" and package in _FIRST_PARTY_PYPI)
+                )
+                profile = _KNOWN.get((ecosystem, package))
+                if profile is not None:
+                    for key in ("shell_exec", "can_write", "can_send",
+                                "ingests_untrusted_content"):
+                        facts[key] = getattr(profile, key)
+                    positional = [a for a in rest if not a.startswith("-")]
+                    facts["fs_scope"] = _fs_scope(positional) if profile.touches_fs else "none"
         for arg in args:
             if re.search(_SECRET_ARG, arg):
                 secret_seen = token_seen = True
     else:
-        raise ConfigError(f"server {raw_name!r} has neither 'command' nor 'url'")
+        raise ConfigError(f"server {name!r} has neither 'command' nor 'url'")
 
-    raw_env = cfg.get("env")
-    env: dict[str, Any] = raw_env if isinstance(raw_env, dict) else {}
+    env = _str_dict(cfg.get("env"), f"server {name!r}: 'env'")
     for ename, evalue in env.items():
-        if re.search(_SECRET_NAME, str(ename)):
+        if re.search(_SECRET_NAME, ename):
             token_seen = True
-            if _is_literal_secret(str(ename), evalue):
+            if _is_literal_secret(ename, evalue):
                 secret_seen = True
     facts["secrets_in_config"] = secret_seen
     facts["token_scope"] = None if token_seen else "none"
-    return ServerScan(_safe_name(raw_name, taken), package, facts, notes)
+    return ServerScan(name, package, facts, notes)
 
 
-def load_config(path: Path) -> dict[str, dict[str, Any]]:
-    """``{server name: server config}`` from the top-level ``mcpServers`` and,
-    for ``~/.claude.json``, every ``projects.<path>.mcpServers``."""
+def load_config(path: Path) -> list[tuple[str, object]]:
+    """``[(label, server config)]`` from the top-level ``mcpServers`` and, for
+    ``~/.claude.json``, every ``projects.<path>.mcpServers``. Labels may
+    repeat; scan_config() makes them unique, so no server is ever dropped."""
     try:
         with path.open("rb") as fh:
             raw = fh.read(MAX_CONFIG_BYTES + 1)
@@ -273,23 +401,21 @@ def load_config(path: Path) -> dict[str, dict[str, Any]]:
         raise ConfigError("config file is too large")
     try:
         data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, ValueError, RecursionError):  # incl. huge ints
         raise ConfigError("config is not valid UTF-8 JSON") from None
     if not isinstance(data, dict):
         raise ConfigError("config must be a JSON object")
-    servers: dict[str, dict[str, Any]] = {}
+    servers: list[tuple[str, object]] = []
     top = data.get("mcpServers")
     if isinstance(top, dict):
-        servers.update({str(k): v for k, v in top.items() if isinstance(v, dict)})
+        servers += [(str(k), v) for k, v in top.items()]
     projects = data.get("projects")
     if isinstance(projects, dict):
         for project, pdata in projects.items():
             inner = pdata.get("mcpServers") if isinstance(pdata, dict) else None
             if isinstance(inner, dict):
                 label = PurePosixPath(str(project)).name or "project"
-                for k, v in inner.items():
-                    if isinstance(v, dict):
-                        servers[f"{label}.{k}"] = v
+                servers += [(f"{label}.{k}", v) for k, v in inner.items()]
     if not servers:
         raise ConfigError("no MCP servers found (expected 'mcpServers')")
     return servers
@@ -297,7 +423,7 @@ def load_config(path: Path) -> dict[str, dict[str, Any]]:
 
 def scan_config(path: Path) -> list[ServerScan]:
     taken: set[str] = set()
-    return [scan_server(name, cfg, taken) for name, cfg in load_config(path).items()]
+    return [scan_server(label, cfg, taken) for label, cfg in load_config(path)]
 
 
 def assessment_yaml(scan: ServerScan, source_name: str) -> str:

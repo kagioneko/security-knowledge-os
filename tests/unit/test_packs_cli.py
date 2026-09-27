@@ -68,6 +68,7 @@ def test_pack_lifecycle(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["pack", "inspect", str(zip_v1)]) == 0
     out = capsys.readouterr().out
     assert "pack_id       : demo" in out and "rules/DEMO-001.yaml" in out
+    assert "signature     : none" in out
 
     assert main(["pack", "verify", str(zip_v1)]) == 1  # unsigned
     assert "unsigned" in capsys.readouterr().err

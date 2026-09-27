@@ -9,7 +9,7 @@ from typing import Annotated, Any, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from app.models._credential_shapes import reject_credential_shapes, reject_non_identifier_shapes
-from app.models.pack import AppliedPack, GroupSummary
+from app.models.pack import AppliedPack, GroupSummary, SkippedPack
 from app.models.risk import Finding, FindingStatus, Severity
 
 # Codex cross-review finding #6 (round 2, 2026-09-11): AssessmentInput had no
@@ -343,6 +343,8 @@ class AssessmentResult(BaseModel):
     # Service packs (docs/pack-schema.md): which packs' rules took part, and
     # whether extension blocks were present but ignored (`--no-packs`).
     packs_applied: list[AppliedPack] = Field(default_factory=list)
+    # Installed packs left out (reduced coverage, always disclosed).
+    packs_skipped: list[SkippedPack] = Field(default_factory=list)
     extensions_ignored: bool = False
     # "pack:<id>": only that pack's rules were evaluated (core rules were not).
     rule_scope: str | None = None

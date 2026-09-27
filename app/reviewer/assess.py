@@ -228,6 +228,7 @@ def assess(
         knowledge_revision=knowledge_revision,
         retrieved_knowledge_ids=retrieved_ids,
         packs_applied=list(catalogue.packs_applied),
+        packs_skipped=list(catalogue.packs_skipped),
         extensions_ignored=extensions_ignored,
         rule_scope=catalogue.rule_scope,
         group_summaries=_group_summaries(catalogue, findings),

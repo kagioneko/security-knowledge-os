@@ -4,10 +4,18 @@ docs/pack-schema.md, following the Update Pack / Distribution spec v0.1."""
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 
 from app.models.pack import PackClassification
 from app.reviewer.facts import FactType
@@ -28,7 +36,17 @@ _RULE_FILE = r"^rules/[A-Za-z0-9_-]{1,64}\.yaml$"
 
 _PackId = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9]{1,15}$")]
 _Ident = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,63}$")]
-_Prose = Annotated[str, StringConstraints(min_length=1, max_length=500)]
+def _printable(value: str) -> str:
+    """Display text from an untrusted pack: no control, line-break or
+    bidirectional-override characters (terminal/report forgery)."""
+    if any(unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") for ch in value):
+        raise ValueError("must not contain control or formatting characters")
+    return value
+
+
+_Prose = Annotated[
+    str, StringConstraints(min_length=1, max_length=500), AfterValidator(_printable)
+]
 _Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 _RuleId = Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9]*(-[A-Z0-9]+)*-\d{3,}$")]
 _EngineVersion = Annotated[str, StringConstraints(pattern=r"^\d{1,4}\.\d{1,4}\.\d{1,4}$")]

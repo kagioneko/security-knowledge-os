@@ -17,7 +17,7 @@ from datetime import date
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.packs.signing import (
     LICENSE_DOMAIN,
@@ -85,7 +85,7 @@ def check_license(
         return LicenseCheck(False, f"license signature: {exc}")
     try:
         lic = LicenseFile.model_validate(json.loads(raw.decode("utf-8")))
-    except (UnicodeDecodeError, json.JSONDecodeError, ValidationError):
+    except (UnicodeDecodeError, ValueError, RecursionError):  # incl. JSON errors, ValidationError
         return LicenseCheck(False, "license file is malformed")
     if pack not in lic.packs:
         return LicenseCheck(False, "license does not cover this pack")

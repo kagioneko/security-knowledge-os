@@ -1,8 +1,9 @@
 """What changes between two versions of a pack (Update Pack spec sections 21-22).
 
-A *sensitive* change weakens detection: a lower severity, a removed human
-gate (``manual_review`` true -> false), fewer ``required_evidence`` keys, or a
-removed rule. Install/rollback never applies one without explicit approval.
+A *sensitive* change may weaken detection: a lower severity, a removed human
+gate (``manual_review`` true -> false), fewer ``required_evidence`` keys, a
+removed rule, or any change to a rule's conditions/checks. Install and
+rollback never apply one without explicit approval.
 """
 
 from __future__ import annotations
@@ -52,6 +53,10 @@ def _describe(old: RiskRule, new: RiskRule) -> tuple[list[str], list[str]]:
             sensitive.append(f"required_evidence reduced (dropped {dropped})")
     if old.conditions != new.conditions or old.checks != new.checks:
         changes.append("conditions/checks changed")
+        # Whether a logic change weakens detection cannot be decided in
+        # general (flipping `x: false` to `x: true` turns a FAIL into a PASS),
+        # so every one needs explicit approval (Codex review F01).
+        sensitive.append("conditions/checks changed (may weaken detection)")
     if old.title != new.title or old.mitigations != new.mitigations:
         changes.append("text changed")
     return changes, sensitive

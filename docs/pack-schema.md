@@ -71,6 +71,8 @@ of pack API 1; rules may cite core KUs in `knowledge_refs`.
 }
 ```
 
+- `name`, `description`, `evidence`/`questions` text: no control, line-break or
+  bidirectional-formatting characters (they are shown in terminals and reports).
 - `version`: `YYYY.MM.PATCH`. A released version never changes: installing the
   same version with different content is refused.
 - `classification`: `public` | `commercial` | `internal` | `confidential`.
@@ -152,8 +154,9 @@ $SKOS_CONFIG_DIR/licenses/<pack_id>.lic.sig   Ed25519 by the pack's publisher
 
 - Verified offline; skos never contacts a license server.
 - Missing / invalid / expired: install is refused; an installed pack is
-  skipped (listed with the reason), not fatal - and an `extensions` block for
-  it is then POLICY_BLOCKED like any other inactive pack.
+  skipped, not fatal - every report then lists it under `packs_skipped`
+  ("pack NOT applied: ...") so the reduced coverage is visible, and an
+  `extensions` block for it is POLICY_BLOCKED like any other inactive pack.
 - The licensee name is never written to reports or listings.
 - Rules are readable YAML, so this identifies a legitimate customer; it does
   not prevent copying. The value of a commercial pack is continued updates,
@@ -181,9 +184,21 @@ changes are approved → write to a staging directory → re-verify what landed 
 smoke test (an empty assessment with core + all packs must complete) →
 rename into `versions/` → atomic symlink swap → state + audit record.
 
-**Sensitive changes** (spec section 22) need `--approve-sensitive`: a severity
-lowered, `manual_review` removed (human gate), `required_evidence` reduced, a
-rule removed, or a `confidential` pack. `skos pack diff OLD NEW` shows them.
+**Sensitive changes** (spec section 22) need `--approve-sensitive`, on install
+and on rollback alike: a severity lowered, `manual_review` removed (human
+gate), `required_evidence` reduced, a rule removed, **any change to a rule's
+conditions or checks** (whether a logic change weakens detection cannot be
+decided in general), or a `confidential` pack. `skos pack diff OLD NEW` shows
+them.
+
+The registry (`installed.json`) is written before the active link is switched;
+if switching fails the previous registry is restored, and if the process dies
+in between, registry and link disagree and the pack is refused until
+`rollback`/`remove` (fail closed). On every load an active pack must match its
+registry record exactly - pack id, version, directory and manifest sha256 -
+and operator approval counts only for that recorded manifest, so an older
+version swapped into place is detected. An active link with no registry entry
+(a lost or emptied `installed.json`) is an error, not "nothing installed".
 
 `skos pack rollback PACK_ID VERSION` re-verifies the kept version, diffs,
 smoke-tests and swaps back. `skos pack remove PACK_ID` deactivates the pack and

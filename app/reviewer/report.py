@@ -111,6 +111,11 @@ def _render_lines(report: AssessmentReport) -> list[str]:
             or "none"
         ),
     ]
+    for skipped in r.packs_skipped:
+        lines.append(
+            f"pack NOT applied: {skipped.pack_id} - {skipped.reason} "
+            "(its rules were not evaluated)"
+        )
     if r.rule_scope:
         lines.append(
             f"rule scope: {r.rule_scope} only - core rules were NOT evaluated "

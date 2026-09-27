@@ -38,6 +38,15 @@ class AppliedPack(BaseModel):
     manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class SkippedPack(BaseModel):
+    """An installed pack that did NOT take part (e.g. its license expired)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    pack_id: str
+    reason: str
+
+
 class ReportGroup(BaseModel):
     """A named group of rule ids declared by a pack, e.g. ``mcp`` / ``exposure``."""
 

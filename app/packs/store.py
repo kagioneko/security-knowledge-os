@@ -188,6 +188,27 @@ def _activate(home: Path, pack_id: str, version: str) -> None:
     os.replace(tmp, active / pack_id)  # atomic
 
 
+def _switch(
+    home: Path, old: StoreState, new: StoreState, pack_id: str, version: str | None
+) -> None:
+    """Record the new state, then move the active link (``None`` = remove it).
+
+    Registry first: if the process dies between the two steps, the registry
+    and the link disagree and verify_active() refuses the pack (fail closed,
+    recoverable with rollback/remove) instead of silently running an
+    unrecorded version. If the link step itself fails, the old registry is
+    restored before the error propagates (Codex review F05)."""
+    _save_state(home, new)
+    try:
+        if version is None:
+            (home / "active" / pack_id).unlink(missing_ok=True)
+        else:
+            _activate(home, pack_id, version)
+    except BaseException:
+        _save_state(home, old)
+        raise
+
+
 @dataclass
 class ActivePack:
     pack_id: str
@@ -201,12 +222,33 @@ def verify_active(
     trusted: dict[str, TrustedKey] | None = None,
     today: date | None = None,
 ) -> list[ActivePack]:
-    """Re-verify every active pack from its extracted files."""
+    """Re-verify every active pack from its extracted files.
+
+    The files must be exactly the installation the registry records: same
+    pack id, version (also the directory name) and manifest sha256. Operator
+    approval counts only for that recorded manifest, so an older approved
+    version swapped into place is detected (Codex review F02). An active
+    link without a registry entry - e.g. a lost or emptied installed.json -
+    is an error, never a silent "nothing installed" (F06).
+    """
     home = home or skos_home()
     state = load_state(home)
+    active_dir = home / "active"
+    linked = (
+        {p.name for p in active_dir.iterdir() if not p.name.startswith(".")}
+        if active_dir.is_dir()
+        else set()
+    )
     out: list[ActivePack] = []
-    for pack_id in sorted(state.packs):
+    for pack_id in sorted(set(state.packs) | linked):
+        record = state.packs.get(pack_id)
         try:
+            if record is None:
+                raise PackVerifyError(
+                    Problem.INVALID,
+                    "active but missing from installed.json (state lost?) - reinstall it or "
+                    "`skos pack remove` it",
+                )
             target = _active_target(home, pack_id)
             if target is None:
                 raise PackVerifyError(
@@ -218,10 +260,21 @@ def verify_active(
                 trusted=TRUSTED_KEYS if trusted is None else trusted,
                 engine_version=ENGINE_VERSION,
                 today=today or date.today(),
-                approved=frozenset(state.approved_manifests),
+                approved=frozenset({record.manifest_sha256}),
             )
-            if verified.manifest.pack_id != pack_id:
-                raise PackVerifyError(Problem.INVALID, "active pack id does not match")
+            m = verified.manifest
+            if (
+                m.pack_id != pack_id
+                or m.version != record.version
+                or target.name != record.version
+                or verified.manifest_sha256 != record.manifest_sha256
+                or m.classification is not record.classification
+            ):
+                raise PackVerifyError(
+                    Problem.INVALID,
+                    "active files do not match the recorded installation "
+                    f"({record.version}, manifest {record.manifest_sha256[:12]}...)",
+                )
             out.append(ActivePack(pack_id, verified))
         except PackVerifyError as exc:
             out.append(ActivePack(pack_id, None, exc))
@@ -250,6 +303,14 @@ def _smoke_test(core: RuleCatalogue, packs: list[VerifiedPack]) -> None:
     )
     if report.status is not ReportStatus.COMPLETED:
         raise PackStoreError("smoke test failed: an empty assessment did not complete")
+
+
+def _needs_approval(diff: PackDiff, target: VerifiedPack) -> list[str]:
+    """The one approval policy for install AND rollback (Codex review F07)."""
+    needs = list(diff.sensitive)
+    if target.manifest.classification is PackClassification.CONFIDENTIAL:
+        needs.append("confidential pack (customer-specific)")
+    return needs
 
 
 @dataclass
@@ -299,9 +360,7 @@ def plan_install(
             )
             old_rules = old.catalogue.rules
     diff = diff_rules(old_rules, verified.catalogue.rules)
-    needs = list(diff.sensitive)
-    if verified.manifest.classification is PackClassification.CONFIDENTIAL:
-        needs.append("confidential pack (customer-specific)")
+    needs = _needs_approval(diff, verified)
     return ChangePlan(verified, files, archive, previous, diff, needs)
 
 
@@ -381,8 +440,8 @@ def install(
         archive = _mkdir(home / "packs" / m.classification.value) / f"{m.pack_id}-{m.version}.zip"
         if not archive.exists():
             _atomic_write(archive, plan.archive)
-        _activate(home, m.pack_id, m.version)
 
+        old_state = state.model_copy(deep=True)
         history = list(plan.previous.history) if plan.previous else []
         if plan.previous and plan.previous.version != m.version:
             history.append(plan.previous.version)
@@ -399,7 +458,8 @@ def install(
             and plan.verified.manifest_sha256 not in state.approved_manifests
         ):
             state.approved_manifests.append(plan.verified.manifest_sha256)
-        _save_state(home, state)
+        audit(home, "install", install_result="committing", **audit_base)
+        _switch(home, old_state, state, m.pack_id, m.version)
         audit(home, "install", install_result="ok", **audit_base)
         return plan
 
@@ -441,9 +501,10 @@ def rollback(
                     allow_unsigned=True, require_license=False,
                 ).catalogue.rules
             diff = diff_rules(old_rules, verified.catalogue.rules)
-            if diff.sensitive and not approve_sensitive:
+            needs = _needs_approval(diff, verified)
+            if needs and not approve_sensitive:
                 raise PackStoreError(
-                    "sensitive change(s) need --approve-sensitive: " + "; ".join(diff.sensitive)
+                    "sensitive change(s) need --approve-sensitive: " + "; ".join(needs)
                 )
             others = [
                 a.verified for a in verify_active(home, trusted=trusted, today=today)
@@ -453,7 +514,7 @@ def rollback(
         except (PackVerifyError, PackStoreError, OSError) as exc:
             audit(home, "rollback", rollback_result=f"failed: {exc}", **base)
             raise
-        _activate(home, pack_id, version)
+        old_state = state.model_copy(deep=True)
         history = [v for v in current.history if v != version] + [current.version]
         state.packs[pack_id] = InstalledPack(
             version=version,
@@ -463,7 +524,9 @@ def rollback(
             installed_at=datetime.now(UTC),
             history=history,
         )
-        _save_state(home, state)
+        audit(home, "rollback", manifest_hash=verified.manifest_sha256,
+              rollback_result="committing", **base)
+        _switch(home, old_state, state, pack_id, version)
         audit(home, "rollback", manifest_hash=verified.manifest_sha256, rollback_result="ok",
               **base)
         return diff
@@ -474,10 +537,11 @@ def remove(pack_id: str, *, home: Path | None = None) -> None:
     home = home or skos_home()
     with _locked(home):
         state = load_state(home)
+        old_state = state.model_copy(deep=True)
         current = state.packs.pop(pack_id, None)
-        if current is None:
+        if current is None and not (home / "active" / pack_id).is_symlink():
             raise PackStoreError(f"pack {pack_id!r} is not installed")
-        (home / "active" / pack_id).unlink(missing_ok=True)
-        _save_state(home, state)
-        audit(home, "remove", pack_id=pack_id, old_version=current.version, new_version=None,
+        _switch(home, old_state, state, pack_id, None)
+        audit(home, "remove", pack_id=pack_id, old_version=current.version if current else None,
+              new_version=None,
               install_result="ok")

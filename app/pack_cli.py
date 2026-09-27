@@ -35,6 +35,7 @@ from app.packs.store import (
 )
 from app.packs.trusted_keys import TRUSTED_KEYS
 from app.packs.verify import PackVerifyError, parse_manifest, verify_pack
+from app.reviewer.report import _safe_line
 from app.reviewer.rule_loader import load_rules
 
 PACK_ERRORS = (PackArchiveError, PackVerifyError, PackStoreError, BuildError)
@@ -66,14 +67,17 @@ def _cmd_inspect(args: argparse.Namespace, s: Settings) -> int:
     m, sha = parse_manifest(files)
     rules = sorted(p for p in files if p.startswith("rules/"))
     print(f"pack_id       : {m.pack_id}")
-    print(f"name          : {m.name}")
+    print(f"name          : {_safe_line(m.name)}")
     print(f"version       : {m.version}  (released {m.release_date.isoformat()})")
     print(f"classification: {m.classification.value}")
     print(f"publisher     : {m.publisher}")
     print(f"license       : {m.license}")
     print(f"engine        : >= {m.min_engine_version}"
           + (f", <= {m.max_engine_version}" if m.max_engine_version else ""))
-    print(f"signed        : {'yes' if 'signature.sig' in files else 'no'}")
+    # Presence only - inspect verifies nothing (`skos pack verify` does).
+    print("signature     : "
+          + ("present (NOT verified here - run `skos pack verify`)"
+             if "signature.sig" in files else "none"))
     print(f"manifest sha256: {sha}")
     print(f"rules ({len(rules)}):")
     for rule in rules:

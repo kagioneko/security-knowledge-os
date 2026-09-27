@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import stat
 import zipfile
+import zlib
 from pathlib import Path
 
 from app.packs.manifest import allowed_pack_path
@@ -89,7 +90,7 @@ def read_pack_zip(data: bytes) -> dict[str, bytes]:
             try:
                 with zf.open(info) as fh:
                     data = fh.read(MAX_ENTRY_BYTES + 1)
-            except (zipfile.BadZipFile, OSError, EOFError, ValueError):
+            except (zipfile.BadZipFile, OSError, EOFError, ValueError, zlib.error):
                 raise PackArchiveError(f"{info.filename}: corrupt entry") from None
             if len(data) > MAX_ENTRY_BYTES:
                 raise PackArchiveError(f"{info.filename}: exceeds {MAX_ENTRY_BYTES} bytes")

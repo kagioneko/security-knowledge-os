@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from app.ingestion.parser import FrontMatterError, _read_text_no_follow, safe_load_bounded
 from app.ingestion.snapshot import snapshot_tree
-from app.models.pack import AppliedPack, ReportGroup
+from app.models.pack import AppliedPack, ReportGroup, SkippedPack
 from app.models.risk import LLM_OBS_PREFIX, RiskRule
 from app.models.rule_clause import Clause, Operator
 from app.reviewer.clause_eval import ClauseError, validate_clause
@@ -46,6 +46,7 @@ class RuleCatalogue:
     # Pack provenance, filled in by app/packs/loader.py only.
     packs_applied: list[AppliedPack] = field(default_factory=list)
     report_groups: list[ReportGroup] = field(default_factory=list)
+    packs_skipped: list[SkippedPack] = field(default_factory=list)
     # True when the operator chose `--no-packs`: extensions blocks in the
     # input are then ignored (and the report says so) instead of rejected.
     ignore_extensions: bool = False

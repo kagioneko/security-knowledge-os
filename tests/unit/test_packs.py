@@ -404,9 +404,9 @@ def test_install_activates_atomically_and_audits(
     assert (home / "active" / "demo").is_symlink()
     assert (home / "packs" / "public" / "demo-2026.10.0.zip").is_file()
     assert (home / "installed.json").stat().st_mode & 0o777 == 0o600
-    [record] = _audit(home)
-    assert record["action"] == "install" and record["install_result"] == "ok"
-    assert record["manifest_hash"] == state.packs["demo"].manifest_sha256
+    records = _audit(home)
+    assert [r["install_result"] for r in records] == ["committing", "ok"]
+    assert records[-1]["manifest_hash"] == state.packs["demo"].manifest_sha256
 
     merged, _ = load_with_packs(catalogue, trusted=trusted, today=TODAY)
     assert "DEMO-001" in {r.id for r in merged.rules}
@@ -682,3 +682,134 @@ def test_only_pack_scope_is_explicit(demo_catalogue: RuleCatalogue, settings: Se
     assert "core rules were NOT evaluated" in render_text(report)
     with pytest.raises(PackLoadError, match="no active pack"):
         only_pack(demo_catalogue, "other")
+
+
+# ------------------------------------------- Codex review regressions ----
+
+
+def test_f01_check_logic_change_is_sensitive(tmp_path: Path) -> None:
+    old = _rules(_RULE, tmp_path / "old")
+    flipped = _rules(_RULE.replace("demo_auth_required: true", "demo_auth_required: false"),
+                     tmp_path / "new")
+    assert any("conditions/checks changed" in s for s in diff_rules(old, flipped).sensitive)
+
+
+@pytest.mark.parametrize(
+    ("signed", "match"),
+    [(True, "do not match the recorded installation"), (False, "unsigned")],
+)
+def test_f02_replayed_older_version_is_detected(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue, signed: bool, match: str,
+) -> None:
+    """An older, once-valid version swapped into the active version's
+    directory: a signed one fails the registry match, an unsigned one is no
+    longer the approved manifest."""
+    import shutil
+
+    k = key if signed else None
+    _install(_zip(tmp_path / "v1", k), catalogue, trusted, allow_unsigned=not signed)
+    _install(_zip(tmp_path / "v2", k, manifest=_manifest(version="2026.11.0")), catalogue,
+             trusted, allow_unsigned=not signed)
+    new_dir = home / "versions" / "demo" / "2026.11.0"
+    shutil.rmtree(new_dir)
+    shutil.copytree(home / "versions" / "demo" / "2026.10.0", new_dir)
+    with pytest.raises(PackLoadError, match=match):
+        load_with_packs(catalogue, trusted=trusted, today=TODAY)
+
+
+def test_f05_failed_activation_restores_state(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install(_zip(tmp_path / "v1", key), catalogue, trusted)
+
+    def fail(*_: object) -> None:
+        raise OSError("simulated symlink failure")
+
+    original = store_mod._activate
+    monkeypatch.setattr(store_mod, "_activate", fail)
+    with pytest.raises(OSError, match="simulated"):
+        _install(_v2(tmp_path / "v2", key, _RULE), catalogue, trusted)
+    assert load_state(home).packs["demo"].version == "2026.10.0"
+    monkeypatch.setattr(store_mod, "_activate", original)  # keep SKOS_HOME patched
+    merged, _ = load_with_packs(catalogue, trusted=trusted, today=TODAY)
+    assert merged.packs_applied[0].version == "2026.10.0"
+
+
+def test_f06_lost_registry_with_active_link_is_an_error(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    _install(_zip(tmp_path, key), catalogue, trusted)
+    (home / "installed.json").write_text("{}")
+    with pytest.raises(PackLoadError, match="missing from installed.json"):
+        load_with_packs(catalogue, trusted=trusted, today=TODAY)
+    (home / "installed.json").unlink()
+    with pytest.raises(PackLoadError, match="missing from installed.json"):
+        load_with_packs(catalogue, trusted=trusted, today=TODAY)
+    remove("demo")  # the documented way out
+    merged, _ = load_with_packs(catalogue, trusted=trusted, today=TODAY)
+    assert merged.packs_applied == []
+
+
+def test_f07_rollback_to_confidential_needs_approval(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    conf = _zip(tmp_path / "a", key, manifest=_manifest(classification="confidential"))
+    _install(conf, catalogue, trusted, approve_sensitive=True)
+    _install(_zip(tmp_path / "b", key, manifest=_manifest(version="2026.11.0")), catalogue,
+             trusted)
+    with pytest.raises(PackStoreError, match="confidential"):
+        rollback("demo", "2026.10.0", catalogue, trusted=trusted, today=TODAY)
+    rollback("demo", "2026.10.0", catalogue, trusted=trusted, today=TODAY,
+             approve_sensitive=True)
+
+
+def test_f13_skipped_pack_is_disclosed(
+    tmp_path: Path, home: Path, cfg_dir: Path, key: Ed25519PrivateKey,
+    trusted: dict[str, TrustedKey], catalogue: RuleCatalogue, settings: Settings,
+) -> None:
+    _license(cfg_dir, key)
+    _install(_zip(tmp_path, key, manifest=_manifest(classification="commercial")), catalogue,
+             trusted)
+    merged, _ = load_with_packs(catalogue, trusted=trusted, today=date(2027, 6, 1))
+    report = build_report(AssessmentInput(name="t"), merged, settings=settings)
+    assert report.result is not None
+    [skipped] = report.result.packs_skipped
+    assert skipped.pack_id == "demo" and "expired" in skipped.reason
+    assert "pack NOT applied: demo" in render_text(report)
+
+
+def test_f14_control_characters_in_display_text_are_rejected(
+    trusted: dict[str, TrustedKey],
+) -> None:
+    body = _RULE.encode()
+    manifest = _manifest(name="Demo\x1b[2J\nsignature     : VERIFIED")
+    manifest["files"] = {"rules/DEMO-001.yaml": hashlib.sha256(body).hexdigest()}
+    files = {"manifest.json": json.dumps(manifest).encode(), "rules/DEMO-001.yaml": body}
+    with pytest.raises(PackVerifyError, match="control"):
+        _verify(files, trusted, allow_unsigned=True)
+
+
+def test_f15_corrupt_deflate_and_huge_ints_are_typed_errors(
+    tmp_path: Path, trusted: dict[str, TrustedKey],
+) -> None:
+    data = bytearray(_raw_zip_deflated([("rules/a.yaml", b"x" * 5000)]))
+    start = data.index(b"rules/a.yaml") + len("rules/a.yaml")
+    for i in range(start, start + 20):
+        data[i] ^= 0xFF
+    with pytest.raises(PackArchiveError):
+        read_pack_zip(bytes(data))
+    files = {"manifest.json": b'{"pack_api": ' + b"9" * 5000 + b"}"}
+    with pytest.raises(PackVerifyError, match="not valid"):
+        _verify(files, trusted)
+
+
+def _raw_zip_deflated(entries: list[tuple[str, bytes]]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, payload in entries:
+            zf.writestr(name, payload)
+    return buf.getvalue()

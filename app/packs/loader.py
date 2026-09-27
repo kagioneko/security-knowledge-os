@@ -14,6 +14,7 @@ from datetime import date
 from functools import reduce
 from pathlib import Path
 
+from app.models.pack import SkippedPack
 from app.packs.signing import TrustedKey
 from app.packs.store import ActivePack, verify_active
 from app.packs.verify import Problem, VerifiedPack
@@ -69,7 +70,15 @@ def load_with_packs(
             + " - fix it with `skos pack rollback` / `skos pack remove`, or pass --no-packs"
         )
     verified = [a.verified for a in active if a.verified is not None]
-    return apply_verified(core, verified), active
+    merged = apply_verified(core, verified)
+    if merged is core:
+        merged = RuleCatalogue(rules=list(core.rules), vocabulary=core.vocabulary)
+    merged.packs_skipped = [
+        SkippedPack(pack_id=a.pack_id, reason=str(a.problem))
+        for a in active
+        if a.problem is not None
+    ]
+    return merged, active
 
 
 def only_pack(catalogue: RuleCatalogue, pack_id: str) -> RuleCatalogue:
@@ -85,5 +94,6 @@ def only_pack(catalogue: RuleCatalogue, pack_id: str) -> RuleCatalogue:
         vocabulary=catalogue.vocabulary,
         packs_applied=applied,
         report_groups=[g for g in catalogue.report_groups if g.pack == pack_id],
+        packs_skipped=list(catalogue.packs_skipped),
         rule_scope=f"pack:{pack_id}",
     )

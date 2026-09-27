@@ -85,7 +85,7 @@ def parse_manifest(files: dict[str, bytes]) -> tuple[PackManifest, str]:
     sha = hashlib.sha256(raw).hexdigest()
     try:
         data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, ValueError, RecursionError):  # incl. JSONDecodeError, huge ints
         raise PackVerifyError(Problem.INVALID, "manifest.json is not valid UTF-8 JSON") from None
     if isinstance(data, dict) and data.get("classification") == "secret":
         raise PackVerifyError(Problem.INVALID, "secret-classified material is never packed")
