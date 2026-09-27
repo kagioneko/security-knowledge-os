@@ -790,20 +790,20 @@ check enforces (total tracked files, total tests) are kept current above.
 
 | area | files | notes |
 | --- | --- | --- |
-| `app/` | 59 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main |
-| `tests/` | 83 | 52 test modules + fixtures |
+| `app/` | 76 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main, packs (Update Pack manager), adapters (MCP config scan) |
+| `tests/` | 86 | 55 test modules + fixtures |
 | `knowledge/` | 24 | 14 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
 | `rules/` | 13 | 7 rule YAMLs + category `.gitkeep`s |
 | `safe_tests/` | 4 | 4 vetted templates |
-| `scripts/` | 12 | validators, ingest/build_index, assess, evaluate, sbom, secret_scan, preflight, cross-review runner |
-| `docs/` | 9 | see below |
+| `scripts/` | 13 | validators, ingest/build_index, assess, evaluate, sbom, secret_scan, preflight, cross-review runner, issue_license |
+| `docs/` | 11 | see below |
 | `reviews/` | 2 | `.gitignore` + `README.md` only — cross-review output `.md`/`.log` files are gitignored, never tracked |
 | root | 11 | `README.md`, `LICENSE`, `NOTICE`, `pyproject.toml`, `.gitignore`, `.env.example`, `constraints.txt`, `sbom.json` |
 | review docs | 3 | `REVIEW_PACKAGE.md`, `REVIEW_CHECKLIST.md`, `PUBLICATION_MANIFEST.md` |
 
 Docs: `architecture`, `threat-model`, `safety-boundaries`, `knowledge-schema`,
 `rule-schema`, `safe-test-schema`, `knowledge-corpus`, `attribution`,
-`acceptance-criteria`.
+`acceptance-criteria`, `history-rewrite-map`, `pack-schema`.
 
 ## Explicitly excluded (in `.gitignore`)
 

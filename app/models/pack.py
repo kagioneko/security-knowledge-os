@@ -1,4 +1,5 @@
-"""Pack provenance recorded on every assessment result (docs/pack-schema.md)."""
+"""Update Pack provenance recorded on every assessment result
+(docs/pack-schema.md)."""
 
 from __future__ import annotations
 
@@ -9,14 +10,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.models.risk import FindingStatus
 
 
-class PackTier(StrEnum):
-    FREE = "free"
-    COMMERCIAL = "commercial"
+class PackClassification(StrEnum):
+    """Who may receive a pack (Update Pack spec section 6). ``secret`` is
+    deliberately absent: secret material is never packed."""
+
+    PUBLIC = "public"              # anyone
+    COMMERCIAL = "commercial"      # licensees only - a signed license file is required
+    INTERNAL = "internal"          # the publisher's own organization
+    CONFIDENTIAL = "confidential"  # one customer / engagement - install needs explicit approval
 
 
 class PackTrust(StrEnum):
-    SIGNED = "signed"              # signature verified against a built-in publisher key
-    USER_ENABLED = "user-enabled"  # the operator enabled this exact manifest
+    SIGNED = "signed"                        # signature verified against a built-in key
+    OPERATOR_APPROVED = "operator-approved"  # unsigned; the operator approved this manifest
 
 
 class AppliedPack(BaseModel):
@@ -24,9 +30,9 @@ class AppliedPack(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    name: str
+    pack_id: str
     version: str
-    tier: PackTier
+    classification: PackClassification
     publisher: str
     trust: PackTrust
     manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

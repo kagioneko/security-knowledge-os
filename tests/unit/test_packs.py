@@ -1,11 +1,15 @@
-"""Service packs (docs/pack-schema.md): trust, integrity, namespacing, license,
-extensions, and the rule that pack code never runs during an assessment."""
+"""Update Packs (docs/pack-schema.md): archive safety, verification, build,
+diff, the install/rollback/remove lifecycle, and the assessment path."""
 
 from __future__ import annotations
 
-import textwrap
+import hashlib
+import io
+import json
+import zipfile
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -15,301 +19,285 @@ from app.config import Mode, Settings
 from app.models.assessment import AssessmentInput, OverallStatus
 from app.models.pack import PackTrust
 from app.models.report import ReportStatus
-from app.models.risk import FindingStatus
-from app.packs.build import issue_license, sign_manifest, update_manifest_files
-from app.packs.commands import run_command
-from app.packs.config import PackConfig
-from app.packs.discovery import PackCandidate
-from app.packs.loader import (
-    PackLoadError,
-    PackState,
-    apply_packs,
-    inspect_all,
-    inspect_pack,
-)
+from app.models.risk import FindingStatus, RiskRule
+from app.packs import archive as archive_mod
+from app.packs import store as store_mod
+from app.packs.archive import PackArchiveError, read_pack_zip
+from app.packs.build import BuildError, build_pack, issue_license
+from app.packs.diff import diff_rules
+from app.packs.loader import PackLoadError, apply_verified, load_with_packs
 from app.packs.signing import TrustedKey
+from app.packs.store import PackStoreError, install, load_state, remove, rollback
+from app.packs.verify import PackVerifyError, Problem, VerifiedPack, verify_pack
+from app.reviewer.facts import FactType
 from app.reviewer.report import build_report, render_text
 from app.reviewer.rule_loader import RuleCatalogue, load_rules
 from app.reviewer.vocabulary import CORE_VOCABULARY, VocabularyError
 
 TODAY = date(2026, 10, 1)
 KEY_ID = "test-2026-01"
-
-_MANIFEST = """\
-pack_api: 1
-name: demo
-version: 0.1.0
-tier: {tier}
-publisher: tester
-license: Apache-2.0
-description: demo pack for tests
-facts:
-  demo_transport: {{type: str, values: [stdio, http]}}
-  demo_auth_required: {{type: bool}}
-  demo_roots: {{type: str_list}}
-evidence:
-  demo_launch_command: Provide the launch command.
-questions:
-  demo_transport: Which transport does the server use (stdio or http)?
-report_groups:
-  exposure: [DEMO-001]
-commands:
-  hello: skos_pack_demo.cli:main
-"""
+ENGINE = "0.2.0"
 
 _RULE = """\
 id: DEMO-001
 title: HTTP transport without authentication
 category: agent-security
 severity: high
+manual_review: false
 conditions:
   all:
     - demo_transport: http
 checks:
   - demo_auth_required: true
+required_evidence: []
 mitigations:
   - require authentication
 """
 
-_CLI = """\
-from pathlib import Path
+
+def _manifest(**over: Any) -> dict[str, Any]:
+    m: dict[str, Any] = {
+        "pack_api": 1,
+        "pack_id": "demo",
+        "name": "Demo Pack",
+        "version": "2026.10.0",
+        "release_date": "2026-10-01",
+        "min_engine_version": "0.2.0",
+        "classification": "public",
+        "publisher": "tester",
+        "license": "Apache-2.0",
+        "description": "demo pack for tests",
+        "facts": {
+            "demo_transport": {"type": "str", "values": ["stdio", "http"]},
+            "demo_auth_required": {"type": "bool"},
+            "demo_roots": {"type": "str_list"},
+        },
+        "evidence": {"demo_launch_command": "Provide the launch command."},
+        "questions": {"demo_transport": "Which transport does the server use?"},
+        "report_groups": {"exposure": ["DEMO-001"]},
+    }
+    m.update(over)
+    return m
 
 
-def main(argv):
-    Path(argv[0]).write_text("ran:" + __file__)
-    return 7
-"""
-
-
-def _key() -> tuple[Ed25519PrivateKey, dict[str, TrustedKey]]:
-    key = Ed25519PrivateKey.generate()
-    raw = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-    return key, {KEY_ID: TrustedKey(KEY_ID, "tester", raw)}
-
-
-def _make_pack(
-    root: Path, *, tier: str = "free", rule: str = _RULE, manifest: str | None = None,
-    init: str = "",
-) -> Path:
-    pack = root / "skos_pack_demo"
-    (pack / "rules").mkdir(parents=True)
-    (pack / "__init__.py").write_text(init)
-    (pack / "cli.py").write_text(_CLI)
-    (pack / "rules" / "DEMO-001.yaml").write_text(rule)
-    (pack / "pack.yaml").write_text((manifest or _MANIFEST).format(tier=tier))
-    update_manifest_files(pack)
-    return pack
-
-
-def _candidate(pack: Path) -> PackCandidate:
-    return PackCandidate(pack.name, pack, "SKOS_PACK_DIRS")
-
-
-def _inspect(pack: Path, trusted: dict[str, TrustedKey] | None = None,
-             config: PackConfig | None = None):  # type: ignore[no-untyped-def]
-    return inspect_pack(
-        _candidate(pack), config or PackConfig(), trusted=trusted or {}, today=TODAY
-    )
-
-
-def _enabled(status_sha: str | None) -> PackConfig:
-    assert status_sha
-    return PackConfig(enabled={"demo": status_sha})
+def _src(root: Path, *, manifest: dict[str, Any] | None = None, rule: str = _RULE,
+         extra: dict[str, str] | None = None) -> Path:
+    src = root / "src"
+    (src / "rules").mkdir(parents=True, exist_ok=True)
+    (src / "manifest.json").write_text(json.dumps(manifest or _manifest()))
+    (src / "rules" / "DEMO-001.yaml").write_text(rule)
+    (src / "changelog.md").write_text("# 2026.10.0\n- first\n")
+    for rel, text in (extra or {}).items():
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        (src / rel).write_text(text)
+    return src
 
 
 @pytest.fixture
-def settings() -> Settings:
-    return Settings(mode=Mode.PRIVATE)
+def key() -> Ed25519PrivateKey:
+    return Ed25519PrivateKey.generate()
 
 
-def _input(**demo: object) -> AssessmentInput:
-    return AssessmentInput.model_validate({"name": "t", "extensions": {"demo": demo}})
-
-
-# ---------------------------------------------------------------- trust ----
-
-
-def test_unsigned_pack_is_disabled_until_enabled(tmp_path: Path) -> None:
-    pack = _make_pack(tmp_path)
-    status, loaded = _inspect(pack)
-    assert status.state is PackState.DISABLED and loaded is None
-    assert "not trusted" in status.reason
-
-    status2, loaded2 = _inspect(pack, config=_enabled(status.manifest_sha256))
-    assert status2.state is PackState.ACTIVE, status2.reason
-    assert loaded2 is not None and loaded2.applied.trust is PackTrust.USER_ENABLED
-
-
-def test_signed_pack_loads_automatically(tmp_path: Path) -> None:
-    key, trusted = _key()
-    pack = _make_pack(tmp_path)
-    sign_manifest(pack, key, KEY_ID)
-    status, loaded = _inspect(pack, trusted)
-    assert status.state is PackState.ACTIVE, status.reason
-    assert loaded is not None and loaded.applied.trust is PackTrust.SIGNED
-
-
-def test_manifest_changed_after_enable_is_disabled(tmp_path: Path) -> None:
-    pack = _make_pack(tmp_path)
-    old_sha = _inspect(pack)[0].manifest_sha256
-    (pack / "pack.yaml").write_text(
-        (pack / "pack.yaml").read_text().replace("version: 0.1.0", "version: 0.1.1")
-    )
-    status, _ = _inspect(pack, config=_enabled(old_sha))
-    assert status.state is PackState.DISABLED
-    assert "manifest changed" in status.reason
-
-
-def test_operator_disable_wins_over_signature(tmp_path: Path) -> None:
-    key, trusted = _key()
-    pack = _make_pack(tmp_path)
-    sign_manifest(pack, key, KEY_ID)
-    status, _ = _inspect(pack, trusted, PackConfig(disabled=["demo"]))
-    assert status.state is PackState.DISABLED
-
-
-def test_tampered_rule_after_signing_is_an_error(tmp_path: Path) -> None:
-    key, trusted = _key()
-    pack = _make_pack(tmp_path)
-    sign_manifest(pack, key, KEY_ID)
-    (pack / "rules" / "DEMO-001.yaml").write_text(_RULE.replace("severity: high", "severity: low"))
-    status, loaded = _inspect(pack, trusted)
-    assert status.state is PackState.ERROR and loaded is None
-    assert "sha256" in status.reason
-
-
-def test_unlisted_extra_file_is_an_error(tmp_path: Path) -> None:
-    key, trusted = _key()
-    pack = _make_pack(tmp_path)
-    sign_manifest(pack, key, KEY_ID)
-    (pack / "evil.py").write_text("raise SystemExit('should never run')\n")
-    status, _ = _inspect(pack, trusted)
-    assert status.state is PackState.ERROR
-    assert "not listed" in status.reason
-
-
-def test_pycache_is_ignored(tmp_path: Path) -> None:
-    key, trusted = _key()
-    pack = _make_pack(tmp_path)
-    sign_manifest(pack, key, KEY_ID)
-    (pack / "__pycache__").mkdir()
-    (pack / "__pycache__" / "cli.cpython-312.pyc").write_bytes(b"\0")
-    assert _inspect(pack, trusted)[0].state is PackState.ACTIVE
-
-
-def test_signature_by_wrong_key_is_an_error(tmp_path: Path) -> None:
-    _, trusted = _key()
-    other, _ = _key()
-    pack = _make_pack(tmp_path)
-    sign_manifest(pack, other, KEY_ID)  # right key id, wrong key
-    status, _ = _inspect(pack, trusted)
-    assert status.state is PackState.ERROR
-    assert "does not verify" in status.reason
-
-
-def test_signature_by_unknown_key_falls_back_to_operator(tmp_path: Path) -> None:
-    key, _ = _key()
-    pack = _make_pack(tmp_path)
-    sign_manifest(pack, key, "someone-else-01")
-    status, _ = _inspect(pack, {})
-    assert status.state is PackState.DISABLED and "not trusted" in status.reason
-
-
-def test_publisher_mismatch_is_an_error(tmp_path: Path) -> None:
-    key, _ = _key()
+@pytest.fixture
+def trusted(key: Ed25519PrivateKey) -> dict[str, TrustedKey]:
     raw = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-    trusted = {KEY_ID: TrustedKey(KEY_ID, "someone-else", raw)}
-    pack = _make_pack(tmp_path)
-    sign_manifest(pack, key, KEY_ID)
-    status, _ = _inspect(pack, trusted)
-    assert status.state is PackState.ERROR
-    assert "publisher" in status.reason
+    return {KEY_ID: TrustedKey(KEY_ID, "tester", raw)}
 
 
-def test_symlink_in_pack_is_refused(tmp_path: Path) -> None:
-    pack = _make_pack(tmp_path)
-    (pack / "link.yaml").symlink_to(pack / "pack.yaml")
-    status, _ = _inspect(pack)
-    assert status.state is PackState.DISABLED and "unreadable" in status.reason
+def _zip(tmp: Path, key: Ed25519PrivateKey | None = None, **kw: Any) -> Path:
+    return build_pack(_src(tmp, **kw), tmp / "dist", key=key, key_id=KEY_ID if key else None)
 
 
-def test_error_pack_blocks_apply(tmp_path: Path, catalogue: RuleCatalogue) -> None:
-    key, trusted = _key()
-    pack = _make_pack(tmp_path)
-    sign_manifest(pack, key, KEY_ID)
-    (pack / "cli.py").write_text("# changed\n")
-    inspected = [_inspect(pack, trusted)]
-    with pytest.raises(PackLoadError):
-        apply_packs(catalogue, inspected)
+def _files(path: Path) -> dict[str, bytes]:
+    return read_pack_zip(path.read_bytes())
 
 
-# ---------------------------------------------------------- namespacing ----
+def _verify(files: dict[str, bytes], trusted: dict[str, TrustedKey], **kw: Any) -> VerifiedPack:
+    return verify_pack(files, trusted=trusted, engine_version=ENGINE, today=TODAY, **kw)
 
 
-def _enabled_status(tmp_path: Path, **kw: str):  # type: ignore[no-untyped-def]
-    pack = _make_pack(tmp_path, **kw)
-    sha = _inspect(pack)[0].manifest_sha256
-    return _inspect(pack, config=_enabled(sha))[0]
+def _raw_zip(entries: list[tuple[zipfile.ZipInfo | str, bytes]]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for info, data in entries:
+            zf.writestr(info, data)
+    return buf.getvalue()
 
 
-def test_fact_without_pack_prefix_is_rejected(tmp_path: Path) -> None:
-    manifest = _MANIFEST.replace("demo_roots:", "roots:")
-    status = _enabled_status(tmp_path, manifest=manifest)
-    assert status.state is PackState.ERROR and "vocabulary" in status.reason
+# -------------------------------------------------------------- archive ----
 
 
-def test_rule_id_without_pack_prefix_is_rejected(tmp_path: Path) -> None:
-    manifest = _MANIFEST.replace("[DEMO-001]", "[PI-900]")
-    rule = _RULE.replace("DEMO-001", "PI-900")
-    status = _enabled_status(tmp_path, manifest=manifest, rule=rule)
-    assert status.state is PackState.ERROR and "must start with 'DEMO-'" in status.reason
+@pytest.mark.parametrize(
+    ("name", "reason"),
+    [
+        ("../evil.yaml", "'..'"),
+        ("/etc/passwd", "absolute"),
+        ("rules/../../x.yaml", "'..'"),
+        ("run.py", "not allowed"),
+        ("rules/sub/x.yaml", "not allowed"),
+        ("rules\\x.yaml", "malformed"),
+        ("knowledge/KU-1.md", "not allowed"),
+    ],
+)
+def test_archive_rejects_unsafe_entries(name: str, reason: str) -> None:
+    with pytest.raises(PackArchiveError, match=reason):
+        read_pack_zip(_raw_zip([(name, b"x")]))
 
 
-def test_enum_typo_in_rule_is_rejected(tmp_path: Path) -> None:
-    status = _enabled_status(tmp_path, rule=_RULE.replace("demo_transport: http",
-                                                          "demo_transport: htttp"))
-    assert status.state is PackState.ERROR and "declared values" in status.reason
+def test_archive_rejects_symlink_entry() -> None:
+    info = zipfile.ZipInfo("rules/link.yaml")
+    info.external_attr = 0o120777 << 16
+    with pytest.raises(PackArchiveError, match="symlink"):
+        read_pack_zip(_raw_zip([(info, b"/etc/passwd")]))
 
 
-def test_rule_cannot_reference_other_packs_facts(tmp_path: Path) -> None:
-    status = _enabled_status(tmp_path, rule=_RULE.replace("demo_auth_required", "mcp_auth"))
-    assert status.state is PackState.ERROR and "unknown fact" in status.reason
+def test_archive_rejects_duplicates_and_bombs(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.warns(UserWarning):
+        dup = _raw_zip([("rules/a.yaml", b"1"), ("rules/a.yaml", b"2")])
+    with pytest.raises(PackArchiveError, match="duplicate"):
+        read_pack_zip(dup)
+    monkeypatch.setattr(archive_mod, "MAX_ENTRY_BYTES", 10)
+    with pytest.raises(PackArchiveError, match="exceeds"):
+        read_pack_zip(_raw_zip([("rules/a.yaml", b"x" * 1000)]))
+    monkeypatch.setattr(archive_mod, "MAX_ENTRIES", 2)
+    with pytest.raises(PackArchiveError, match="entries"):
+        read_pack_zip(_raw_zip([(f"rules/r{i}.yaml", b"x") for i in range(3)]))
+
+
+def test_archive_rejects_non_zip() -> None:
+    with pytest.raises(PackArchiveError, match="not a valid ZIP"):
+        read_pack_zip(b"not a zip")
+
+
+# ---------------------------------------------------------------- build ----
+
+
+def test_build_is_reproducible(tmp_path: Path, key: Ed25519PrivateKey) -> None:
+    first = _zip(tmp_path, key).read_bytes()
+    second = build_pack(tmp_path / "src", tmp_path / "dist2", key=key, key_id=KEY_ID).read_bytes()
+    assert first == second
+
+
+def test_build_refuses_code_and_bad_ids(tmp_path: Path) -> None:
+    with pytest.raises(BuildError, match="not allowed"):
+        _zip(tmp_path / "a", extra={"hook.py": "print(1)"})
+    with pytest.raises(BuildError, match="manifest"):
+        _zip(tmp_path / "b", manifest=_manifest(pack_id="../../x"))
+
+
+def test_built_zip_carries_checksums(tmp_path: Path) -> None:
+    listing = _files(_zip(tmp_path))["checksums.sha256"].decode()
+    assert "rules/DEMO-001.yaml" in listing and "changelog.md" in listing
+
+
+# --------------------------------------------------------------- verify ----
+
+
+def test_signed_pack_verifies(tmp_path: Path, key: Ed25519PrivateKey,
+                              trusted: dict[str, TrustedKey]) -> None:
+    v = _verify(_files(_zip(tmp_path, key)), trusted)
+    assert v.trust is PackTrust.SIGNED
+    assert [r.id for r in v.catalogue.rules] == ["DEMO-001"]
+
+
+def test_unsigned_needs_operator_approval(tmp_path: Path, trusted: dict[str, TrustedKey]) -> None:
+    files = _files(_zip(tmp_path))
+    with pytest.raises(PackVerifyError) as err:
+        _verify(files, trusted)
+    assert err.value.problem is Problem.UNTRUSTED
+    assert _verify(files, trusted, allow_unsigned=True).trust is PackTrust.OPERATOR_APPROVED
+
+
+def test_unknown_key_is_treated_as_unsigned(tmp_path: Path, key: Ed25519PrivateKey) -> None:
+    with pytest.raises(PackVerifyError) as err:
+        _verify(_files(_zip(tmp_path, key)), {})
+    assert err.value.problem is Problem.UNTRUSTED
+
+
+def test_wrong_key_and_wrong_publisher_are_invalid(
+    tmp_path: Path, key: Ed25519PrivateKey
+) -> None:
+    other = Ed25519PrivateKey.generate()
+    raw_other = other.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    files = _files(_zip(tmp_path, key))
+    with pytest.raises(PackVerifyError, match="does not verify"):
+        _verify(files, {KEY_ID: TrustedKey(KEY_ID, "tester", raw_other)})
+    raw = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    with pytest.raises(PackVerifyError, match="publisher"):
+        _verify(files, {KEY_ID: TrustedKey(KEY_ID, "someone-else", raw)})
+
+
+def test_tampered_rule_fails_checksum(tmp_path: Path, key: Ed25519PrivateKey,
+                                      trusted: dict[str, TrustedKey]) -> None:
+    files = _files(_zip(tmp_path, key))
+    files["rules/DEMO-001.yaml"] = _RULE.replace("severity: high", "severity: low").encode()
+    with pytest.raises(PackVerifyError, match="sha256"):
+        _verify(files, trusted)
+    files = _files(_zip(tmp_path, key))
+    files["rules/DEMO-999.yaml"] = b"id: DEMO-999\n"
+    with pytest.raises(PackVerifyError, match="not listed"):
+        _verify(files, trusted)
+
+
+def test_checksums_file_must_match(tmp_path: Path, key: Ed25519PrivateKey,
+                                   trusted: dict[str, TrustedKey]) -> None:
+    files = _files(_zip(tmp_path, key))
+    files["checksums.sha256"] = b"0" * 64 + b"  rules/DEMO-001.yaml\n"
+    with pytest.raises(PackVerifyError, match="checksums.sha256"):
+        _verify(files, trusted)
+
+
+@pytest.mark.parametrize(
+    ("over", "problem", "match"),
+    [
+        ({"classification": "secret"}, Problem.INVALID, "never packed"),
+        ({"min_engine_version": "9.0.0"}, Problem.INCOMPATIBLE, ">= 9.0.0"),
+        ({"max_engine_version": "0.1.0", "min_engine_version": "0.1.0"}, Problem.INCOMPATIBLE,
+         "<= 0.1.0"),
+        ({"version": "1.0.0"}, Problem.INVALID, "manifest"),
+    ],
+)
+def test_manifest_level_rejections(trusted: dict[str, TrustedKey], over: dict[str, Any],
+                                   problem: Problem, match: str) -> None:
+    body = _RULE.encode()
+    manifest = _manifest(**over)
+    manifest["files"] = {"rules/DEMO-001.yaml": hashlib.sha256(body).hexdigest()}
+    files = {"manifest.json": json.dumps(manifest).encode(), "rules/DEMO-001.yaml": body}
+    with pytest.raises(PackVerifyError, match=match) as err:
+        _verify(files, trusted, allow_unsigned=True)
+    assert err.value.problem is problem
+
+
+@pytest.mark.parametrize(
+    ("kw", "match"),
+    [
+        ({"manifest": _manifest(facts={"roots": {"type": "str_list"}},
+                                questions={}, report_groups={})}, "vocabulary"),
+        ({"rule": _RULE.replace("DEMO-001", "PI-900"),
+          "manifest": _manifest(report_groups={})}, "must start with 'DEMO-'"),
+        ({"rule": _RULE.replace("demo_transport: http", "demo_transport: htttp")},
+         "declared values"),
+        ({"rule": _RULE.replace("demo_auth_required", "mcp_auth")}, "unknown fact"),
+        ({"manifest": _manifest(report_groups={"x": ["DEMO-002"]})}, "unknown rule"),
+    ],
+)
+def test_pack_content_rejections(tmp_path: Path, key: Ed25519PrivateKey,
+                                 trusted: dict[str, TrustedKey], kw: dict[str, Any],
+                                 match: str) -> None:
+    with pytest.raises(PackVerifyError, match=match):
+        _verify(_files(_zip(tmp_path, key, **kw)), trusted)
 
 
 def test_pack_cannot_shadow_a_core_fact() -> None:
     with pytest.raises(VocabularyError):
         CORE_VOCABULARY.extend(
-            "memory", facts={"memory_enabled": CORE_VOCABULARY.facts["memory_enabled"]},
+            "memory", facts={"memory_enabled": FactType.BOOL},
             fact_values={}, evidence={}, questions={},
         )
-    assert "memory" not in CORE_VOCABULARY.packs  # the core vocabulary is untouched
-
-
-def test_duplicate_rule_id_with_core_is_rejected(tmp_path: Path, catalogue: RuleCatalogue) -> None:
-    status, loaded = _inspect(_make_pack(tmp_path))
-    status, loaded = _inspect(tmp_path / "skos_pack_demo", config=_enabled(status.manifest_sha256))
-    assert loaded is not None
-    loaded.catalogue.rules.append(catalogue.rules[0])
-    with pytest.raises(PackLoadError, match="duplicate rule id"):
-        apply_packs(catalogue, [(status, loaded)])
+    assert "memory" not in CORE_VOCABULARY.packs
 
 
 # -------------------------------------------------------------- license ----
-
-
-def _commercial(tmp_path: Path) -> tuple[Path, Ed25519PrivateKey, dict[str, TrustedKey]]:
-    key, trusted = _key()
-    pack = _make_pack(tmp_path / "pk", tier="commercial")
-    sign_manifest(pack, key, KEY_ID)
-    return pack, key, trusted
-
-
-def _license(tmp_path: Path, key: Ed25519PrivateKey, *, pack: str = "demo",
-             expires: date = date(2027, 1, 1)) -> None:
-    issue_license(
-        tmp_path / "cfg" / "licenses", pack=pack, license_id="L-1", licensee="Example Corp",
-        issued=date(2026, 9, 1), expires=expires, key=key, key_id=KEY_ID,
-    )
 
 
 @pytest.fixture
@@ -318,92 +306,289 @@ def cfg_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path / "cfg"
 
 
-def test_commercial_pack_without_license_is_disabled(tmp_path: Path, cfg_dir: Path) -> None:
-    pack, _, trusted = _commercial(tmp_path)
-    status, _ = _inspect(pack, trusted)
-    assert status.state is PackState.DISABLED and "no license file" in status.reason
+def _license(cfg: Path, key: Ed25519PrivateKey, *, pack: str = "demo",
+             expires: date = date(2027, 1, 1)) -> Path:
+    return issue_license(
+        cfg / "licenses", pack=pack, license_id="L-1", licensee="Example Corp",
+        issued=date(2026, 9, 1), expires=expires, key=key, key_id=KEY_ID,
+    )
 
 
-def test_commercial_pack_with_valid_license_is_active(tmp_path: Path, cfg_dir: Path) -> None:
-    pack, key, trusted = _commercial(tmp_path)
-    _license(tmp_path, key)
-    status, _ = _inspect(pack, trusted)
-    assert status.state is PackState.ACTIVE, status.reason
-    assert "licensed until 2027-01-01" in status.reason
-    assert "Example Corp" not in status.reason  # the licensee never reaches a report
+def _commercial(tmp: Path, key: Ed25519PrivateKey) -> dict[str, bytes]:
+    return _files(_zip(tmp, key, manifest=_manifest(classification="commercial")))
 
 
-def test_expired_license_is_disabled(tmp_path: Path, cfg_dir: Path) -> None:
-    pack, key, trusted = _commercial(tmp_path)
-    _license(tmp_path, key, expires=date(2026, 9, 30))
-    status, _ = _inspect(pack, trusted)
-    assert status.state is PackState.DISABLED and "expired" in status.reason
+def test_commercial_license_lifecycle(tmp_path: Path, cfg_dir: Path, key: Ed25519PrivateKey,
+                                      trusted: dict[str, TrustedKey]) -> None:
+    files = _commercial(tmp_path, key)
+    with pytest.raises(PackVerifyError, match="no license file") as err:
+        _verify(files, trusted)
+    assert err.value.problem is Problem.LICENSE
 
+    lic = _license(cfg_dir, key)
+    v = _verify(files, trusted)
+    assert v.license_note == "licensed until 2027-01-01"
 
-def test_license_for_another_pack_is_disabled(tmp_path: Path, cfg_dir: Path) -> None:
-    pack, key, trusted = _commercial(tmp_path)
-    _license(tmp_path, key, pack="other")
-    (cfg_dir / "licenses" / "other.lic").rename(cfg_dir / "licenses" / "demo.lic")
-    (cfg_dir / "licenses" / "other.lic.sig").rename(cfg_dir / "licenses" / "demo.lic.sig")
-    status, _ = _inspect(pack, trusted)
-    assert status.state is PackState.DISABLED and "does not cover" in status.reason
-
-
-def test_edited_license_fails_its_signature(tmp_path: Path, cfg_dir: Path) -> None:
-    pack, key, trusted = _commercial(tmp_path)
-    _license(tmp_path, key)
-    lic = cfg_dir / "licenses" / "demo.lic"
     lic.write_text(lic.read_text().replace("2027-01-01", "2099-01-01"))
-    status, _ = _inspect(pack, trusted)
-    assert status.state is PackState.DISABLED and "signature" in status.reason
+    with pytest.raises(PackVerifyError, match="signature"):
+        _verify(files, trusted)
+
+    _license(cfg_dir, key, expires=date(2026, 9, 30))
+    with pytest.raises(PackVerifyError, match="expired"):
+        _verify(files, trusted)
+
+
+def test_license_for_another_pack_is_rejected(tmp_path: Path, cfg_dir: Path,
+                                              key: Ed25519PrivateKey,
+                                              trusted: dict[str, TrustedKey]) -> None:
+    _license(cfg_dir, key, pack="other")
+    for suffix in (".lic", ".lic.sig"):
+        (cfg_dir / "licenses" / f"other{suffix}").rename(cfg_dir / "licenses" / f"demo{suffix}")
+    with pytest.raises(PackVerifyError, match="does not cover"):
+        _verify(_commercial(tmp_path, key), trusted)
+
+
+# ----------------------------------------------------------------- diff ----
+
+
+def _rules(text: str, tmp: Path) -> list[RiskRule]:
+    tmp.mkdir(parents=True)
+    (tmp / "r.yaml").write_text(text)
+    v = CORE_VOCABULARY.extend(
+        "demo",
+        facts={"demo_transport": FactType.STR, "demo_auth_required": FactType.BOOL},
+        fact_values={}, evidence={"demo_launch_command": "x"}, questions={},
+    )
+    return load_rules(tmp, v).rules
+
+
+def test_diff_flags_sensitive_changes(tmp_path: Path) -> None:
+    old = _rules(_RULE.replace("manual_review: false", "manual_review: true")
+                 .replace("required_evidence: []", "required_evidence: [demo_launch_command]"),
+                 tmp_path / "old")
+    new = _rules(_RULE.replace("severity: high", "severity: medium"), tmp_path / "new")
+    text = " ".join(diff_rules(old, new).sensitive)
+    assert "severity lowered high -> medium" in text
+    assert "human gate removed" in text
+    assert "required_evidence reduced" in text
+    assert diff_rules(old, []).sensitive == ["DEMO-001: rule removed"]
+    stricter = _rules(_RULE.replace("severity: high", "severity: critical"), tmp_path / "s")
+    assert diff_rules(new, stricter).sensitive == []
+
+
+# --------------------------------------------------------------- store -----
+
+
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("SKOS_HOME", str(tmp_path / "home"))
+    return tmp_path / "home"
+
+
+def _install(zip_path: Path, catalogue: RuleCatalogue, trusted: dict[str, TrustedKey],
+             **kw: Any) -> None:
+    install(zip_path, catalogue, trusted=trusted, today=TODAY, **kw)
+
+
+def _audit(home: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in (home / "audit.jsonl").read_text().splitlines()]
+
+
+def test_install_activates_atomically_and_audits(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    _install(_zip(tmp_path, key), catalogue, trusted)
+    state = load_state(home)
+    assert state.packs["demo"].version == "2026.10.0"
+    assert (home / "active" / "demo").is_symlink()
+    assert (home / "packs" / "public" / "demo-2026.10.0.zip").is_file()
+    assert (home / "installed.json").stat().st_mode & 0o777 == 0o600
+    [record] = _audit(home)
+    assert record["action"] == "install" and record["install_result"] == "ok"
+    assert record["manifest_hash"] == state.packs["demo"].manifest_sha256
+
+    merged, _ = load_with_packs(catalogue, trusted=trusted, today=TODAY)
+    assert "DEMO-001" in {r.id for r in merged.rules}
+
+
+def test_unsigned_install_is_rejected_and_audited(
+    tmp_path: Path, home: Path, trusted: dict[str, TrustedKey], catalogue: RuleCatalogue,
+) -> None:
+    with pytest.raises(PackVerifyError):
+        _install(_zip(tmp_path), catalogue, trusted)
+    assert load_state(home).packs == {}
+    assert _audit(home)[0]["install_result"] == "rejected"
+
+    _install(_zip(tmp_path / "b"), catalogue, trusted, allow_unsigned=True)
+    assert load_state(home).packs["demo"].trust is PackTrust.OPERATOR_APPROVED
+    # an operator-approved pack keeps loading without the flag
+    merged, _ = load_with_packs(catalogue, trusted=trusted, today=TODAY)
+    assert merged.packs_applied[0].trust is PackTrust.OPERATOR_APPROVED
+
+
+def _v2(tmp: Path, key: Ed25519PrivateKey, rule: str) -> Path:
+    return _zip(tmp, key, manifest=_manifest(version="2026.11.0"), rule=rule)
+
+
+def test_sensitive_upgrade_needs_approval_then_rollback(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    _install(_zip(tmp_path / "v1", key), catalogue, trusted)
+    weaker = _v2(tmp_path / "v2", key, _RULE.replace("severity: high", "severity: low"))
+    with pytest.raises(PackStoreError, match="--approve-sensitive"):
+        _install(weaker, catalogue, trusted)
+    assert load_state(home).packs["demo"].version == "2026.10.0"
+    assert not (home / "versions" / "demo" / "2026.11.0").exists()
+
+    _install(weaker, catalogue, trusted, approve_sensitive=True)
+    state = load_state(home)
+    assert state.packs["demo"].version == "2026.11.0"
+    assert state.packs["demo"].history == ["2026.10.0"]
+
+    # rolling back makes it stricter again - not sensitive
+    rollback("demo", "2026.10.0", catalogue, trusted=trusted, today=TODAY)
+    assert load_state(home).packs["demo"].version == "2026.10.0"
+    assert _audit(home)[-1]["action"] == "rollback"
+
+
+def test_released_version_cannot_change(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    _install(_zip(tmp_path / "a", key), catalogue, trusted)
+    changed = _zip(tmp_path / "b", key, rule=_RULE.replace("HTTP transport", "HTTP server"))
+    with pytest.raises(PackStoreError, match="never change"):
+        _install(changed, catalogue, trusted)
+
+
+def test_failed_smoke_test_leaves_previous_version_active(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install(_zip(tmp_path / "v1", key), catalogue, trusted)
+
+    def boom(*_: object) -> None:
+        raise PackStoreError("smoke test failed: simulated")
+
+    monkeypatch.setattr(store_mod, "_smoke_test", boom)
+    with pytest.raises(PackStoreError, match="simulated"):
+        _install(_v2(tmp_path / "v2", key, _RULE), catalogue, trusted)
+    assert load_state(home).packs["demo"].version == "2026.10.0"
+    versions = sorted(p.name for p in (home / "versions" / "demo").iterdir())
+    assert versions == ["2026.10.0"]  # no staging leftovers
+
+
+def test_confidential_pack_needs_approval(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    conf = _zip(tmp_path, key, manifest=_manifest(classification="confidential"))
+    with pytest.raises(PackStoreError, match="confidential"):
+        _install(conf, catalogue, trusted)
+    _install(conf, catalogue, trusted, approve_sensitive=True)
+
+
+def test_tampered_installed_pack_stops_assessment(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    _install(_zip(tmp_path, key), catalogue, trusted)
+    rule = home / "versions" / "demo" / "2026.10.0" / "rules" / "DEMO-001.yaml"
+    rule.write_text(_RULE.replace("severity: high", "severity: low"))
+    with pytest.raises(PackLoadError, match="sha256"):
+        load_with_packs(catalogue, trusted=trusted, today=TODAY)
+
+
+def test_extra_file_in_installed_pack_stops_assessment(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    _install(_zip(tmp_path, key), catalogue, trusted)
+    (home / "versions" / "demo" / "2026.10.0" / "run.py").write_text("print(1)\n")
+    with pytest.raises(PackLoadError, match="unexpected file"):
+        load_with_packs(catalogue, trusted=trusted, today=TODAY)
+
+
+def test_rollback_rejects_path_like_versions(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    _install(_zip(tmp_path, key), catalogue, trusted)
+    with pytest.raises(PackStoreError, match="YYYY.MM.PATCH"):
+        rollback("demo", "../../etc", catalogue, trusted=trusted, today=TODAY)
+
+
+def test_remove_keeps_history(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    _install(_zip(tmp_path, key), catalogue, trusted)
+    remove("demo")
+    assert load_state(home).packs == {}
+    assert not (home / "active" / "demo").exists()
+    assert (home / "versions" / "demo" / "2026.10.0").is_dir()
+    merged, _ = load_with_packs(catalogue, trusted=trusted, today=TODAY)
+    assert merged.packs_applied == []
+
+
+def test_expired_commercial_pack_is_skipped_not_fatal(
+    tmp_path: Path, home: Path, cfg_dir: Path, key: Ed25519PrivateKey,
+    trusted: dict[str, TrustedKey], catalogue: RuleCatalogue,
+) -> None:
+    _license(cfg_dir, key)
+    _install(_zip(tmp_path, key, manifest=_manifest(classification="commercial")), catalogue,
+             trusted)
+    merged, active = load_with_packs(catalogue, trusted=trusted, today=date(2027, 6, 1))
+    assert merged.packs_applied == []
+    assert active[0].problem is not None and active[0].problem.problem is Problem.LICENSE
 
 
 # ----------------------------------------------------- assessment path ----
 
 
 @pytest.fixture
-def demo_catalogue(tmp_path: Path, catalogue: RuleCatalogue) -> RuleCatalogue:
-    marker = tmp_path / "imported.marker"
-    pack = _make_pack(tmp_path / "p", init=f"open({str(marker)!r}, 'w').close()\n")
-    sha = _inspect(pack)[0].manifest_sha256
-    return apply_packs(catalogue, [_inspect(pack, config=_enabled(sha))])
+def settings() -> Settings:
+    return Settings(mode=Mode.PRIVATE)
 
 
-def test_pack_rule_fires_and_is_recorded(
-    demo_catalogue: RuleCatalogue, settings: Settings, tmp_path: Path
-) -> None:
+@pytest.fixture
+def demo_catalogue(tmp_path: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+                   catalogue: RuleCatalogue) -> RuleCatalogue:
+    return apply_verified(catalogue, [_verify(_files(_zip(tmp_path, key)), trusted)])
+
+
+def _input(**demo: object) -> AssessmentInput:
+    return AssessmentInput.model_validate({"name": "t", "extensions": {"demo": demo}})
+
+
+def test_pack_rule_fires_and_is_recorded(demo_catalogue: RuleCatalogue,
+                                         settings: Settings) -> None:
     report = build_report(
         _input(transport="http", auth_required=False, launch_command="npx demo@1.0.0"),
         demo_catalogue, settings=settings,
     )
-    assert report.status is ReportStatus.COMPLETED
+    assert report.status is ReportStatus.COMPLETED and report.result is not None
     r = report.result
-    assert r is not None
     demo = [f for f in r.findings if f.risk_id == "DEMO-001"]
     assert demo and demo[0].status is FindingStatus.FAIL
     assert r.overall_status is OverallStatus.FAIL
-    assert [p.name for p in r.packs_applied] == ["demo"]
+    assert [p.pack_id for p in r.packs_applied] == ["demo"]
     [group] = r.group_summaries
     assert (group.group, group.worst_status, group.finding_count) == (
         "exposure", FindingStatus.FAIL, 1,
     )
     text = render_text(report)
-    assert "packs: demo 0.1.0 [free, user-enabled]" in text
-    assert "demo/exposure" in text
-    # Pack code never runs on the assessment path.
-    assert not (tmp_path / "imported.marker").exists()
+    assert "packs: demo 2026.10.0 [public, signed]" in text and "demo/exposure" in text
 
 
-def test_undetermined_pack_fact_becomes_a_question(
-    demo_catalogue: RuleCatalogue, settings: Settings
-) -> None:
-    # Questions come from undetermined trigger conditions (as for core rules).
+def test_undetermined_trigger_becomes_a_question(demo_catalogue: RuleCatalogue,
+                                                 settings: Settings) -> None:
     report = build_report(_input(auth_required=False), demo_catalogue, settings=settings)
     assert report.result is not None
-    assert any(
-        q.field == "demo_transport" and "Which transport" in q.text
-        for q in report.result.questions
-    )
+    assert any(q.field == "demo_transport" and "Which transport" in q.text
+               for q in report.result.questions)
 
 
 @pytest.mark.parametrize(
@@ -415,26 +600,21 @@ def test_undetermined_pack_fact_becomes_a_question(
         ({"roots": "~"}, "expected a list"),
     ],
 )
-def test_bad_extension_values_are_blocked(
-    demo_catalogue: RuleCatalogue, settings: Settings, demo: dict[str, object], reason: str
-) -> None:
+def test_bad_extension_values_are_blocked(demo_catalogue: RuleCatalogue, settings: Settings,
+                                          demo: dict[str, object], reason: str) -> None:
     report = build_report(_input(**demo), demo_catalogue, settings=settings)
-    assert report.status is ReportStatus.POLICY_BLOCKED
-    assert report.policy_decision is not None
+    assert report.status is ReportStatus.POLICY_BLOCKED and report.policy_decision is not None
     assert reason in " ".join(report.policy_decision.reasons)
 
 
-def test_extensions_for_a_missing_pack_are_blocked(
-    catalogue: RuleCatalogue, settings: Settings
-) -> None:
+def test_extensions_for_a_missing_pack_are_blocked(catalogue: RuleCatalogue,
+                                                   settings: Settings) -> None:
     report = build_report(_input(transport="http"), catalogue, settings=settings)
-    assert report.status is ReportStatus.POLICY_BLOCKED
-    assert "no enabled pack named 'demo'" in " ".join(report.policy_decision.reasons)  # type: ignore[union-attr]
+    assert report.status is ReportStatus.POLICY_BLOCKED and report.policy_decision is not None
+    assert "no enabled pack named 'demo'" in " ".join(report.policy_decision.reasons)
 
 
-def test_no_packs_ignores_extensions_visibly(
-    rules_root: Path, settings: Settings
-) -> None:
+def test_no_packs_ignores_extensions_visibly(rules_root: Path, settings: Settings) -> None:
     core = load_rules(rules_root)
     core.ignore_extensions = True
     report = build_report(_input(transport="http"), core, settings=settings)
@@ -446,62 +626,6 @@ def test_no_packs_ignores_extensions_visibly(
 def test_extension_values_reject_credential_shapes() -> None:
     with pytest.raises(ValueError):
         _input(launch_command="API_KEY=" + "sk-ant-" + "a" * 90)
-
-
-# -------------------------------------------------------------- commands ----
-
-
-def test_command_runs_from_the_verified_snapshot(tmp_path: Path) -> None:
-    pack = _make_pack(tmp_path / "p")
-    sha = _inspect(pack)[0].manifest_sha256
-    status, _ = _inspect(pack, config=_enabled(sha))
-    out = tmp_path / "out.txt"
-    try:
-        assert run_command(status, "hello", [str(out)]) == 7
-        ran_from = out.read_text().removeprefix("ran:")
-        assert status.snapshot is not None
-        assert Path(ran_from).resolve().is_relative_to(status.snapshot.resolve())
-    finally:
-        import sys
-
-        for name in [m for m in sys.modules if m.startswith("skos_pack_demo")]:
-            del sys.modules[name]
-
-
-def test_inspect_all_with_env_dirs(
-    tmp_path: Path, cfg_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pack = _make_pack(tmp_path / "p")
-    monkeypatch.setenv("SKOS_PACK_DIRS", str(pack))
-    monkeypatch.setattr("app.packs.discovery._from_entry_points", lambda: [])
-    [(status, _)] = inspect_all(trusted={}, today=TODAY)
-    assert status.label == "skos_pack_demo" and status.state is PackState.DISABLED
-
-
-def test_manifest_rejects_path_traversal(tmp_path: Path) -> None:
-    pack = _make_pack(tmp_path)
-    text = (pack / "pack.yaml").read_text()
-    (pack / "pack.yaml").write_text(text + "  a/../../etc/passwd: " + "0" * 64 + "\n")
-    status, _ = _inspect(pack)
-    assert status.state is PackState.DISABLED and "invalid pack.yaml" in status.reason
-
-
-def test_manifest_command_outside_own_package_is_rejected(tmp_path: Path) -> None:
-    manifest = _MANIFEST.replace("skos_pack_demo.cli:main", "os.path:join")
-    pack = _make_pack(tmp_path, manifest=manifest)
-    status, _ = _inspect(pack)
-    assert status.state is PackState.DISABLED and "invalid pack.yaml" in status.reason
-
-
-def test_readme_example_manifest_parses() -> None:
-    """The manifest format above stays loadable via YAML (guards the test's own
-    fixture against drift from app/packs/manifest.py)."""
-    import yaml
-
-    from app.packs.manifest import PackManifest
-
-    data = yaml.safe_load(textwrap.dedent(_MANIFEST.format(tier="free")) + "files: {}\n")
-    assert PackManifest.model_validate(data).package == "skos_pack_demo"
 
 
 def test_builtin_trust_store_is_well_formed() -> None:

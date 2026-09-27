@@ -10,13 +10,17 @@ from pathlib import Path
 
 import pytest
 
+from app.adapters import mcp_config
 from app.models.rule_clause import Clause, Operator
-from app.packs import config as pack_config
-from app.packs import discovery as pack_discovery
+from app.packs import archive as pack_archive
+from app.packs import build as pack_build
+from app.packs import diff as pack_diff
 from app.packs import license as pack_license
 from app.packs import loader as pack_loader
 from app.packs import manifest as pack_manifest
 from app.packs import signing as pack_signing
+from app.packs import store as pack_store
+from app.packs import verify as pack_verify
 from app.reviewer import (
     assess,
     attack_surface,
@@ -43,15 +47,18 @@ _EVAL_PATH_MODULES = [
     assess,
     vocabulary,
     extensions,
-    # Service packs: everything that discovers, verifies and loads a pack is
-    # data-only. app/packs/commands.py - the one module that imports pack
-    # code, for `skos <pack> <command>` only - is deliberately NOT listed.
-    pack_config,
-    pack_discovery,
+    # Update Packs are data-only: nothing that reads, verifies, installs or
+    # loads a pack - nor the MCP config adapter - executes anything.
+    pack_archive,
+    pack_build,
+    pack_diff,
     pack_license,
     pack_loader,
     pack_manifest,
     pack_signing,
+    pack_store,
+    pack_verify,
+    mcp_config,
 ]
 
 

@@ -105,7 +105,8 @@ def _render_lines(report: AssessmentReport) -> list[str]:
         "packs: "
         + (
             ", ".join(
-                f"{p.name} {p.version} [{p.tier.value}, {p.trust.value}]" for p in r.packs_applied
+                f"{p.pack_id} {p.version} [{p.classification.value}, {p.trust.value}]"
+                for p in r.packs_applied
             )
             or "none"
         ),

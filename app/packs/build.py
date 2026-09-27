@@ -1,10 +1,16 @@
-"""Publisher-side helpers: hash a pack's files into its manifest, sign the
-manifest, and issue license files. Used by scripts/sign_pack.py and
-scripts/issue_license.py, and by the tests. Private keys are passed in by the
-caller (read from Vault/stdin); nothing here stores one.
+"""Publisher-side tooling (Update Pack spec sections 19-20): build a pack ZIP
+from a source directory, sign it, and issue license files.
 
-The manifest's ``files:`` mapping must be its LAST top-level key: it is
-regenerated in place, which keeps every comment above it intact.
+The ZIP is reproducible: entries are sorted, timestamps and permissions are
+fixed, and the manifest is written canonically - the same source and key
+always give the same bytes. Private keys are passed in by the caller (read
+from Vault via stdin); nothing here stores one.
+
+Source directory layout (everything else is refused):
+
+    manifest.json        without `files` (it is generated)
+    rules/*.yaml
+    changelog.md, LICENSE.txt, README.md   (optional)
 """
 
 from __future__ import annotations
@@ -12,18 +18,28 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import io
 import json
 import os
+import zipfile
 from datetime import date
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-from app.packs.manifest import MANIFEST_FILE, RESERVED_FILES, SIGNATURE_FILE
+from app.packs.manifest import (
+    CHECKSUMS_FILE,
+    MANIFEST_FILE,
+    SIGNATURE_FILE,
+    UNHASHED_FILES,
+    allowed_pack_path,
+    checksums_text,
+)
 from app.packs.signing import LICENSE_DOMAIN, MANIFEST_DOMAIN, signature_file_bytes
+from app.packs.verify import PackVerifyError, parse_manifest
 
-_IGNORED_DIRS = {"__pycache__"}
+_FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 
 
 class BuildError(ValueError):
@@ -45,43 +61,73 @@ def public_key_b64(key: Ed25519PrivateKey) -> str:
     return base64.b64encode(raw).decode("ascii")
 
 
-def file_hashes(pack_dir: Path) -> dict[str, str]:
-    hashes: dict[str, str] = {}
-    for dirpath, dirnames, filenames in os.walk(pack_dir):
-        dirnames[:] = sorted(d for d in dirnames if d not in _IGNORED_DIRS)
+def _source_files(src: Path) -> dict[str, bytes]:
+    files: dict[str, bytes] = {}
+    for dirpath, dirnames, filenames in os.walk(src):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
         for name in sorted(filenames):
-            full = Path(dirpath) / name
-            if full.is_symlink():
-                raise BuildError(f"symlink in pack: {full.relative_to(pack_dir)}")
-            rel = full.relative_to(pack_dir).as_posix()
-            if rel in RESERVED_FILES:
+            if name.startswith("."):
                 continue
-            hashes[rel] = hashlib.sha256(full.read_bytes()).hexdigest()
-    return dict(sorted(hashes.items()))
+            full = Path(dirpath) / name
+            rel = full.relative_to(src).as_posix()
+            if full.is_symlink():
+                raise BuildError(f"symlink in pack source: {rel}")
+            if rel in UNHASHED_FILES - {MANIFEST_FILE}:
+                continue  # generated
+            if not allowed_pack_path(rel):
+                raise BuildError(f"{rel}: not allowed in a pack (data files only)")
+            files[rel] = full.read_bytes()
+    if MANIFEST_FILE not in files:
+        raise BuildError("manifest.json is missing from the pack source")
+    return files
 
 
-def update_manifest_files(pack_dir: Path) -> bytes:
-    """Rewrite the trailing ``files:`` block of ``pack.yaml`` with the current
-    hashes; returns the new manifest bytes."""
-    path = pack_dir / MANIFEST_FILE
-    lines = path.read_text(encoding="utf-8").splitlines()
+def build_pack(
+    src: Path,
+    out_dir: Path,
+    *,
+    version: str | None = None,
+    key: Ed25519PrivateKey | None = None,
+    key_id: str | None = None,
+) -> Path:
+    """Write ``<out_dir>/<pack_id>-<version>.zip`` and return its path."""
+    files = _source_files(src)
     try:
-        start = next(i for i, line in enumerate(lines) if line.startswith("files:"))
-    except StopIteration:
-        start = len(lines)
-    for line in lines[start + 1 :]:
-        if line and not line.startswith((" ", "#")):
-            raise BuildError("'files:' must be the last top-level key in pack.yaml")
-    block = ["files:"] + [f"  {rel}: {sha}" for rel, sha in file_hashes(pack_dir).items()]
-    data = ("\n".join(lines[:start] + block) + "\n").encode("utf-8")
-    path.write_bytes(data)
-    return data
+        manifest = json.loads(files.pop(MANIFEST_FILE).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise BuildError("manifest.json is not valid UTF-8 JSON") from None
+    if not isinstance(manifest, dict):
+        raise BuildError("manifest.json must be an object")
+    if version is not None:
+        manifest["version"] = version
+    manifest["files"] = {
+        rel: hashlib.sha256(data).hexdigest() for rel, data in sorted(files.items())
+    }
+    manifest_bytes = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    entries = dict(files)
+    entries[MANIFEST_FILE] = manifest_bytes
+    entries[CHECKSUMS_FILE] = checksums_text(manifest["files"]).encode("utf-8")
+    if key is not None:
+        if not key_id:
+            raise BuildError("a key id is required to sign")
+        signature = key.sign(MANIFEST_DOMAIN + manifest_bytes)
+        entries[SIGNATURE_FILE] = signature_file_bytes(key_id, signature)
+    try:
+        parsed, _ = parse_manifest(entries)
+    except PackVerifyError as exc:
+        raise BuildError(str(exc)) from None
 
-
-def sign_manifest(pack_dir: Path, key: Ed25519PrivateKey, key_id: str) -> None:
-    manifest = (pack_dir / MANIFEST_FILE).read_bytes()
-    signature = key.sign(MANIFEST_DOMAIN + manifest)
-    (pack_dir / SIGNATURE_FILE).write_bytes(signature_file_bytes(key_id, signature))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for rel in sorted(entries):
+            info = zipfile.ZipInfo(rel, date_time=_FIXED_TIME)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o100644 << 16
+            zf.writestr(info, entries[rel])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{parsed.pack_id}-{parsed.version}.zip"
+    out.write_bytes(buf.getvalue())
+    return out
 
 
 def issue_license(

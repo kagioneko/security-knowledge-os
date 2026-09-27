@@ -1,30 +1,31 @@
-"""`skos packs`, `skos assess` with packs / --no-packs, and `skos <pack> <cmd>`."""
+"""`skos pack ...` end to end, and `skos assess` with / without packs."""
 
 from __future__ import annotations
 
-import sys
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
-from app.cli import BUILTIN_COMMANDS, _build_parser, main
-from app.packs.build import update_manifest_files
+from app.cli import main
 
-_MANIFEST = """\
-pack_api: 1
-name: demo
-version: 0.1.0
-tier: free
-publisher: tester
-license: Apache-2.0
-description: demo pack for CLI tests
-facts:
-  demo_transport: {type: str, values: [stdio, http]}
-  demo_auth_required: {type: bool}
-commands:
-  hello: skos_pack_demo.cli:main
-"""
+_MANIFEST = {
+    "pack_api": 1,
+    "pack_id": "demo",
+    "name": "Demo Pack",
+    "version": "2026.10.0",
+    "release_date": "2026-10-01",
+    "min_engine_version": "0.2.0",
+    "classification": "public",
+    "publisher": "tester",
+    "license": "Apache-2.0",
+    "description": "demo pack for CLI tests",
+    "facts": {
+        "demo_transport": {"type": "str", "values": ["stdio", "http"]},
+        "demo_auth_required": {"type": "bool"},
+    },
+}
 
 _RULE = """\
 id: DEMO-001
@@ -38,28 +39,16 @@ checks:
   - demo_auth_required: true
 """
 
-_CLI = """\
-def main(argv):
-    print("hello from demo", *argv)
-    return 0
-"""
-
 
 @pytest.fixture
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    pack = tmp_path / "skos_pack_demo"
-    (pack / "rules").mkdir(parents=True)
-    (pack / "__init__.py").write_text("")
-    (pack / "cli.py").write_text(_CLI)
-    (pack / "rules" / "DEMO-001.yaml").write_text(_RULE)
-    (pack / "pack.yaml").write_text(_MANIFEST)
-    update_manifest_files(pack)
-    monkeypatch.setenv("SKOS_PACK_DIRS", str(pack))
+    src = tmp_path / "src"
+    (src / "rules").mkdir(parents=True)
+    (src / "manifest.json").write_text(json.dumps(_MANIFEST))
+    (src / "rules" / "DEMO-001.yaml").write_text(_RULE)
+    monkeypatch.setenv("SKOS_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("SKOS_CONFIG_DIR", str(tmp_path / "cfg"))
-    monkeypatch.setattr("app.packs.discovery._from_entry_points", lambda: [])
     yield tmp_path
-    for name in [m for m in sys.modules if m.startswith("skos_pack_demo")]:
-        del sys.modules[name]
 
 
 def _assessment(tmp_path: Path) -> Path:
@@ -70,57 +59,63 @@ def _assessment(tmp_path: Path) -> Path:
     return path
 
 
-def test_builtin_command_list_matches_the_parser() -> None:
-    parser = _build_parser()
-    sub = next(a for a in parser._actions if a.dest == "command")
-    assert set(sub.choices) == BUILTIN_COMMANDS  # type: ignore[arg-type]
+def test_pack_lifecycle(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    src, dist = env / "src", env / "dist"
+    assert main(["pack", "build", str(src), "--out", str(dist)]) == 0
+    zip_v1 = dist / "demo-2026.10.0.zip"
+    assert "UNSIGNED" in capsys.readouterr().out
 
-
-def test_list_enable_verify_disable(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["packs"]) == 0
-    assert "not trusted" in capsys.readouterr().out
-
-    assert main(["packs", "enable", "demo"]) == 0
+    assert main(["pack", "inspect", str(zip_v1)]) == 0
     out = capsys.readouterr().out
-    assert "pinned manifest sha256" in out and "ships code for commands: hello" in out
-    assert (env / "cfg" / "packs.yaml").stat().st_mode & 0o777 == 0o600
+    assert "pack_id       : demo" in out and "rules/DEMO-001.yaml" in out
 
-    assert main(["packs", "verify", "demo"]) == 0
-    assert "active" in capsys.readouterr().out
+    assert main(["pack", "verify", str(zip_v1)]) == 1  # unsigned
+    assert "unsigned" in capsys.readouterr().err
+    assert main(["pack", "verify", str(zip_v1), "--allow-unsigned"]) == 0
 
-    assert main(["packs", "disable", "demo"]) == 0
-    assert main(["packs", "verify", "demo"]) == 1
-
-
-def test_assess_uses_enabled_pack(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    src = _assessment(env)
-    assert main(["assess", str(src)]) == 3  # pack not enabled -> POLICY_BLOCKED
-    assert "no enabled pack named 'demo'" in capsys.readouterr().out
-
-    main(["packs", "enable", "demo"])
+    src_in = _assessment(env)
+    assert main(["assess", str(src_in)]) == 3  # not installed -> POLICY_BLOCKED
     capsys.readouterr()
-    assert main(["assess", str(src)]) == 0
-    out = capsys.readouterr().out
-    assert "DEMO-001" in out and "packs: demo 0.1.0 [free, user-enabled]" in out
 
-    assert main(["assess", str(src), "--no-packs"]) == 0
+    assert main(["pack", "install", str(zip_v1), "--allow-unsigned"]) == 0
+    assert "Added:\n  - DEMO-001" in capsys.readouterr().out
+    assert main(["pack", "list"]) == 0
+    assert "operator-approved" in capsys.readouterr().out
+
+    assert main(["assess", str(src_in)]) == 0
+    out = capsys.readouterr().out
+    assert "DEMO-001" in out and "packs: demo 2026.10.0 [public, operator-approved]" in out
+    assert main(["assess", str(src_in), "--no-packs"]) == 0
     out = capsys.readouterr().out
     assert "DEMO-001" not in out and "extensions: IGNORED" in out
 
+    # v2 lowers severity: diff flags it, install refuses without approval
+    (src / "rules" / "DEMO-001.yaml").write_text(_RULE.replace("high", "low"))
+    assert main(["pack", "build", str(src), "--out", str(dist), "--version", "2026.11.0"]) == 0
+    zip_v2 = dist / "demo-2026.11.0.zip"
+    capsys.readouterr()
+    assert main(["pack", "diff", str(zip_v1), str(zip_v2)]) == 1
+    assert "severity lowered high -> low" in capsys.readouterr().out
+    assert main(["pack", "install", str(zip_v2), "--allow-unsigned"]) == 1
+    assert "NOT installed" in capsys.readouterr().err
+    assert main(["pack", "install", str(zip_v2), "--allow-unsigned", "--approve-sensitive"]) == 0
 
-def test_tampered_enabled_pack_stops_assess(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    main(["packs", "enable", "demo"])
-    (env / "skos_pack_demo" / "cli.py").write_text("print('changed')\n")
+    assert main(["pack", "rollback", "demo", "2026.10.0"]) == 0
+    assert "rolled back demo to 2026.10.0" in capsys.readouterr().out
+    assert main(["pack", "remove", "demo"]) == 0
+    assert main(["pack", "list"]) == 0
+    assert "no packs installed" in capsys.readouterr().out
+
+    audit = (env / "home" / "audit.jsonl").read_text().splitlines()
+    assert [json.loads(line)["action"] for line in audit][-2:] == ["rollback", "remove"]
+
+
+def test_tampered_install_stops_assess(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main(["pack", "build", str(env / "src"), "--out", str(env / "dist")])
+    main(["pack", "install", str(env / "dist" / "demo-2026.10.0.zip"), "--allow-unsigned"])
+    rule = env / "home" / "versions" / "demo" / "2026.10.0" / "rules" / "DEMO-001.yaml"
+    rule.write_text(_RULE.replace("high", "low"))
     capsys.readouterr()
     assert main(["assess", str(_assessment(env))]) == 2
     assert "pack error" in capsys.readouterr().err
-
-
-def test_pack_command_dispatch(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["demo", "hello", "x"]) == 2  # not enabled yet
-    main(["packs", "enable", "demo"])
-    capsys.readouterr()
-    assert main(["demo", "hello", "x"]) == 0
-    assert "hello from demo x" in capsys.readouterr().out
-    assert main(["demo", "nope"]) == 2
-    assert "has no command 'nope'" in capsys.readouterr().err
+    assert main(["pack", "list"]) == 1

@@ -11,13 +11,14 @@ not prevent copying (docs/pack-schema.md, "Commercial tier").
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
-from app.packs.config import config_dir
 from app.packs.signing import (
     LICENSE_DOMAIN,
     SignatureError,
@@ -27,6 +28,12 @@ from app.packs.signing import (
 )
 
 _MAX_LICENSE_BYTES = 16_000
+
+
+def config_dir() -> Path:
+    """``$SKOS_CONFIG_DIR`` or ``~/.config/skos``; licenses live in ``licenses/``."""
+    override = os.environ.get("SKOS_CONFIG_DIR")
+    return Path(override) if override else Path.home() / ".config" / "skos"
 
 
 class LicenseFile(BaseModel):

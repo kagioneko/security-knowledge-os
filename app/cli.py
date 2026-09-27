@@ -9,9 +9,11 @@
     skos assess FILE --no-packs      # core rules only; extensions blocks are ignored
     skos report FILE                 # pretty-print a saved report JSON
     skos test [--db PATH]            # run the assessment fixtures as a smoke test
-    skos packs [list]                # installed service packs and their trust state
-    skos packs enable|disable|verify NAME
-    skos <pack> <command> [ARGS...]  # a trusted pack's own command
+    skos pack build|inspect|verify|diff|install|list|rollback|remove ...
+                                     # Update Packs (see app/pack_cli.py)
+    skos scan mcp CONFIG [--out DIR] [--assess]
+                                     # one assessment input per MCP server in a
+                                     # .mcp.json / claude_desktop_config.json
 
 Exit codes: 0 ok, 1 findings failure with --strict, 2 usage/input error,
 3 POLICY_BLOCKED (an assessment or reindex was stopped by policy).
@@ -21,27 +23,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from pydantic import ValidationError
 
+from app.adapters.mcp_config import ConfigError, assessment_yaml, scan_config
 from app.config import Settings
 from app.ingestion.parser import FrontMatterError, read_text_bounded, safe_load_bounded
 from app.ingestion.validator import Level, iter_knowledge_files, validate_tree
 from app.llm.factory import get_client
 from app.models.assessment import AssessmentInput, OverallStatus
 from app.models.report import AssessmentReport, ReportStatus
-from app.packs.commands import PackCommandError, run_command
-from app.packs.config import PackConfigError, load_config, save_config
-from app.packs.loader import (
-    LoadedPack,
-    PackLoadError,
-    PackState,
-    PackStatus,
-    apply_packs,
-    inspect_all,
-)
+from app.pack_cli import PACK_ERRORS
+from app.pack_cli import register as register_pack_commands
+from app.packs.loader import PackLoadError, load_with_packs
 from app.policy.safe_test import (
     SafeTestLoadError,
     load_safe_test_templates,
@@ -231,12 +228,12 @@ def _cmd_reindex(args: argparse.Namespace, s: Settings) -> int:
 def _run(
     inp: AssessmentInput, s: Settings, db: Path | None, *, packs: bool | None = None
 ) -> AssessmentReport:
-    """``packs``: True = core + trusted packs (``skos assess``), False =
+    """``packs``: True = core + installed packs (``skos assess``), False =
     core only with extensions ignored (``--no-packs``), None = core only
     (``skos test``; an extensions block is then rejected)."""
     catalogue = load_rules(s.rules_root)
     if packs:
-        catalogue = apply_packs(catalogue, inspect_all())
+        catalogue, _ = load_with_packs(catalogue)
     elif packs is False:
         catalogue.ignore_extensions = True
     safe_tests = load_safe_test_templates(s.safe_tests_root)
@@ -316,71 +313,38 @@ def _cmd_test(args: argparse.Namespace, s: Settings) -> int:
     return 1 if failures else 0
 
 
-def _pack_row(st: PackStatus) -> str:
-    m = st.manifest
-    name = m.name if m else st.label
-    version = m.version if m else "-"
-    tier = f"[{m.tier.value}]" if m else "-"
-    return f"  {name:12} {version:10} {tier:13} {st.state.value:9} {st.reason}  ({st.source})"
-
-
-def _find(
-    inspected: list[tuple[PackStatus, LoadedPack | None]], name: str
-) -> list[PackStatus]:
-    return [
-        st for st, _ in inspected
-        if (st.manifest.name if st.manifest else st.label) == name
-    ]
-
-
-def _cmd_packs(args: argparse.Namespace, s: Settings) -> int:
-    inspected = inspect_all()
-    if args.action == "list":
-        if not inspected:
-            print("no service packs installed")
-            return 0
-        for st, _ in inspected:
-            print(_pack_row(st))
-        return 1 if any(st.state is PackState.ERROR for st, _ in inspected) else 0
-
-    if not args.name:
-        print(f"skos packs {args.action}: a pack name is required", file=sys.stderr)
-        return 2
-    matches = _find(inspected, args.name)
-    if len(matches) != 1:
-        found = "no pack" if not matches else f"{len(matches)} packs"
-        print(f"{found} named {args.name!r} installed", file=sys.stderr)
-        return 2
-    st = matches[0]
-    config = load_config()
-
-    if args.action == "verify":
-        print(_pack_row(st))
-        if st.manifest_sha256:
-            print(f"  manifest sha256: {st.manifest_sha256}")
-        return 0 if st.state is PackState.ACTIVE else 1
-
-    if args.action == "disable":
-        config.enabled.pop(args.name, None)
-        if args.name not in config.disabled:
-            config.disabled.append(args.name)
-        print(f"disabled {args.name!r} ({save_config(config)})")
-        return 0
-
-    # enable
-    if st.manifest is None or st.manifest_sha256 is None:
-        print(f"cannot enable {args.name!r}: {st.reason}", file=sys.stderr)
-        return 1
-    m = st.manifest
-    config.disabled = [n for n in config.disabled if n != args.name]
-    config.enabled[args.name] = st.manifest_sha256
-    path = save_config(config)
-    print(f"enabled {m.name} {m.version} [{m.tier.value}] publisher={m.publisher}")
-    print(f"  pinned manifest sha256: {st.manifest_sha256}")
-    if m.commands:
-        print(f"  NOTE: this pack ships code for commands: {', '.join(sorted(m.commands))}")
-    print(f"  ({path})")
-    return 0
+def _cmd_scan_mcp(args: argparse.Namespace, s: Settings) -> int:
+    scans = scan_config(args.config)
+    args.out.mkdir(mode=0o700, parents=True, exist_ok=True)
+    worst = 0
+    for scan in scans:
+        text = assessment_yaml(scan, args.config.name)
+        path = args.out / f"{scan.name}.yaml"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        unknown = scan.unknown()
+        line = f"  {scan.name:28} {path}  ({len(unknown)} unknown)"
+        if args.assess:
+            report = _run(
+                AssessmentInput.model_validate(safe_load_bounded(
+                    text, max_bytes=_MAX_ASSESSMENT_YAML_BYTES, what="generated input"
+                )),
+                s, None, packs=True,
+            )
+            if report.result is None:
+                line += f"  -> {report.status.value}"
+                worst = max(worst, 1)
+            else:
+                groups = ", ".join(
+                    f"{g.group}={g.worst_status.value if g.worst_status else '-'}"
+                    for g in report.result.group_summaries
+                )
+                line += f"  -> {report.result.overall_status.value}  [{groups}]"
+                if report.result.overall_status is OverallStatus.FAIL:
+                    worst = max(worst, 1)
+        print(line)
+    return worst if args.strict else 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -428,51 +392,35 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", type=Path)
     p.set_defaults(func=_cmd_test)
 
-    p = sub.add_parser("packs", help="list and manage installed service packs")
+    register_pack_commands(sub)
+
+    p = sub.add_parser("scan", help="derive assessment inputs from real configuration")
+    scan_sub = p.add_subparsers(dest="scan_kind", required=True)
+    p = scan_sub.add_parser("mcp", help="MCP client config (.mcp.json etc.)")
+    p.add_argument("config", type=Path)
+    p.add_argument("--out", type=Path, default=Path("mcp-assessments"))
     p.add_argument(
-        "action", nargs="?", default="list", choices=["list", "enable", "disable", "verify"]
+        "--assess", action="store_true", help="also assess each server (needs the mcp pack)"
     )
-    p.add_argument("name", nargs="?")
-    p.set_defaults(func=_cmd_packs)
+    p.add_argument("--strict", action="store_true", help="exit 1 if any server FAILs")
+    p.set_defaults(func=_cmd_scan_mcp)
 
     return parser
 
 
-# Every subcommand _build_parser() defines; anything else in argv[0] is looked
-# up as a pack name (tests/unit/test_packs_cli.py keeps the two in sync).
-BUILTIN_COMMANDS = frozenset(
-    {
-        "validate-knowledge", "validate-rules", "validate-safe-tests", "ingest", "reindex",
-        "assess", "report", "test", "packs",
-    }
-)
-
-
-def _run_pack_command(argv: list[str]) -> int:
-    name, rest = argv[0], argv[1:]
-    matches = [st for st in _find(inspect_all(), name) if st.state is PackState.ACTIVE]
-    if len(matches) != 1:
-        print(f"unknown command or inactive pack: {name!r} (see `skos packs`)", file=sys.stderr)
-        return 2
-    if not rest:
-        m = matches[0].manifest
-        assert m is not None
-        print(f"usage: skos {name} <command> - commands: {', '.join(sorted(m.commands)) or 'none'}")
-        return 2
-    return run_command(matches[0], rest[0], rest[1:])
-
-
 def main(argv: list[str] | None = None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
-    parser = _build_parser()
+    args = _build_parser().parse_args(argv)
+    settings = Settings.from_env()
     try:
-        if argv and not argv[0].startswith("-") and argv[0] not in BUILTIN_COMMANDS:
-            return _run_pack_command(argv)
-        args = parser.parse_args(argv)
-        settings = Settings.from_env()
         return int(args.func(args, settings))
-    except (PackLoadError, PackConfigError, PackCommandError) as exc:
+    except PackLoadError as exc:
         print(f"pack error: {exc}", file=sys.stderr)
+        return 2
+    except PACK_ERRORS as exc:
+        print(f"pack error: {exc}", file=sys.stderr)
+        return 1
+    except ConfigError as exc:
+        print(f"invalid MCP config: {exc}", file=sys.stderr)
         return 2
     except (RuleLoadError, SafeTestLoadError) as exc:
         print(f"catalogue error: {exc}", file=sys.stderr)
