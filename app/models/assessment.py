@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from app.models._credential_shapes import reject_credential_shapes, reject_non_identifier_shapes
 from app.models.pack import AppliedPack, GroupSummary, SkippedPack
@@ -47,14 +47,24 @@ _Text = Annotated[str, Field(max_length=50_000), AfterValidator(reject_credentia
 # type-checked against the pack's declared facts in app/packs/extensions.py
 # (this model cannot know which packs are installed).
 _PackName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9]{1,15}$")]
-_ExtKey = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,47}$")]
+EXTENSION_KEY_PATTERN = r"^[a-z][a-z0-9_]{0,47}$"
+# Keys are echoed in validation errors, so they get the same credential
+# screening as every other identifier-shaped field (Codex re-review F21).
+_ExtKey = Annotated[
+    str,
+    Field(pattern=EXTENSION_KEY_PATTERN),
+    AfterValidator(reject_credential_shapes),
+    AfterValidator(reject_non_identifier_shapes),
+]
 _ExtText = Annotated[
     str,
     Field(max_length=2_000),
     AfterValidator(reject_credential_shapes),
     AfterValidator(reject_non_identifier_shapes),
 ]
-ExtensionValue = bool | _ExtText | list[_Short] | None
+# StrictBool: 0/1 must not silently become false/true before the pack's
+# fact types are checked (Codex re-review F22).
+ExtensionValue = StrictBool | _ExtText | list[_Short] | None
 
 # Codex cross-review finding #3 (round 3, 2026-09-12): the per-field bounds
 # above cap any ONE field, but nothing capped the serialized size of the

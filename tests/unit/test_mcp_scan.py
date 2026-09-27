@@ -54,11 +54,12 @@ def test_stdio_servers(tmp_path: Path) -> None:
     assert facts["fetch"]["third_party"] is False
     assert facts["fetch"]["can_send"] is True
 
-    assert facts["ref"]["secrets_in_config"] is False  # an env reference, not a literal
+    # an env reference is not a literal secret - and absence is never claimed
+    assert facts["ref"]["secrets_in_config"] is None
     assert facts["ref"]["token_scope"] is None
 
     assert facts["box"]["sandboxed"] is True and facts["box"]["version_pinned"] is True
-    assert facts["local"]["version_pinned"] is None and facts["local"]["token_scope"] == "none"
+    assert facts["local"]["version_pinned"] is None and facts["local"]["token_scope"] is None
 
 
 def test_remote_servers(tmp_path: Path) -> None:
@@ -222,3 +223,65 @@ def test_huge_integer_json_is_a_config_error(tmp_path: Path) -> None:
     path.write_text('{"mcpServers": {"s": {"command": "x", "n": ' + "9" * 5000 + "}}}")
     with pytest.raises(ConfigError):
         scan_config(path)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["@modelcontextprotocol/server-memory@npm:unrelated-server@1.0.0"],
+        ["github:modelcontextprotocol/servers"],
+        ["./local-server"],
+    ],
+)
+def test_f08_aliases_and_sources_are_not_identified(tmp_path: Path, args: list[str]) -> None:
+    facts = _scan(tmp_path, {"mcpServers": {"s": {"command": "npx", "args": args}}})
+    assert facts["s"]["third_party"] is None and facts["s"]["shell_exec"] is None
+    assert facts["s"]["version_pinned"] is None
+
+
+def test_f08_python_direct_references_are_not_identified(tmp_path: Path) -> None:
+    facts = _scan(tmp_path, {"mcpServers": {"s": {
+        "command": "uvx", "args": ["mcp-server-time @ https://example.invalid/other.whl"]}}})
+    assert facts["s"]["third_party"] is None and facts["s"]["can_send"] is None
+
+
+@pytest.mark.parametrize(
+    ("args", "sandboxed", "pinned"),
+    [
+        (["run", "-v/:/host", "img:latest"], False, False),
+        (["run", "--annotation", "a=b@sha256:" + "a" * 64, "img:latest"], None, None),
+        (["run", "-it", "--rm", "img@sha256:" + "c" * 64], True, True),
+        (["run", "-x", "img"], None, None),
+    ],
+)
+def test_f09_attached_and_unknown_container_options(
+    tmp_path: Path, args: list[str], sandboxed: bool | None, pinned: bool | None
+) -> None:
+    facts = _scan(tmp_path, {"mcpServers": {"c": {"command": "docker", "args": args}}})
+    assert facts["c"]["sandboxed"] is sandboxed
+    assert facts["c"]["version_pinned"] is pinned
+
+
+def test_f10_double_slash_is_root(tmp_path: Path) -> None:
+    facts = _scan(tmp_path, {"mcpServers": {"fs": {
+        "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "//"]}}})
+    assert facts["fs"]["fs_scope"] == "root"
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        {"command": "docker", "args": ["run", "-e", "API_KEY=" + FAKE_KEY, "image"]},
+        {"command": "node", "args": ["s.js"],
+         "env": {"DATABASE_URL": "postgres://user:" + FAKE_KEY + "@db.example/x"}},
+        {"command": "node", "args": ["s.js", "--db=postgres://u:" + FAKE_KEY + "@h/db"]},
+    ],
+)
+def test_f19_embedded_credentials_are_found(tmp_path: Path, server: dict[str, Any]) -> None:
+    facts = _scan(tmp_path, {"mcpServers": {"s": server}})
+    assert facts["s"]["secrets_in_config"] is True
+
+
+def test_f19_absence_is_never_claimed(tmp_path: Path) -> None:
+    facts = _scan(tmp_path, {"mcpServers": {"s": {"command": "node", "args": ["s.js"]}}})
+    assert facts["s"]["secrets_in_config"] is None and facts["s"]["token_scope"] is None

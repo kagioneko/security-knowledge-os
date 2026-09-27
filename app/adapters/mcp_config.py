@@ -10,9 +10,11 @@ Authorization header does not prove the server requires authentication, and
 connecting via 127.0.0.1 does not prove the server listens only there.
 
 Secrets: environment values, header values, URL userinfo/query and
-arguments are inspected only to decide ``secrets_in_config`` (true/false).
-No value from the configuration - secret or not, other than server names -
-is ever written, printed, or placed in an error message.
+arguments are inspected only to decide ``secrets_in_config``. Detection can
+prove presence, never absence, so the fact is ``true`` when a credential is
+found and ``null`` otherwise (likewise ``token_scope`` is never claimed to be
+"none"). No value from the configuration - secret or not, other than server
+names - is ever written, printed, or placed in an error message.
 """
 
 from __future__ import annotations
@@ -52,10 +54,21 @@ _SECRET_ARG = (
     r"(?i)^--?(api[-_]?key|token|secret|password|auth)(=|$)"
     r"|^(sk-|ghp_|gho_|github_pat_|xox[bpas]-|AKIA|AIza)"
 )
-_NPM_SPEC = r"^(?P<name>(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*)(@(?P<version>.+))?$"
+# Plain registry specs only. Aliases (`name@npm:other`), URLs, git and path
+# specs change what is actually installed, so they are not identified at all
+# (Codex re-review F08).
+_NPM_SPEC = (
+    r"^(?P<name>(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*)"
+    r"(@(?P<version>\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?|[a-z][a-z0-9-]*|[\^~]\S+))?$"
+)
 _EXACT_SEMVER = r"^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$"
-_PY_SPEC = r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(\[[A-Za-z0-9,._-]+\])?(?P<rest>.*)$"
+_PY_SPEC = (
+    r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(\[[A-Za-z0-9,._-]+\])?"
+    r"(?P<rest>((==|>=|<=|~=|!=|>|<)\d[0-9.*]*)(,(==|>=|<=|~=|!=|>|<)\d[0-9.*]*)*)?$"
+)
 _EXACT_PY = r"^==\d+(\.\d+)*$"
+_ASSIGNMENT = r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$"
+_URL_USERINFO = r"[A-Za-z][A-Za-z0-9+.-]*://[^/@\s]+:[^/@\s]*@"
 _DIGEST_IMAGE = r"^[^@\s]+@sha256:[0-9a-f]{64}$"
 
 
@@ -100,6 +113,11 @@ _VALUE_FLAGS = {
 
 
 _HOST_NAMESPACE_FLAGS = ("--network", "--net", "--pid", "--ipc", "--uts", "--userns")
+# docker/podman `run` options that take no value.
+_BOOL_FLAGS = {
+    "-i", "-t", "-d", "-q", "--rm", "--interactive", "--tty", "--detach", "--init",
+    "--read-only", "--privileged", "--quiet", "--no-healthcheck",
+}
 
 
 class ConfigError(ValueError):
@@ -151,6 +169,16 @@ def _is_literal_secret(name: str, value: object) -> bool:
         and re.search(_SECRET_NAME, name) is not None
         and re.fullmatch(_ENV_REFERENCE, value.strip()) is None
     )
+
+
+def _arg_carries_secret(arg: str) -> bool:
+    """A launch argument that visibly carries a credential: a known flag or
+    token prefix, NAME=VALUE with a credential-like NAME (docker -e, env
+    assignments), or a URL with userinfo."""
+    if re.search(_SECRET_ARG, arg) or re.search(_URL_USERINFO, arg):
+        return True
+    m = re.fullmatch(_ASSIGNMENT, arg)
+    return m is not None and _is_literal_secret(m.group("name"), m.group("value"))
 
 
 def _str_list(value: object, what: str) -> list[str]:
@@ -213,7 +241,8 @@ def _identity(ecosystem: str, spec: str) -> tuple[str | None, bool | None]:
     m = re.fullmatch(_PY_SPEC, spec)
     if m is None:
         return None, None
-    return m.group("name").lower(), re.fullmatch(_EXACT_PY, m.group("rest")) is not None
+    rest = m.group("rest") or ""
+    return m.group("name").lower(), re.fullmatch(_EXACT_PY, rest) is not None
 
 
 def _container(args: list[str]) -> tuple[bool | None, bool | None, list[str]]:
@@ -222,18 +251,40 @@ def _container(args: list[str]) -> tuple[bool | None, bool | None, list[str]]:
         return None, None, ["container command other than `run`: not analysed"]
     opts: list[tuple[str, str | None]] = []
     image: str | None = None
+    unparsed: tuple[bool | None, bool | None, list[str]] = (
+        None, None, ["container options not fully understood: not analysed"]
+    )
     i = 1
     while i < len(args):
         arg = args[i]
-        if arg.startswith("-"):
-            if "=" in arg:
-                flag, value = arg.split("=", 1)
-                opts.append((flag, value))
-            elif arg in _VALUE_FLAGS:
-                opts.append((arg, args[i + 1] if i + 1 < len(args) else None))
-                i += 1
+        if arg.startswith("--"):
+            flag, eq, value = arg.partition("=")
+            if flag in _VALUE_FLAGS:
+                if eq:
+                    opts.append((flag, value))
+                else:
+                    opts.append((flag, args[i + 1] if i + 1 < len(args) else None))
+                    i += 1
+            elif flag in _BOOL_FLAGS and not eq:
+                opts.append((flag, None))
             else:
-                opts.append((arg, None))
+                # An option we do not know may take a value; guessing would
+                # misread the image or hide a mount (Codex re-review F09).
+                return unparsed
+            i += 1
+            continue
+        if arg.startswith("-") and len(arg) > 1:
+            short = arg[:2]
+            if short in _VALUE_FLAGS:
+                if len(arg) > 2:  # attached value: -v/:/host, -eKEY=V
+                    opts.append((short, arg[2:].lstrip("=")))
+                else:
+                    opts.append((short, args[i + 1] if i + 1 < len(args) else None))
+                    i += 1
+            elif all(f"-{c}" in _BOOL_FLAGS for c in arg[1:]):
+                opts += [(f"-{c}", None) for c in arg[1:]]
+            else:
+                return unparsed
             i += 1
             continue
         image = arg
@@ -286,7 +337,9 @@ def _fs_scope(paths: list[str]) -> str | None:
                 break
         if "$" in p or not p.startswith("/"):
             return None  # relative or unexpanded: depends on the client's cwd/env
-        norm = posixpath.normpath(p)
+        # normpath keeps a leading "//" (POSIX leaves it implementation-defined);
+        # on Linux it is "/" (Codex re-review F10).
+        norm = posixpath.normpath(re.sub(r"^/+", "/", p))
         if norm == "/":
             scopes.append("root")
         elif (
@@ -372,7 +425,7 @@ def scan_server(label: str, cfg: object, taken: set[str]) -> ServerScan:
                     positional = [a for a in rest if not a.startswith("-")]
                     facts["fs_scope"] = _fs_scope(positional) if profile.touches_fs else "none"
         for arg in args:
-            if re.search(_SECRET_ARG, arg):
+            if _arg_carries_secret(arg):
                 secret_seen = token_seen = True
     else:
         raise ConfigError(f"server {name!r} has neither 'command' nor 'url'")
@@ -383,8 +436,14 @@ def scan_server(label: str, cfg: object, taken: set[str]) -> ServerScan:
             token_seen = True
             if _is_literal_secret(ename, evalue):
                 secret_seen = True
-    facts["secrets_in_config"] = secret_seen
-    facts["token_scope"] = None if token_seen else "none"
+        if isinstance(evalue, str) and re.search(_URL_USERINFO, evalue):
+            secret_seen = token_seen = True  # e.g. a database URL with user:password
+    # Presence can be proven, absence cannot (Codex re-review F19): never
+    # claim "no secret" or "no token".
+    facts["secrets_in_config"] = True if secret_seen else None
+    facts["token_scope"] = None
+    if not token_seen:
+        notes.append("no credential recognised in the config (this does not prove there is none)")
     return ServerScan(name, package, facts, notes)
 
 

@@ -17,6 +17,9 @@ from app.reviewer.evidence import EVIDENCE_KEYS
 from app.reviewer.facts import FACT_SPEC, FactType
 
 PACK_NAME_PATTERN = r"^[a-z][a-z0-9]{1,15}$"
+# Must equal app.models.assessment.EXTENSION_KEY_PATTERN (a test keeps them in
+# sync; importing it here would create an import cycle).
+_EXTENSION_KEY = r"^[a-z][a-z0-9_]{0,47}$"
 
 
 def is_pack_name(value: str) -> bool:
@@ -168,10 +171,15 @@ class Vocabulary:
 
 
 def _check_new_name(name: str, prefix: str, taken: set[str], *, what: str) -> None:
-    if not name.startswith(prefix) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name):
-        raise VocabularyError(f"{what} {name!r} must match '{prefix}<lowercase name>'")
-    if len(name) == len(prefix):
-        raise VocabularyError(f"{what} {name!r} has an empty name after the prefix")
+    # The part after the prefix is the key in `extensions.<pack>.<key>`, so it
+    # must satisfy exactly the input's key rule - otherwise a fact could be
+    # declared that no input can ever supply (Codex re-review F23).
+    if not name.startswith(prefix) or not re.fullmatch(
+        _EXTENSION_KEY, name[len(prefix) :]
+    ):
+        raise VocabularyError(
+            f"{what} {name!r} must be '{prefix}<key>' with <key> matching {_EXTENSION_KEY}"
+        )
     if name in taken:
         raise VocabularyError(f"{what} {name!r} already exists and cannot be redefined")
 

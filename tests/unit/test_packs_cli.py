@@ -125,3 +125,13 @@ def test_tampered_install_stops_assess(env: Path, capsys: pytest.CaptureFixture[
     assert main(["assess", str(_assessment(env))]) == 2
     assert "pack error" in capsys.readouterr().err
     assert main(["pack", "list"]) == 1
+
+
+def test_f20_list_shows_orphaned_active_packs(env: Path,
+                                              capsys: pytest.CaptureFixture[str]) -> None:
+    main(["pack", "build", str(env / "src"), "--out", str(env / "dist")])
+    main(["pack", "install", str(env / "dist" / "demo-2026.10.0.zip"), "--allow-unsigned"])
+    (env / "home" / "installed.json").write_text("{}")
+    capsys.readouterr()
+    assert main(["pack", "list"]) == 1
+    assert "missing from installed.json" in capsys.readouterr().out

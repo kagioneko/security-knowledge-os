@@ -696,7 +696,8 @@ def test_f01_check_logic_change_is_sensitive(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("signed", "match"),
-    [(True, "do not match the recorded installation"), (False, "unsigned")],
+    [(True, "do not match the recorded installation"),
+     (False, "do not match the recorded installation")],
 )
 def test_f02_replayed_older_version_is_detected(
     tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
@@ -813,3 +814,110 @@ def _raw_zip_deflated(entries: list[tuple[str, bytes]]) -> bytes:
         for name, payload in entries:
             zf.writestr(name, payload)
     return buf.getvalue()
+
+
+def test_f02_replay_is_detected_before_the_license_check(
+    tmp_path: Path, home: Path, cfg_dir: Path, key: Ed25519PrivateKey,
+    trusted: dict[str, TrustedKey], catalogue: RuleCatalogue,
+) -> None:
+    import shutil
+
+    _license(cfg_dir, key)
+    _install(_zip(tmp_path / "a", key, manifest=_manifest(classification="commercial")),
+             catalogue, trusted)
+    _install(_zip(tmp_path / "b", key, manifest=_manifest(version="2026.11.0")), catalogue,
+             trusted)
+    new_dir = home / "versions" / "demo" / "2026.11.0"
+    shutil.rmtree(new_dir)
+    shutil.copytree(home / "versions" / "demo" / "2026.10.0", new_dir)
+    (cfg_dir / "licenses" / "demo.lic").unlink()  # the replayed commercial copy is unlicensed
+    with pytest.raises(PackLoadError, match="do not match the recorded installation"):
+        load_with_packs(catalogue, trusted=trusted, today=TODAY)
+
+
+def test_f05_audit_failure_after_commit_is_reported_as_such(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_audit = store_mod.audit
+
+    def flaky(home_: Path, action: str, **fields: Any) -> None:
+        if fields.get("install_result") == "ok":
+            raise OSError("disk full")
+        real_audit(home_, action, **fields)
+
+    monkeypatch.setattr(store_mod, "audit", flaky)
+    with pytest.raises(store_mod.AuditIncompleteError, match="installed and activated"):
+        _install(_zip(tmp_path, key), catalogue, trusted)
+    assert load_state(home).packs["demo"].version == "2026.10.0"
+
+
+def test_f17_signed_install_cannot_fall_back_to_operator_approval(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    _install(_zip(tmp_path, key), catalogue, trusted)
+    (home / "versions" / "demo" / "2026.10.0" / "signature.sig").unlink()
+    with pytest.raises(PackLoadError, match="unsigned"):
+        load_with_packs(catalogue, trusted=trusted, today=TODAY)
+
+
+def test_f17_revoked_key_does_not_degrade_to_operator_approval(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    _install(_zip(tmp_path, key), catalogue, trusted)
+    with pytest.raises(PackLoadError):
+        load_with_packs(catalogue, trusted={}, today=TODAY)
+
+
+def test_f18_added_required_evidence_is_sensitive(tmp_path: Path) -> None:
+    old = _rules(_RULE, tmp_path / "old")
+    new = _rules(_RULE.replace("required_evidence: []",
+                               "required_evidence: [demo_launch_command]"), tmp_path / "new")
+    assert any("required_evidence added" in s for s in diff_rules(old, new).sensitive)
+
+
+def test_f21_credential_shaped_extension_keys_are_rejected() -> None:
+    with pytest.raises(ValueError):
+        AssessmentInput.model_validate(
+            {"name": "t", "extensions": {"demo": {"ghp_" + "a" * 36: True}}}
+        )
+
+
+def test_f21_undeclared_keys_are_not_echoed(demo_catalogue: RuleCatalogue,
+                                            settings: Settings) -> None:
+    report = build_report(_input(some_undeclared_key=True), demo_catalogue, settings=settings)
+    assert report.policy_decision is not None
+    assert "some_undeclared_key" not in " ".join(report.policy_decision.reasons)
+
+
+@pytest.mark.parametrize("value", [0, 1])
+def test_f22_numbers_are_not_booleans(value: int) -> None:
+    with pytest.raises(ValueError):
+        _input(auth_required=value)
+
+
+def test_f23_fact_names_must_be_suppliable() -> None:
+    from app.models.assessment import EXTENSION_KEY_PATTERN
+    from app.reviewer import vocabulary
+
+    assert vocabulary._EXTENSION_KEY == EXTENSION_KEY_PATTERN
+    for bad in ("demo_1", "demo_" + "a" * 49):
+        with pytest.raises(VocabularyError):
+            CORE_VOCABULARY.extend("demo", facts={bad: FactType.BOOL}, fact_values={},
+                                   evidence={}, questions={})
+
+
+def test_f24_damaged_kept_version_is_repaired_on_reinstall(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    zip_a = _zip(tmp_path / "a", key)
+    _install(zip_a, catalogue, trusted)
+    _install(_v2(tmp_path / "b", key, _RULE), catalogue, trusted, approve_sensitive=True)
+    rule = home / "versions" / "demo" / "2026.10.0" / "rules" / "DEMO-001.yaml"
+    rule.write_text("damaged\n")
+    _install(zip_a, catalogue, trusted, approve_sensitive=True)
+    merged, _ = load_with_packs(catalogue, trusted=trusted, today=TODAY)
+    assert merged.packs_applied[0].version == "2026.10.0"

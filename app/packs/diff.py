@@ -1,9 +1,11 @@
 """What changes between two versions of a pack (Update Pack spec sections 21-22).
 
 A *sensitive* change may weaken detection: a lower severity, a removed human
-gate (``manual_review`` true -> false), fewer ``required_evidence`` keys, a
-removed rule, or any change to a rule's conditions/checks. Install and
-rollback never apply one without explicit approval.
+gate (``manual_review`` true -> false), any change to ``required_evidence``
+(fewer keys, or added keys - missing evidence is evaluated before checks, so
+it can mask a FAIL), a removed rule, or any change to a rule's
+conditions/checks. Install and rollback never apply one without explicit
+approval.
 """
 
 from __future__ import annotations
@@ -46,11 +48,16 @@ def _describe(old: RiskRule, new: RiskRule) -> tuple[list[str], list[str]]:
         changes.append(f"manual_review {old.manual_review} -> {new.manual_review}")
         if old.manual_review and not new.manual_review:
             sensitive.append("human gate removed (manual_review true -> false)")
-    dropped = sorted(set(old.required_evidence) - set(new.required_evidence))
     if set(old.required_evidence) != set(new.required_evidence):
         changes.append("required_evidence changed")
+        dropped = sorted(set(old.required_evidence) - set(new.required_evidence))
+        added = sorted(set(new.required_evidence) - set(old.required_evidence))
         if dropped:
             sensitive.append(f"required_evidence reduced (dropped {dropped})")
+        if added:
+            # Missing evidence is evaluated before checks, so a new
+            # requirement can turn a FAIL into UNKNOWN (Codex re-review F18).
+            sensitive.append(f"required_evidence added {added} (can mask a FAIL)")
     if old.conditions != new.conditions or old.checks != new.checks:
         changes.append("conditions/checks changed")
         # Whether a logic change weakens detection cannot be decided in

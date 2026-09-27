@@ -133,6 +133,23 @@ def audit(home: Path, action: str, **fields: Any) -> None:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+class AuditIncompleteError(PackStoreError):
+    """The change IS committed and active; only its final audit record failed."""
+
+
+def _final_audit(home: Path, action: str, done: str, **fields: Any) -> None:
+    """The last step of a committed change. If it fails the change stands
+    (the "committing" record already names it); say so plainly instead of
+    reporting the change as failed (Codex re-review F05)."""
+    try:
+        audit(home, action, **fields)
+    except OSError as exc:
+        raise AuditIncompleteError(
+            f"{done} successfully, but the final audit record could not be written "
+            f"({type(exc).__name__}); the preceding 'committing' record identifies the change"
+        ) from None
+
+
 @contextmanager
 def _locked(home: Path) -> Iterator[None]:
     _mkdir(home)
@@ -255,25 +272,36 @@ def verify_active(
                     Problem.INVALID, "installed but not active (run `skos pack rollback`)"
                 )
             files = read_pack_dir(target)
-            verified = verify_pack(
-                files,
-                trusted=TRUSTED_KEYS if trusted is None else trusted,
-                engine_version=ENGINE_VERSION,
-                today=today or date.today(),
-                approved=frozenset({record.manifest_sha256}),
-            )
-            m = verified.manifest
+            # Identity first, before any check that could end in a skippable
+            # outcome (an expired license must not mask a replayed version -
+            # Codex re-review F02).
+            m, sha = parse_manifest(files)
             if (
                 m.pack_id != pack_id
                 or m.version != record.version
                 or target.name != record.version
-                or verified.manifest_sha256 != record.manifest_sha256
+                or sha != record.manifest_sha256
                 or m.classification is not record.classification
             ):
                 raise PackVerifyError(
                     Problem.INVALID,
                     "active files do not match the recorded installation "
                     f"({record.version}, manifest {record.manifest_sha256[:12]}...)",
+                )
+            # Operator approval exists only for installs the operator approved;
+            # a signed install must keep verifying as signed (F17).
+            operator_approved = record.trust is PackTrust.OPERATOR_APPROVED
+            verified = verify_pack(
+                files,
+                trusted=TRUSTED_KEYS if trusted is None else trusted,
+                engine_version=ENGINE_VERSION,
+                today=today or date.today(),
+                approved=frozenset({record.manifest_sha256}) if operator_approved else frozenset(),
+            )
+            if verified.trust is not record.trust:
+                raise PackVerifyError(
+                    Problem.INVALID,
+                    f"trust changed from {record.trust.value} to {verified.trust.value}",
                 )
             out.append(ActivePack(pack_id, verified))
         except PackVerifyError as exc:
@@ -400,14 +428,24 @@ def install(
         state = load_state(home)
         versions = _mkdir(home / "versions" / m.pack_id)
         final = versions / m.version
+        reuse = False
         if final.exists():
-            existing = parse_manifest(read_pack_dir(final))[1]
-            if existing != plan.verified.manifest_sha256:
+            try:
+                existing_files = read_pack_dir(final)
+                existing_sha = parse_manifest(existing_files)[1]
+            except (PackVerifyError, OSError):
+                existing_sha = None
+                existing_files = {}
+            if existing_sha is not None and existing_sha != plan.verified.manifest_sha256:
                 audit(home, "install", install_result="rejected-version-reuse", **audit_base)
                 raise PackStoreError(
                     f"version {m.version} is already installed with different content; "
                     "a released version must never change"
                 )
+            # Reuse the kept copy only if it is byte-identical to what was just
+            # verified; otherwise it is repaired from the verified staging
+            # copy below (Codex re-review F24).
+            reuse = existing_files == plan.files
         staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=versions))
         try:
             for rel, data in plan.files.items():
@@ -429,7 +467,11 @@ def install(
                 if a.verified is not None and a.pack_id != m.pack_id
             ]
             _smoke_test(core, [*others, restaged])
-            if not final.exists():
+            if not reuse:
+                if final.exists():
+                    aside = versions / f".damaged-{m.version}-{secrets.token_hex(4)}"
+                    os.rename(final, aside)
+                    shutil.rmtree(aside, ignore_errors=True)
                 os.rename(staging, final)
         except BaseException as exc:
             shutil.rmtree(staging, ignore_errors=True)
@@ -460,7 +502,8 @@ def install(
             state.approved_manifests.append(plan.verified.manifest_sha256)
         audit(home, "install", install_result="committing", **audit_base)
         _switch(home, old_state, state, m.pack_id, m.version)
-        audit(home, "install", install_result="ok", **audit_base)
+        _final_audit(home, "install", "installed and activated", install_result="ok",
+                     **audit_base)
         return plan
 
 
@@ -527,8 +570,8 @@ def rollback(
         audit(home, "rollback", manifest_hash=verified.manifest_sha256,
               rollback_result="committing", **base)
         _switch(home, old_state, state, pack_id, version)
-        audit(home, "rollback", manifest_hash=verified.manifest_sha256, rollback_result="ok",
-              **base)
+        _final_audit(home, "rollback", "rolled back", manifest_hash=verified.manifest_sha256,
+                     rollback_result="ok", **base)
         return diff
 
 

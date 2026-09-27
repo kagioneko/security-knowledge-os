@@ -186,9 +186,11 @@ rename into `versions/` → atomic symlink swap → state + audit record.
 
 **Sensitive changes** (spec section 22) need `--approve-sensitive`, on install
 and on rollback alike: a severity lowered, `manual_review` removed (human
-gate), `required_evidence` reduced, a rule removed, **any change to a rule's
-conditions or checks** (whether a logic change weakens detection cannot be
-decided in general), or a `confidential` pack. `skos pack diff OLD NEW` shows
+gate), **any change to `required_evidence`** (fewer keys, or added keys -
+missing evidence is evaluated before checks and can mask a FAIL), a rule
+removed, **any change to a rule's conditions or checks** (whether a logic
+change weakens detection cannot be decided in general), or a `confidential`
+pack. `skos pack diff OLD NEW` shows
 them.
 
 The registry (`installed.json`) is written before the active link is switched;
@@ -196,8 +198,10 @@ if switching fails the previous registry is restored, and if the process dies
 in between, registry and link disagree and the pack is refused until
 `rollback`/`remove` (fail closed). On every load an active pack must match its
 registry record exactly - pack id, version, directory and manifest sha256 -
-and operator approval counts only for that recorded manifest, so an older
-version swapped into place is detected. An active link with no registry entry
+checked before anything else (so an expired license cannot mask a swap);
+operator approval counts only for a recorded operator-approved install, and a
+signed install must keep verifying as signed - removing its signature or
+revoking its key does not degrade it to "operator-approved". An active link with no registry entry
 (a lost or emptied `installed.json`) is an error, not "nothing installed".
 
 `skos pack rollback PACK_ID VERSION` re-verifies the kept version, diffs,
@@ -221,6 +225,19 @@ manifest hash and results - never file content or secrets.
 | `skos pack remove PACK_ID` | deactivate (history kept) |
 | `skos assess FILE [--no-packs \| --only-pack ID]` | assess with installed packs, without them, or with one pack's rules only (the report states the narrowed scope) |
 | `skos scan mcp CONFIG [--assess [--full]]` | assessment inputs for the `mcp` pack from an MCP client config; `--assess` evaluates the mcp rules only unless `--full` |
+
+## `skos scan mcp`
+
+Reads an MCP client config and writes one input per server. A fact is filled
+in only when the config establishes it: what the client sends or connects to
+is not taken as a server property (an auth header does not prove the server
+requires auth; a loopback URL does not prove a loopback-only bind), known
+server capabilities apply only to exact registry package identities (aliases,
+URLs, git and path specs stay unknown), and container options that are not
+fully understood leave isolation and pinning unknown. Credential detection
+proves presence, never absence: `secrets_in_config` is `true` or `null`, and
+`token_scope` is never claimed to be `none`. No config value other than
+server names is written, printed, or used in an error message.
 
 ## Scope of pack API 1
 

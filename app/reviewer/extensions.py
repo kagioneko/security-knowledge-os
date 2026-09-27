@@ -45,7 +45,9 @@ def extension_problems(inp: AssessmentInput, vocabulary: Vocabulary) -> list[str
                 continue
             fact_name = facts.get(key)
             if fact_name is None:
-                problems.append(f"extensions.{pack}.{key}: not declared by pack {pack!r}")
+                # The key itself is not echoed: undeclared input is not
+                # trusted to be safe to print (Codex re-review F21).
+                problems.append(f"extensions.{pack}: a key not declared by pack {pack!r}")
                 continue
             problem = _value_problem(fact_name, value, vocabulary)
             if problem:

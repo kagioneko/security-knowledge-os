@@ -130,21 +130,23 @@ def _cmd_install(args: argparse.Namespace, s: Settings) -> int:
 
 def _cmd_list(args: argparse.Namespace, s: Settings) -> int:
     state = load_state()
-    if not state.packs:
+    active = verify_active()  # also reconciles active/ against the registry
+    if not active:
         print("no packs installed")
         return 0
     failed = 0
-    for active in verify_active():
-        info = state.packs[active.pack_id]
-        if active.verified is not None:
-            v = active.verified
+    for a in active:
+        info = state.packs.get(a.pack_id)
+        version = info.version if info else "?"
+        if a.verified is not None and info is not None:
+            v = a.verified
             note = f" ({v.license_note})" if v.license_note else ""
-            print(f"  {active.pack_id:12} {info.version:11} [{info.classification.value}] "
+            print(f"  {a.pack_id:12} {version:11} [{info.classification.value}] "
                   f"{v.trust.value}  rules={len(v.catalogue.rules)}{note}")
         else:
             failed += 1
-            print(f"  {active.pack_id:12} {info.version:11} ERROR: {active.problem}")
-        if info.history:
+            print(f"  {a.pack_id:12} {version:11} ERROR: {a.problem}")
+        if info is not None and info.history:
             print(f"      previous versions: {', '.join(info.history)}")
     return 1 if failed else 0
 
