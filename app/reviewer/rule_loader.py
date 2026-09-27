@@ -49,6 +49,9 @@ class RuleCatalogue:
     # True when the operator chose `--no-packs`: extensions blocks in the
     # input are then ignored (and the report says so) instead of rejected.
     ignore_extensions: bool = False
+    # "pack:<id>" when the operator limited the assessment to one pack's
+    # rules (`--only-pack`); None = the full catalogue.
+    rule_scope: str | None = None
 
     def by_id(self, rule_id: str) -> RiskRule:
         for rule in self.rules:

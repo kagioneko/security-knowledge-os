@@ -655,3 +655,30 @@ def test_builtin_trust_store_is_well_formed() -> None:
     assert set(TRUSTED_KEYS) == {"kagioneko-2026-01"}
     key = TRUSTED_KEYS["kagioneko-2026-01"]
     assert key.publisher == "kagioneko" and len(key.public_key) == 32
+
+
+def test_undetermined_check_becomes_a_question(demo_catalogue: RuleCatalogue,
+                                               settings: Settings) -> None:
+    """The rule applies (transport=http) but its check fact is unknown: the
+    finding is UNKNOWN *and* the missing fact is asked for."""
+    report = build_report(_input(transport="http"), demo_catalogue, settings=settings)
+    assert report.result is not None
+    [finding] = [f for f in report.result.findings if f.risk_id == "DEMO-001"]
+    assert finding.status is FindingStatus.UNKNOWN
+    assert any(q.field == "demo_auth_required" for q in report.result.questions)
+    assert any(m.field == "demo_auth_required" for m in report.result.missing_information)
+
+
+def test_only_pack_scope_is_explicit(demo_catalogue: RuleCatalogue, settings: Settings) -> None:
+    from app.packs.loader import only_pack
+
+    scoped = only_pack(demo_catalogue, "demo")
+    assert [r.id for r in scoped.rules] == ["DEMO-001"]
+    report = build_report(_input(transport="http", auth_required=False), scoped,
+                          settings=settings)
+    assert report.result is not None
+    assert {f.risk_id for f in report.result.findings} == {"DEMO-001"}
+    assert report.result.rule_scope == "pack:demo"
+    assert "core rules were NOT evaluated" in render_text(report)
+    with pytest.raises(PackLoadError, match="no active pack"):
+        only_pack(demo_catalogue, "other")

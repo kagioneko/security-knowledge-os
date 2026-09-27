@@ -38,7 +38,7 @@ from app.models.assessment import AssessmentInput, OverallStatus
 from app.models.report import AssessmentReport, ReportStatus
 from app.pack_cli import PACK_ERRORS
 from app.pack_cli import register as register_pack_commands
-from app.packs.loader import PackLoadError, load_with_packs
+from app.packs.loader import PackLoadError, load_with_packs, only_pack
 from app.policy.safe_test import (
     SafeTestLoadError,
     load_safe_test_templates,
@@ -226,7 +226,12 @@ def _cmd_reindex(args: argparse.Namespace, s: Settings) -> int:
 
 
 def _run(
-    inp: AssessmentInput, s: Settings, db: Path | None, *, packs: bool | None = None
+    inp: AssessmentInput,
+    s: Settings,
+    db: Path | None,
+    *,
+    packs: bool | None = None,
+    pack_scope: str | None = None,
 ) -> AssessmentReport:
     """``packs``: True = core + installed packs (``skos assess``), False =
     core only with extensions ignored (``--no-packs``), None = core only
@@ -234,6 +239,8 @@ def _run(
     catalogue = load_rules(s.rules_root)
     if packs:
         catalogue, _ = load_with_packs(catalogue)
+        if pack_scope:
+            catalogue = only_pack(catalogue, pack_scope)
     elif packs is False:
         catalogue.ignore_extensions = True
     safe_tests = load_safe_test_templates(s.safe_tests_root)
@@ -252,7 +259,12 @@ def _cmd_assess(args: argparse.Namespace, s: Settings) -> int:
     if not args.file.exists():
         print(f"input not found: {args.file}", file=sys.stderr)
         return 2
-    report = _run(_load_input(args.file), s, args.db, packs=not args.no_packs)
+    if args.no_packs and args.only_pack:
+        print("--no-packs and --only-pack cannot be combined", file=sys.stderr)
+        return 2
+    report = _run(
+        _load_input(args.file), s, args.db, packs=not args.no_packs, pack_scope=args.only_pack
+    )
     if args.json:
         print(report.model_dump_json(indent=2))
     else:
@@ -330,7 +342,7 @@ def _cmd_scan_mcp(args: argparse.Namespace, s: Settings) -> int:
                 AssessmentInput.model_validate(safe_load_bounded(
                     text, max_bytes=_MAX_ASSESSMENT_YAML_BYTES, what="generated input"
                 )),
-                s, None, packs=True,
+                s, None, packs=True, pack_scope=None if args.full else "mcp",
             )
             if report.result is None:
                 line += f"  -> {report.status.value}"
@@ -382,6 +394,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-packs", action="store_true",
         help="assess with the core rules only; extensions blocks are ignored",
     )
+    p.add_argument(
+        "--only-pack", metavar="PACK_ID",
+        help="evaluate only this installed pack's rules (the report says so)",
+    )
     p.set_defaults(func=_cmd_assess)
 
     p = sub.add_parser("report")
@@ -403,6 +419,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--assess", action="store_true", help="also assess each server (needs the mcp pack)"
     )
     p.add_argument("--strict", action="store_true", help="exit 1 if any server FAILs")
+    p.add_argument(
+        "--full", action="store_true",
+        help="with --assess: also evaluate the core rules (default: the mcp pack's rules only,"
+        " since one server's config does not describe the whole agent system)",
+    )
     p.set_defaults(func=_cmd_scan_mcp)
 
     return parser

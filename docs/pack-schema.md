@@ -92,10 +92,10 @@ the declared values - a typo is a load error, not a rule that never fires.
 
 ### Questions
 
-As for core rules, a question is generated when a rule's trigger `conditions`
-cannot be decided; `questions` supplies its text. An undecidable `checks`
-clause yields an `UNKNOWN` finding; list the input a check needs in
-`required_evidence` to also get a question for it.
+A question is generated for every fact a rule needed but could not read -
+an undecidable trigger `condition`, or an undecidable `check` of a rule that
+applies (which also makes the finding `UNKNOWN`). `questions` supplies the
+text for a pack's facts; without one a generic prompt is used.
 
 ## Assessment input
 
@@ -204,8 +204,8 @@ manifest hash and results - never file content or secrets.
 | `skos pack list` | installed packs, re-verified |
 | `skos pack rollback PACK_ID VERSION` | switch back to a kept version |
 | `skos pack remove PACK_ID` | deactivate (history kept) |
-| `skos assess FILE [--no-packs]` | assess with / without installed packs |
-| `skos scan mcp CONFIG [--assess]` | assessment inputs for the `mcp` pack from an MCP client config |
+| `skos assess FILE [--no-packs \| --only-pack ID]` | assess with installed packs, without them, or with one pack's rules only (the report states the narrowed scope) |
+| `skos scan mcp CONFIG [--assess [--full]]` | assessment inputs for the `mcp` pack from an MCP client config; `--assess` evaluates the mcp rules only unless `--full` |
 
 ## Scope of pack API 1
 

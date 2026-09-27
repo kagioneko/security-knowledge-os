@@ -88,6 +88,11 @@ def test_pack_lifecycle(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["assess", str(src_in), "--no-packs"]) == 0
     out = capsys.readouterr().out
     assert "DEMO-001" not in out and "extensions: IGNORED" in out
+    assert main(["assess", str(src_in), "--only-pack", "demo"]) == 0
+    out = capsys.readouterr().out
+    assert "rule scope: pack:demo only" in out and "OUT-001" not in out
+    assert main(["assess", str(src_in), "--only-pack", "demo", "--no-packs"]) == 2
+    capsys.readouterr()
 
     # v2 lowers severity: diff flags it, install refuses without approval
     (src / "rules" / "DEMO-001.yaml").write_text(_RULE.replace("high", "low"))

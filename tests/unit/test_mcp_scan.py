@@ -114,3 +114,4 @@ def test_cli_output_never_contains_secret_values(
         assert FAKE_SECRET not in blob and FAKE_KEY not in blob
     assert "secrets_in_config: true" in written
     assert (out / "gh.yaml").stat().st_mode & 0o777 == 0o600
+

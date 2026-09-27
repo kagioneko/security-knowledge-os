@@ -229,6 +229,7 @@ def assess(
         retrieved_knowledge_ids=retrieved_ids,
         packs_applied=list(catalogue.packs_applied),
         extensions_ignored=extensions_ignored,
+        rule_scope=catalogue.rule_scope,
         group_summaries=_group_summaries(catalogue, findings),
         model_info=ModelInfo(
             llm_provider=settings.llm_provider.value,

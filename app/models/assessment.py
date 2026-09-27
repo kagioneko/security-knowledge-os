@@ -344,6 +344,8 @@ class AssessmentResult(BaseModel):
     # whether extension blocks were present but ignored (`--no-packs`).
     packs_applied: list[AppliedPack] = Field(default_factory=list)
     extensions_ignored: bool = False
+    # "pack:<id>": only that pack's rules were evaluated (core rules were not).
+    rule_scope: str | None = None
     group_summaries: list[GroupSummary] = Field(default_factory=list)
     model_info: ModelInfo
 

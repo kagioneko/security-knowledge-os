@@ -111,6 +111,11 @@ def _render_lines(report: AssessmentReport) -> list[str]:
             or "none"
         ),
     ]
+    if r.rule_scope:
+        lines.append(
+            f"rule scope: {r.rule_scope} only - core rules were NOT evaluated "
+            "(run without --only-pack for the full assessment)"
+        )
     if r.extensions_ignored:
         lines.append("extensions: IGNORED (--no-packs) - pack-specific inputs were not assessed")
     if r.group_summaries:

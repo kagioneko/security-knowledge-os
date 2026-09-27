@@ -70,3 +70,20 @@ def load_with_packs(
         )
     verified = [a.verified for a in active if a.verified is not None]
     return apply_verified(core, verified), active
+
+
+def only_pack(catalogue: RuleCatalogue, pack_id: str) -> RuleCatalogue:
+    """Restrict a merged catalogue to one active pack's rules (``--only-pack``).
+    The vocabulary is kept whole so every extensions block is still
+    validated; the result records the narrowed scope."""
+    applied = [p for p in catalogue.packs_applied if p.pack_id == pack_id]
+    if not applied:
+        raise PackLoadError(f"--only-pack {pack_id}: no active pack with that id")
+    prefix = f"{pack_id.upper()}-"
+    return RuleCatalogue(
+        rules=[r for r in catalogue.rules if r.id.startswith(prefix)],
+        vocabulary=catalogue.vocabulary,
+        packs_applied=applied,
+        report_groups=[g for g in catalogue.report_groups if g.pack == pack_id],
+        rule_scope=f"pack:{pack_id}",
+    )

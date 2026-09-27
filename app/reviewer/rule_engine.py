@@ -143,6 +143,14 @@ def evaluate_rule(
             residual_risk="the checked mitigation is absent",
         )
     elif unknown:
+        # The rule applies but a safety check cannot be decided: record the
+        # check's facts as undetermined too, so build_missing_information()
+        # turns them into questions (previously only undecidable trigger
+        # conditions produced a question, and an unknown check only ever
+        # surfaced as an UNKNOWN finding with nothing asking for the input).
+        ev.undetermined_fields = [
+            clause.field for clause, outcome in paired if outcome == "unknown"
+        ]
         ev.finding = _finding(
             rule,
             FindingStatus.UNKNOWN,
