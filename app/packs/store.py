@@ -33,7 +33,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app import __version__ as ENGINE_VERSION
-from app.config import Mode, Settings
+from app.config import Settings
 from app.ingestion.snapshot import snapshot_tree
 from app.models.assessment import AssessmentInput
 from app.models.pack import PackClassification, PackTrust
@@ -239,10 +239,14 @@ def _smoke_test(core: RuleCatalogue, packs: list[VerifiedPack]) -> None:
     from app.reviewer.report import build_report
 
     catalogue = apply_verified(core, packs)
+    # Settings.from_env() resolves the safe-test root like every other entry
+    # point (a checkout's safe_tests/, else the copy bundled in the wheel);
+    # a bare Settings() is relative to the cwd and broke installs run from
+    # anywhere but a source checkout.
     report = build_report(
         AssessmentInput(name="skos-pack-smoke-test"),
         catalogue,
-        settings=Settings(mode=Mode.PRIVATE),
+        settings=Settings.from_env(),
     )
     if report.status is not ReportStatus.COMPLETED:
         raise PackStoreError("smoke test failed: an empty assessment did not complete")

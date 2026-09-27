@@ -412,6 +412,27 @@ def test_install_activates_atomically_and_audits(
     assert "DEMO-001" in {r.id for r in merged.rules}
 
 
+def test_install_works_outside_a_source_checkout(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: the smoke test used a cwd-relative safe_tests/ root, so
+    `skos pack install` failed anywhere but inside a source checkout."""
+    import shutil
+
+    import app.config
+
+    zip_path = _zip(tmp_path, key)
+    bundled = tmp_path / "_bundled"  # what a wheel install ships
+    shutil.copytree(Path(__file__).resolve().parents[2] / "safe_tests", bundled / "safe_tests")
+    monkeypatch.setattr(app.config, "_BUNDLED", bundled)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    _install(zip_path, catalogue, trusted)
+    assert load_state(home).packs["demo"].version == "2026.10.0"
+
+
 def test_unsigned_install_is_rejected_and_audited(
     tmp_path: Path, home: Path, trusted: dict[str, TrustedKey], catalogue: RuleCatalogue,
 ) -> None:
