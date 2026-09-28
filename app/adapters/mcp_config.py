@@ -19,6 +19,7 @@ names - is ever written, printed, or placed in an error message.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import posixpath
@@ -86,10 +87,12 @@ _KNOWN: dict[tuple[str, str], _Profile] = {
     ("npm", "@modelcontextprotocol/server-github"): _Profile(False, True, True, True),
     ("npm", "@modelcontextprotocol/server-gitlab"): _Profile(False, True, True, True),
     ("npm", "@modelcontextprotocol/server-slack"): _Profile(False, True, True, True),
-    ("npm", "@modelcontextprotocol/server-puppeteer"): _Profile(False, False, True, True),
+    # a browser can submit forms and change state on the sites it visits
+    ("npm", "@modelcontextprotocol/server-puppeteer"): _Profile(False, True, True, True),
     ("npm", "@modelcontextprotocol/server-brave-search"): _Profile(False, False, True, True),
-    ("npm", "@modelcontextprotocol/server-memory"): _Profile(False, True, False, False),
-    ("npm", "@playwright/mcp"): _Profile(False, False, True, True),
+    # what is stored may itself have come from outside content
+    ("npm", "@modelcontextprotocol/server-memory"): _Profile(False, True, False, None),
+    ("npm", "@playwright/mcp"): _Profile(False, True, True, True),
     ("npm", "@wonderwhy-er/desktop-commander"): _Profile(True, True, True, None, True),
     ("pypi", "mcp-server-fetch"): _Profile(False, False, True, True),
     ("pypi", "mcp-server-git"): _Profile(False, True, False, None, True),
@@ -129,11 +132,13 @@ class ConfigError(ValueError):
 
 @dataclass
 class ServerScan:
-    name: str
+    name: str  # file-safe, unique stem for this scan's outputs
     package: str | None
     facts: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     ecosystem: str | None = None  # "npm" / "pypi" when the package is identified
+    server: str = ""  # the server's exact name in the config
+    scope: str = "global"  # "global" or "project-<id>" (an opaque id, never the path)
 
     def unknown(self) -> list[str]:
         return [k for k in FACT_KEYS if self.facts.get(k) is None]
@@ -385,7 +390,26 @@ def _fs_scope(paths: list[str]) -> str | None:
     return None  # pragma: no cover
 
 
-def scan_server(label: str, cfg: object, taken: set[str]) -> ServerScan:
+def _launch_uncertain(command: str, env: dict[str, Any]) -> str | None:
+    """Why the configured launcher may not run the package it names, or None.
+
+    A launcher given by path is whatever that file is, and environment
+    variables other than credentials (NODE_OPTIONS, npm_config_registry,
+    PYTHONPATH, LD_PRELOAD, ...) can change what actually runs, so the
+    package is then not identified and no capability is inferred from it
+    (Codex capgraph review G01)."""
+    if command != PurePosixPath(command).name or "\\" in command:
+        return "the launcher is given by path; the package is not identified"
+    if any(re.search(_SECRET_NAME, k) is None for k in env):
+        return (
+            "environment variables other than credentials can change what runs; "
+            "the package is not identified"
+        )
+    return None
+
+
+def scan_server(label: str, cfg: object, taken: set[str], *, server: str | None = None,
+                scope: str = "global") -> ServerScan:
     name = _safe_name(label, taken)
     if not isinstance(cfg, dict):
         raise ConfigError(f"server {name!r}: entry must be an object")
@@ -410,11 +434,11 @@ def scan_server(label: str, cfg: object, taken: set[str]) -> ServerScan:
         except ValueError:
             # The exception text can quote the URL (and credentials in it).
             raise ConfigError(f"server {name!r}: 'url' is not a valid URL") from None
-        scope = _host_scope(host)
-        if scope == "loopback":
+        reach = _host_scope(host)
+        if reach == "loopback":
             notes.append("reached via loopback; the server's own listen address is not visible")
         else:
-            facts["bind_scope"] = scope  # reachable at least from there
+            facts["bind_scope"] = reach  # reachable at least from there
         if has_userinfo:
             secret_seen = token_seen = True
         if any(re.search(_SECRET_NAME, k) for k in query_keys):
@@ -429,12 +453,19 @@ def scan_server(label: str, cfg: object, taken: set[str]) -> ServerScan:
             notes.append(
                 "the client sends credentials; whether the server REQUIRES them is not visible"
             )
-        if url.startswith("http://") and scope not in (None, "loopback"):
+        if url.startswith("http://") and reach not in (None, "loopback"):
             notes.append("remote server over plain http (no TLS)")
     elif isinstance(cfg.get("command"), str):
         facts["transport"] = "stdio"
         args = _str_list(cfg.get("args"), f"server {name!r}: 'args'")
-        ecosystem, spec, rest = _launcher(cfg["command"], args)
+        uncertain = _launch_uncertain(
+            cfg["command"], _str_dict(cfg.get("env"), f"server {name!r}: 'env'")
+        )
+        if uncertain is None:
+            ecosystem, spec, rest = _launcher(cfg["command"], args)
+        else:
+            notes.append(uncertain)
+            ecosystem, spec, rest = "", None, args
         if ecosystem == "container":
             facts["sandboxed"], facts["version_pinned"], extra = _container(rest)
             notes += extra
@@ -474,13 +505,24 @@ def scan_server(label: str, cfg: object, taken: set[str]) -> ServerScan:
     facts["token_scope"] = None
     if not token_seen:
         notes.append("no credential recognised in the config (this does not prove there is none)")
-    return ServerScan(name, package, facts, notes, identified)
+    return ServerScan(
+        name, package, facts, notes, identified, label if server is None else server, scope
+    )
 
 
-def load_config(path: Path) -> list[tuple[str, object]]:
-    """``[(label, server config)]`` from the top-level ``mcpServers`` and, for
-    ``~/.claude.json``, every ``projects.<path>.mcpServers``. Labels may
-    repeat; scan_config() makes them unique, so no server is ever dropped."""
+def project_id(project: str) -> str:
+    """An opaque, stable id for a ``projects.<path>`` entry: outputs must not
+    carry the project path (Codex capgraph review G05). Whoever knows the path
+    can recompute it."""
+    return "project-" + hashlib.sha256(project.encode("utf-8")).hexdigest()[:10]
+
+
+def load_config(path: Path) -> list[tuple[str, str, object]]:
+    """``[(scope, server name, server config)]`` from the top-level
+    ``mcpServers`` (scope ``global``) and, for ``~/.claude.json``, every
+    ``projects.<path>.mcpServers`` (scope ``project-<id>``). Names may repeat
+    across scopes; scan_config() gives each a unique file stem, so no server
+    is ever dropped."""
     try:
         with path.open("rb") as fh:
             raw = fh.read(MAX_CONFIG_BYTES + 1)
@@ -494,17 +536,17 @@ def load_config(path: Path) -> list[tuple[str, object]]:
         raise ConfigError("config is not valid UTF-8 JSON") from None
     if not isinstance(data, dict):
         raise ConfigError("config must be a JSON object")
-    servers: list[tuple[str, object]] = []
+    servers: list[tuple[str, str, object]] = []
     top = data.get("mcpServers")
     if isinstance(top, dict):
-        servers += [(str(k), v) for k, v in top.items()]
+        servers += [("global", str(k), v) for k, v in top.items()]
     projects = data.get("projects")
     if isinstance(projects, dict):
         for project, pdata in projects.items():
             inner = pdata.get("mcpServers") if isinstance(pdata, dict) else None
             if isinstance(inner, dict):
-                label = PurePosixPath(str(project)).name or "project"
-                servers += [(f"{label}.{k}", v) for k, v in inner.items()]
+                pid = project_id(str(project))
+                servers += [(pid, str(k), v) for k, v in inner.items()]
     if not servers:
         raise ConfigError("no MCP servers found (expected 'mcpServers')")
     return servers
@@ -516,7 +558,13 @@ RESERVED_NAMES = frozenset({"_agent"})
 
 def scan_config(path: Path) -> list[ServerScan]:
     taken: set[str] = set(RESERVED_NAMES)
-    return [scan_server(label, cfg, taken) for label, cfg in load_config(path)]
+    return [
+        scan_server(
+            name if scope == "global" else f"{scope}.{name}", cfg, taken,
+            server=name, scope=scope,
+        )
+        for scope, name, cfg in load_config(path)
+    ]
 
 
 def assessment_yaml(scan: ServerScan, source_name: str) -> str:

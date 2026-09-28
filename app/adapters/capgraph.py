@@ -15,7 +15,8 @@ known about its built-in tools, so an aggregate ``False`` becomes ``None``.
 The result feeds the ``capgraph`` Update Pack (``extensions.capgraph``) and
 is also written as ``capability-labels.json`` for runtime enforcement (for
 example a gateway that decides trust from the same labels). Only server
-names from the config appear in either output, never configuration values.
+names from the config appear in either output (project paths are replaced by
+opaque ids), never configuration values.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from app.adapters.mcp_config import ServerScan
 
 LABELS = ("untrusted_input", "sensitive_read", "egress", "exec", "write", "persistence")
 # Written to extensions.capgraph; every key becomes a ``capgraph_<key>`` fact.
-FACT_KEYS = (*LABELS, "flow_gated")
+FACT_KEYS = (*LABELS, "flow_gated", "egress_gated")
 SCHEMA = "capgraph/v0"
 AGENT_FILE_STEM = "_agent"  # reserved: no server may be written under this name
 CLIENTS = ("claude-code", "none")
@@ -42,6 +43,9 @@ class _Caps:
     sensitive_read: Label = None
     persistence: Label = None
     write_scope: str | None = None  # "fs" = the scanner's fs_scope
+    # the scanner's "no shell" does not mean "no code": a browser runs
+    # JavaScript on the pages it drives
+    exec_unknown: bool = False
 
 
 # By exact (ecosystem, package) identity, like the scanner's own profiles.
@@ -52,12 +56,14 @@ _KNOWN: dict[tuple[str, str], _Caps] = {
     ("npm", "@modelcontextprotocol/server-github"): _Caps(True, True, "remote"),
     ("npm", "@modelcontextprotocol/server-gitlab"): _Caps(True, True, "remote"),
     ("npm", "@modelcontextprotocol/server-slack"): _Caps(True, None, "remote"),
-    # a browser can reach intranet pages and the host's services
-    ("npm", "@modelcontextprotocol/server-puppeteer"): _Caps(None, False, "none"),
-    ("npm", "@playwright/mcp"): _Caps(None, False, "none"),
+    # a browser reaches intranet pages and the host's services, submits forms
+    # and can store content that is loaded again later (Codex capgraph G03)
+    ("npm", "@modelcontextprotocol/server-puppeteer"): _Caps(None, None, "remote", True),
+    ("npm", "@playwright/mcp"): _Caps(None, None, "remote", True),
     ("npm", "@modelcontextprotocol/server-brave-search"): _Caps(False, False, "none"),
-    # what it stores is loaded into later sessions
-    ("npm", "@modelcontextprotocol/server-memory"): _Caps(False, True, "sandbox"),
+    # what it stores is loaded into later sessions; what it holds - and where
+    # the file is - is not visible (Codex capgraph G04)
+    ("npm", "@modelcontextprotocol/server-memory"): _Caps(None, True, None),
     ("npm", "@wonderwhy-er/desktop-commander"): _Caps(True, True, "root"),
     # fetch can reach localhost and intranet URLs
     ("pypi", "mcp-server-fetch"): _Caps(None, False, "none"),
@@ -78,7 +84,9 @@ _CLIENTS: dict[str, dict[str, Label]] = {
 
 @dataclass
 class ServerLabels:
-    name: str
+    name: str  # the scan's file stem (used in notes and file names)
+    server: str  # exact server name in the config
+    scope: str  # "global" or "project-<id>"
     labels: dict[str, Label]
     write_scope: str | None
 
@@ -91,9 +99,10 @@ class AgentLabels:
     contributors: dict[str, list[str]] = field(default_factory=dict)
 
     def facts(self) -> dict[str, Label]:
-        """The ``extensions.capgraph`` block. ``flow_gated`` is not visible in
-        a config, so it is always left for the operator to answer."""
-        return {**self.labels, "flow_gated": None}
+        """The ``extensions.capgraph`` block. The gates (``flow_gated``,
+        ``egress_gated``) are not visible in a config: they are left for the
+        operator and asked when a combination they guard applies."""
+        return {**self.labels, "flow_gated": None, "egress_gated": None}
 
     def notes(self) -> list[str]:
         out = []
@@ -126,6 +135,8 @@ def _labels(scan: ServerScan) -> ServerLabels:
         labels["sensitive_read"] = caps.sensitive_read
         labels["persistence"] = caps.persistence
         write_scope = caps.write_scope
+        if caps.exec_unknown:
+            labels["exec"] = None
         if caps.write_scope == "fs":
             scope = f.get("fs_scope")
             write_scope = scope if scope in ("project", "home", "root") else None
@@ -138,7 +149,7 @@ def _labels(scan: ServerScan) -> ServerLabels:
         write_scope = write_scope or "root"
     if labels["write"] is False and labels["exec"] is False and labels["persistence"] is None:
         labels["persistence"] = False
-    return ServerLabels(scan.name, labels, write_scope)
+    return ServerLabels(scan.name, scan.server, scan.scope, labels, write_scope)
 
 
 def _or(values: list[Label]) -> Label:
@@ -177,9 +188,15 @@ def labels_json(agent: AgentLabels, source_name: str) -> str:
         "client": agent.client,
         "agent": agent.labels,
         "contributors": agent.contributors,
-        "servers": {
-            s.name: {**s.labels, "write_scope": s.write_scope} for s in agent.servers
-        },
+        # identify a server by (scope, exact name) - the file stem is only a
+        # file name and may be renamed to stay unique (Codex capgraph G02)
+        "servers": [
+            {
+                "server": s.server, "scope": s.scope, "file": s.name,
+                "labels": s.labels, "write_scope": s.write_scope,
+            }
+            for s in agent.servers
+        ],
     }
     return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
 

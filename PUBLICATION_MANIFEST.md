@@ -807,8 +807,8 @@ check enforces (total tracked files, total tests) are kept current above.
 
 | area | files | notes |
 | --- | --- | --- |
-| `app/` | 76 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main, packs (Update Pack manager), adapters (MCP config scan) |
-| `tests/` | 86 | 55 test modules + fixtures |
+| `app/` | 77 (.py) | engine, models, policy, retrieval, reviewer, llm, storage, eval, cli, main, packs (Update Pack manager), adapters (MCP config scan, capability labels) |
+| `tests/` | 87 | 56 test modules + fixtures |
 | `knowledge/` | 24 | 14 public KUs + `private/` skeleton (README + 2 `.gitkeep`) + category `.gitkeep`s |
 | `rules/` | 13 | 7 rule YAMLs + category `.gitkeep`s |
 | `safe_tests/` | 4 | 4 vetted templates |

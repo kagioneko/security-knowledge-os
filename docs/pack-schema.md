@@ -264,10 +264,17 @@ identities and launch options only - never from tool descriptions) and for
 the agent as a three-valued OR over its servers and the client's built-in
 tools (`--client claude-code | none`). Without `--client` the client's tools
 are unknown, so the agent never gets a `false`. They go to `_agent.yaml`
-(`extensions.capgraph`, with `flow_gated` always left `null` for the operator
-to answer) and to `capability-labels.json` (schema `capgraph/v0`, per-server
+(`extensions.capgraph`, with the gates `flow_gated` and `egress_gated` always
+left `null` for the operator to answer) and to `capability-labels.json` (schema `capgraph/v0`, per-server
 labels, the aggregate and which server contributed each label) for runtime
-enforcement. `_agent` is a reserved file name: no server is written under it.
+enforcement; there a server is identified by its exact name and scope
+(`global` or `project-<id>`, an opaque hash - project paths never reach an
+output), not by its file stem. `_agent` is a reserved file name. A package is
+identified only when launched through a bare launcher name (`npx`, `uvx`, ...)
+and with no environment variables other than credentials - anything else can
+change what runs, so the server then gets no labels from a profile. Outputs are
+written owner-only; an existing symlink is refused and an output that would
+overwrite the input config stops the scan.
 
 ## Scope of pack API 1
 

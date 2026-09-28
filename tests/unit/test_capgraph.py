@@ -141,21 +141,147 @@ def test_cli_writes_agent_outputs_without_config_values(
     assert doc["extensions"]["capgraph"]["flow_gated"] is None
     labels = json.loads(labels_file.read_text())
     assert labels["schema"] == "capgraph/v0" and labels["client"] == "claude-code"
-    assert set(labels["servers"]) == {"fetch", "github"}
+    assert {e["server"] for e in labels["servers"]} == {"fetch", "github"}
     assert labels["contributors"]["egress"][0] == "client:claude-code"
 
 
-def test_cli_assess_without_capgraph_pack_says_so(
+def test_cli_assess_without_packs_still_writes_everything(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from app import cli
+    """Codex capgraph review G09: a missing mcp pack must not stop the agent
+    input from being written (and assessed when capgraph is installed)."""
+    from app.cli import main
 
     monkeypatch.setenv("SKOS_HOME", str(tmp_path / "home"))
-    # the per-server assessment needs the mcp pack; stub it out here
-    monkeypatch.setattr(cli, "_assess_generated", lambda text, s, scope: ("  -> stub", 0))
     cfg = tmp_path / ".mcp.json"
     cfg.write_text(json.dumps({"mcpServers": {"time": TIME}}))
-    assert cli.main(["scan", "mcp", str(cfg), "--out", str(tmp_path / "o"), "--assess"]) == 0
-    out = capsys.readouterr().out
-    assert "not assessed (the capgraph pack is not installed)" in out
-    assert "--client not given" in out
+    out = tmp_path / "o"
+    assert main(["scan", "mcp", str(cfg), "--out", str(out), "--assess"]) == 0
+    printed = capsys.readouterr().out
+    assert "not assessed (the mcp pack is not installed)" in printed
+    assert "not assessed (the capgraph pack is not installed)" in printed
+    assert "--client not given" in printed
+    assert (out / f"{AGENT_FILE_STEM}.yaml").is_file()
+
+
+# ------------------------------------------------ Codex capgraph review ----
+
+
+@pytest.mark.parametrize("server", [
+    {**SEARCH, "env": {"NODE_OPTIONS": "--require=/opt/injected.cjs"}},
+    {**SEARCH, "env": {"npm_config_registry": "https://registry.example.invalid"}},
+    {"command": "/opt/untrusted/uvx", "args": ["mcp-server-time==2025.1.1"]},
+    {"command": "npx", "args": ["@modelcontextprotocol/server-memory@1.0.0"],
+     "env": {"MEMORY_FILE_PATH": "/home/operator/private-memory.json"}},
+])
+def test_g01_uncertain_launch_claims_nothing(tmp_path: Path, server: dict[str, Any]) -> None:
+    scans = _scans(tmp_path, {"s": server})
+    assert scans[0].package is None
+    agent = agent_labels(scans, "none")
+    assert agent.servers[0].labels == dict.fromkeys(LABELS)
+    assert agent.labels == dict.fromkeys(LABELS)
+
+
+def test_g01_credentials_in_env_keep_the_identity(tmp_path: Path) -> None:
+    scans = _scans(tmp_path, {"s": {**SEARCH, "env": {"BRAVE_API_KEY": "${BRAVE_API_KEY}"}}})
+    assert scans[0].package == "@modelcontextprotocol/server-brave-search"
+
+
+def test_g02_exact_names_identify_servers(tmp_path: Path) -> None:
+    labels = _labels_json(tmp_path, {
+        "mcpServers": {"_agent": TIME, "_agent-2": {"command": "python", "args": ["c.py"]}},
+    })
+    by = {e["server"]: e for e in labels["servers"]}
+    assert by["_agent"]["labels"] == dict.fromkeys(LABELS, False)
+    assert by["_agent-2"]["labels"] == dict.fromkeys(LABELS)
+    assert all(e["scope"] == "global" for e in labels["servers"])
+    assert len({e["file"] for e in labels["servers"]}) == 2
+    assert AGENT_FILE_STEM not in {e["file"] for e in labels["servers"]}
+
+
+def test_g03_browsers_can_act(tmp_path: Path) -> None:
+    for pkg in ("@playwright/mcp@0.0.30", "@modelcontextprotocol/server-puppeteer@1.0.0"):
+        s = agent_labels(_scans(tmp_path, {"b": {"command": "npx", "args": [pkg]}}), "none")
+        labels = s.servers[0].labels
+        assert labels["write"] is True and labels["egress"] is True
+        assert labels["exec"] is None  # JavaScript in the page, not "no code"
+        assert labels["persistence"] is None
+        assert s.servers[0].write_scope == "remote"
+
+
+def test_g04_memory_claims_no_absence(tmp_path: Path) -> None:
+    mem = {"command": "npx", "args": ["@modelcontextprotocol/server-memory@1.0.0"]}
+    s = agent_labels(_scans(tmp_path, {"m": mem, "search": SEARCH}), "none")
+    by = {x.server: x for x in s.servers}
+    assert by["m"].labels["sensitive_read"] is None
+    assert by["m"].labels["untrusted_input"] is None
+    assert by["m"].write_scope is None
+    assert s.labels["sensitive_read"] is None  # no longer False: CAPGRAPH-001 stays open
+
+
+def test_g05_project_paths_never_reach_outputs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.cli import main
+
+    monkeypatch.setenv("SKOS_HOME", str(tmp_path / "home"))
+    marker = "PROJECT_SECRET_MARKER"
+    cfg = tmp_path / ".claude.json"
+    cfg.write_text(json.dumps({"projects": {f"/private/{marker}": {"mcpServers": {
+        "search": SEARCH}}}}))
+    out = tmp_path / "o"
+    assert main(["scan", "mcp", str(cfg), "--out", str(out), "--client", "none"]) == 0
+    blobs = [capsys.readouterr().out] + [p.read_text() for p in out.iterdir()]
+    blobs += [p.name for p in out.iterdir()]
+    assert all(marker not in b for b in blobs)
+    labels = json.loads((out / "capability-labels.json").read_text())
+    assert labels["servers"][0]["scope"].startswith("project-")
+    assert labels["servers"][0]["server"] == "search"
+
+
+def test_g06_output_never_overwrites_the_input(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.cli import main
+
+    monkeypatch.setenv("SKOS_HOME", str(tmp_path / "home"))
+    cfg = tmp_path / "capability-labels.json"
+    original = json.dumps({"mcpServers": {"time": TIME}})
+    cfg.write_text(original)
+    assert main(["scan", "mcp", str(cfg), "--out", str(tmp_path)]) == 2
+    assert cfg.read_text() == original
+    assert "overwrite the input" in capsys.readouterr().err
+
+
+def test_g06_existing_outputs_are_not_followed_and_become_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.cli import main
+
+    monkeypatch.setenv("SKOS_HOME", str(tmp_path / "home"))
+    cfg = tmp_path / ".mcp.json"
+    cfg.write_text(json.dumps({"mcpServers": {"time": TIME}}))
+    out = tmp_path / "o"
+    out.mkdir()
+    (out / "time.yaml").write_text("old\n")
+    (out / "time.yaml").chmod(0o644)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep\n")
+    (out / f"{AGENT_FILE_STEM}.yaml").symlink_to(victim)
+    assert main(["scan", "mcp", str(cfg), "--out", str(out)]) == 2
+    assert victim.read_text() == "keep\n"
+    assert (out / "time.yaml").stat().st_mode & 0o777 == 0o600
+
+
+def test_g07_sensitive_egress_has_its_own_gate(tmp_path: Path) -> None:
+    agent = agent_labels(_scans(tmp_path, {"time": TIME}), "none")
+    assert agent.facts()["egress_gated"] is None
+    assert agent.facts()["flow_gated"] is None
+
+
+def _labels_json(tmp_path: Path, config: dict[str, Any]) -> dict[str, Any]:
+    from app.adapters.capgraph import labels_json
+
+    path = tmp_path / ".mcp.json"
+    path.write_text(json.dumps(config))
+    return json.loads(labels_json(agent_labels(scan_config(path), "none"), path.name))

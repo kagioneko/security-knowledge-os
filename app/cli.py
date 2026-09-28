@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -334,9 +335,27 @@ def _cmd_test(args: argparse.Namespace, s: Settings) -> int:
 
 
 def _write_private(path: Path, text: str) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    """Write an owner-only regular file. An existing symlink is refused
+    (O_NOFOLLOW) rather than followed, and an existing file's mode is reset
+    to 0600 (Codex capgraph review G06)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{path.name} exists and is not a regular file")
+        os.fchmod(fd, 0o600)
+        os.ftruncate(fd, 0)
+    except BaseException:
+        os.close(fd)
+        raise
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 def _assess_generated(text: str, s: Settings, pack_scope: str | None) -> tuple[str, int]:
@@ -366,16 +385,30 @@ def _pack_active(pack_id: str) -> bool:
 def _cmd_scan_mcp(args: argparse.Namespace, s: Settings) -> int:
     scans = scan_config(args.config)
     args.out.mkdir(mode=0o700, parents=True, exist_ok=True)
+    outputs = [
+        *(args.out / f"{scan.name}.yaml" for scan in scans),
+        args.out / f"{AGENT_FILE_STEM}.yaml",
+        args.out / "capability-labels.json",
+    ]
+    if any(_same_file(p, args.config) for p in outputs):
+        print("an output file would overwrite the input config; use another --out",
+              file=sys.stderr)
+        return 2
+    # Each pack is assessed only when it is installed; the inputs are always
+    # written (Codex capgraph review G09).
+    assess_servers = args.assess and _pack_active("mcp")
     worst = 0
     for scan in scans:
         text = assessment_yaml(scan, args.config.name)
         path = args.out / f"{scan.name}.yaml"
         _write_private(path, text)
         line = f"  {scan.name:28} {path}  ({len(scan.unknown())} unknown)"
-        if args.assess:
+        if assess_servers:
             summary, failed = _assess_generated(text, s, None if args.full else "mcp")
             line += summary
             worst = max(worst, failed)
+        elif args.assess:
+            line += "  -> not assessed (the mcp pack is not installed)"
         print(line)
 
     # The whole agent: capability labels of every server (+ the client's own

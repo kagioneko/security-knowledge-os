@@ -82,7 +82,10 @@ def test_remote_servers(tmp_path: Path) -> None:
 def test_claude_json_projects_are_included(tmp_path: Path) -> None:
     facts = _scan(tmp_path, {"projects": {"/home/u/work/app": {"mcpServers": {
         "db": {"command": "node", "args": ["db.js"]}}}}})
-    assert list(facts) == ["app.db"]
+    from app.adapters.mcp_config import project_id
+
+    # the project path never reaches an output name (Codex capgraph review G05)
+    assert list(facts) == [f"{project_id('/home/u/work/app')}.db"]
 
 
 def test_secret_arguments_are_detected(tmp_path: Path) -> None:
@@ -199,7 +202,7 @@ def test_same_project_basename_keeps_both_servers(tmp_path: Path) -> None:
         "/work/a/app": {"mcpServers": {"s": {"command": "node", "args": ["a.js"]}}},
         "/work/b/app": {"mcpServers": {"s": {"command": "node", "args": ["b.js"]}}},
     }})
-    assert sorted(facts) == ["app.s", "app.s-2"]
+    assert len(facts) == 2 and all(k.endswith(".s") and "app" not in k for k in facts)
 
 
 @pytest.mark.parametrize(
