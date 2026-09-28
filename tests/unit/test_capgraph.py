@@ -309,6 +309,8 @@ def test_g01_launches_that_may_run_something_else_claim_nothing(
     ("npx", ["@playwright/mcp@0.0.30", "--headless"]),
     ("npx", ["-y", "@modelcontextprotocol/server-brave-search@0.6.2", "--verbose"]),
     ("pnpm", ["dlx", "@modelcontextprotocol/server-brave-search@0.6.2"]),
+    ("yarn", ["dlx", "@modelcontextprotocol/server-brave-search@0.6.2"]),
+    ("pnpm", ["dlx", "@playwright/mcp@0.0.30", "--headless"]),
 ])
 def test_g01_server_arguments_keep_the_identity(
     tmp_path: Path, command: str, args: list[str]
