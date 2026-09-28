@@ -239,7 +239,7 @@ manifest hash and results - never file content or secrets.
 | `skos pack rollback PACK_ID VERSION` | switch back to a kept version |
 | `skos pack remove PACK_ID` | deactivate (history kept) |
 | `skos assess FILE [--no-packs \| --only-pack ID]` | assess with installed packs, without them, or with one pack's rules only (the report states the narrowed scope) |
-| `skos scan mcp CONFIG [--assess [--full]]` | assessment inputs for the `mcp` pack from an MCP client config; `--assess` evaluates the mcp rules only unless `--full` |
+| `skos scan mcp CONFIG [--client NAME] [--assess [--full]]` | assessment inputs for the `mcp` pack (one per server) and the `capgraph` pack (`_agent.yaml`, the whole agent) from an MCP client config, plus `capability-labels.json`; `--assess` evaluates the mcp rules only unless `--full`, and the agent input with the capgraph rules when that pack is installed |
 
 ## `skos scan mcp`
 
@@ -256,6 +256,18 @@ credential was found; `${VAR}` references, also after `Bearer `, do not count)
 or `null`, and
 `token_scope` is never claimed to be `none`. No config value other than
 server names is written, printed, or used in an error message.
+
+It also writes the **whole agent's capability labels** (engine >= 0.3.0):
+`untrusted_input`, `sensitive_read`, `egress`, `exec`, `write` and
+`persistence`, each `true` / `false` / `null`, per server (from exact package
+identities and launch options only - never from tool descriptions) and for
+the agent as a three-valued OR over its servers and the client's built-in
+tools (`--client claude-code | none`). Without `--client` the client's tools
+are unknown, so the agent never gets a `false`. They go to `_agent.yaml`
+(`extensions.capgraph`, with `flow_gated` always left `null` for the operator
+to answer) and to `capability-labels.json` (schema `capgraph/v0`, per-server
+labels, the aggregate and which server contributed each label) for runtime
+enforcement. `_agent` is a reserved file name: no server is written under it.
 
 ## Scope of pack API 1
 

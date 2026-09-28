@@ -133,6 +133,7 @@ class ServerScan:
     package: str | None
     facts: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    ecosystem: str | None = None  # "npm" / "pypi" when the package is identified
 
     def unknown(self) -> list[str]:
         return [k for k in FACT_KEYS if self.facts.get(k) is None]
@@ -391,6 +392,7 @@ def scan_server(label: str, cfg: object, taken: set[str]) -> ServerScan:
     facts: dict[str, Any] = {k: None for k in FACT_KEYS}
     notes: list[str] = []
     package: str | None = None
+    identified: str | None = None
     secret_seen = False
     token_seen = False
     url = cfg.get("url")
@@ -439,6 +441,7 @@ def scan_server(label: str, cfg: object, taken: set[str]) -> ServerScan:
         elif spec is not None:
             package, pinned = _identity(ecosystem, spec)
             if package is not None:
+                identified = ecosystem
                 facts["version_pinned"] = pinned
                 facts["third_party"] = not (
                     (ecosystem == "npm" and package.startswith(_FIRST_PARTY_NPM_SCOPE))
@@ -471,7 +474,7 @@ def scan_server(label: str, cfg: object, taken: set[str]) -> ServerScan:
     facts["token_scope"] = None
     if not token_seen:
         notes.append("no credential recognised in the config (this does not prove there is none)")
-    return ServerScan(name, package, facts, notes)
+    return ServerScan(name, package, facts, notes, identified)
 
 
 def load_config(path: Path) -> list[tuple[str, object]]:
@@ -507,8 +510,12 @@ def load_config(path: Path) -> list[tuple[str, object]]:
     return servers
 
 
+# File stems the CLI writes next to the per-server inputs.
+RESERVED_NAMES = frozenset({"_agent"})
+
+
 def scan_config(path: Path) -> list[ServerScan]:
-    taken: set[str] = set()
+    taken: set[str] = set(RESERVED_NAMES)
     return [scan_server(label, cfg, taken) for label, cfg in load_config(path)]
 
 

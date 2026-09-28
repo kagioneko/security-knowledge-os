@@ -11,7 +11,7 @@
     skos test [--db PATH]            # run the assessment fixtures as a smoke test
     skos pack build|inspect|verify|diff|install|list|rollback|remove ...
                                      # Update Packs (see app/pack_cli.py)
-    skos scan mcp CONFIG [--out DIR] [--assess]
+    skos scan mcp CONFIG [--out DIR] [--assess] [--client NAME]
                                      # one assessment input per MCP server in a
                                      # .mcp.json / claude_desktop_config.json
 
@@ -29,6 +29,13 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from app.adapters.capgraph import (
+    AGENT_FILE_STEM,
+    CLIENTS,
+    agent_labels,
+    agent_yaml,
+    labels_json,
+)
 from app.adapters.mcp_config import ConfigError, assessment_yaml, scan_config
 from app.config import Settings
 from app.ingestion.parser import FrontMatterError, read_text_bounded, safe_load_bounded
@@ -39,6 +46,7 @@ from app.models.report import AssessmentReport, ReportStatus
 from app.pack_cli import PACK_ERRORS
 from app.pack_cli import register as register_pack_commands
 from app.packs.loader import PackLoadError, load_with_packs, only_pack
+from app.packs.store import verify_active
 from app.policy.safe_test import (
     SafeTestLoadError,
     load_safe_test_templates,
@@ -325,6 +333,36 @@ def _cmd_test(args: argparse.Namespace, s: Settings) -> int:
     return 1 if failures else 0
 
 
+def _write_private(path: Path, text: str) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def _assess_generated(text: str, s: Settings, pack_scope: str | None) -> tuple[str, int]:
+    """(summary for the scan listing, 1 if it FAILed or did not complete)."""
+    report = _run(
+        AssessmentInput.model_validate(safe_load_bounded(
+            text, max_bytes=_MAX_ASSESSMENT_YAML_BYTES, what="generated input"
+        )),
+        s, None, packs=True, pack_scope=pack_scope,
+    )
+    if report.result is None:
+        return f"  -> {report.status.value}", 1
+    groups = ", ".join(
+        f"{g.group}={g.worst_status.value if g.worst_status else '-'}"
+        for g in report.result.group_summaries
+    )
+    failed = report.result.overall_status is OverallStatus.FAIL
+    return f"  -> {report.result.overall_status.value}  [{groups}]", int(failed)
+
+
+def _pack_active(pack_id: str) -> bool:
+    return any(
+        a.pack_id == pack_id and a.verified is not None for a in verify_active()
+    )
+
+
 def _cmd_scan_mcp(args: argparse.Namespace, s: Settings) -> int:
     scans = scan_config(args.config)
     args.out.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -332,30 +370,33 @@ def _cmd_scan_mcp(args: argparse.Namespace, s: Settings) -> int:
     for scan in scans:
         text = assessment_yaml(scan, args.config.name)
         path = args.out / f"{scan.name}.yaml"
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        unknown = scan.unknown()
-        line = f"  {scan.name:28} {path}  ({len(unknown)} unknown)"
+        _write_private(path, text)
+        line = f"  {scan.name:28} {path}  ({len(scan.unknown())} unknown)"
         if args.assess:
-            report = _run(
-                AssessmentInput.model_validate(safe_load_bounded(
-                    text, max_bytes=_MAX_ASSESSMENT_YAML_BYTES, what="generated input"
-                )),
-                s, None, packs=True, pack_scope=None if args.full else "mcp",
-            )
-            if report.result is None:
-                line += f"  -> {report.status.value}"
-                worst = max(worst, 1)
-            else:
-                groups = ", ".join(
-                    f"{g.group}={g.worst_status.value if g.worst_status else '-'}"
-                    for g in report.result.group_summaries
-                )
-                line += f"  -> {report.result.overall_status.value}  [{groups}]"
-                if report.result.overall_status is OverallStatus.FAIL:
-                    worst = max(worst, 1)
+            summary, failed = _assess_generated(text, s, None if args.full else "mcp")
+            line += summary
+            worst = max(worst, failed)
         print(line)
+
+    # The whole agent: capability labels of every server (+ the client's own
+    # tools), for the capgraph pack and for runtime enforcement.
+    agent = agent_labels(scans, args.client)
+    _write_private(args.out / "capability-labels.json", labels_json(agent, args.config.name))
+    text = agent_yaml(agent, args.config.name)
+    path = args.out / f"{AGENT_FILE_STEM}.yaml"
+    _write_private(path, text)
+    unknown = sum(1 for v in agent.facts().values() if v is None)
+    line = f"  {'(agent)':28} {path}  ({unknown} unknown)"
+    if args.assess:
+        if _pack_active("capgraph"):
+            summary, failed = _assess_generated(text, s, "capgraph")
+            line += summary
+            worst = max(worst, failed)
+        else:
+            line += "  -> not assessed (the capgraph pack is not installed)"
+    print(line)
+    if args.client is None:
+        print("  note: --client not given; the client's built-in tools are not counted")
     return worst if args.strict else 0
 
 
@@ -423,6 +464,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--full", action="store_true",
         help="with --assess: also evaluate the core rules (default: the mcp pack's rules only,"
         " since one server's config does not describe the whole agent system)",
+    )
+    p.add_argument(
+        "--client", choices=CLIENTS,
+        help="the agent client whose built-in tools count toward the agent's capabilities"
+        " (none = no built-in tools); without it no capability is claimed absent",
     )
     p.set_defaults(func=_cmd_scan_mcp)
 
