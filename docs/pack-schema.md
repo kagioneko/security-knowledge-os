@@ -210,9 +210,11 @@ link whose `installed.json` record is lost - there is no trustworthy
 baseline: the change is a **recovery**, diffed against nothing, and always
 needs `--approve-sensitive` (a tampered baseline must never decide that a
 change needs no approval, and a lost registry must never make an update look
-like a first install). Repair is therefore `skos pack rollback PACK_ID VERSION
---approve-sensitive` to a kept version, or `skos pack install ZIP
---approve-sensitive`, or `skos pack remove`. A kept version directory is replaced only after the
+like a first install). Repair is therefore: for a pack still recorded in
+`installed.json` with corrupt active files, `skos pack rollback PACK_ID VERSION
+--approve-sensitive` to a kept version; in any case (including a lost record,
+where rollback reports the pack as not installed), `skos pack install ZIP
+--approve-sensitive` or `skos pack remove`. A kept version directory is replaced only after the
 verified copy is in place, and restored if that fails.
 
 `skos pack rollback PACK_ID VERSION` re-verifies the kept version (its
