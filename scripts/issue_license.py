@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Issue a signed license file for a commercial pack.
 
-    vault kv get -field=ed25519_private_key secret/skos/pack-signing \\
+    <print the Ed25519 private key (raw 32 bytes, base64) from your secret store> \\
       | python scripts/issue_license.py --pack mcppro --license-id L-0001 \\
           --licensee "Example Corp" --expires 2027-09-30 \\
           --key-id kagioneko-2026-01 --out ./out
