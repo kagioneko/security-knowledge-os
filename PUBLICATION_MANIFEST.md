@@ -1,16 +1,16 @@
-# Publication Manifest — Security Knowledge OS v0.1.0
+# Publication Manifest — Security Knowledge OS v0.2.0
 
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `a7f463d` (PyPI 0.1.0 published; README badges/install, CI green, tag->PyPI publish via Trusted Publishing)
+- Commit: `488e0f6` (v0.2.0: Update Packs + `skos scan mcp`; PyPI 0.1.0 was `a7f463d`)
 - History: rewritten once on 2026-09-20, before first publication, to normalise author/committer identity to the
   GitHub no-reply address (one commit message also scrubbed of a local account name). Every commit's tree is
   identical before and after, so the reviewed content is the published content; commit hashes cited in the
   review records below are the **pre-rewrite** ones - see `docs/history-rewrite-map.md` for old -> new.
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **220**
-- Tests: **792** items (791 pass, 1 skip = JA-R02)
+- Tracked files: **242**
+- Tests: **943** items (942 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -781,6 +781,23 @@ review; regenerate with `git ls-files` after any change.
   `persist-credentials: false` on checkout (+ a SHA-pin TODO), and README notes
   Python 3.12+ and that the assessed YAML is a user-provided input.
 
+  **v0.2.0 Update Packs review** (2026-09-28, scoped to the change set
+  `master..488e0f6`: `app/packs/`, `app/pack_cli.py`, `app/adapters/mcp_config.py`,
+  `app/reviewer/{vocabulary,extensions}.py`, `docs/pack-schema.md`, plus the
+  separate data-only pack source `skos-pack-mcp`). Codex, four rounds, each
+  CHANGES-REQUIRED and fully or partly fixed: round 1 (`c14bc7f`) 16 findings
+  (4 HIGH), round 2 (`30840b5`) 8 new (3 HIGH), round 3 (`6cb990e`) 4 new
+  (1 HIGH), round 4 (`771d870`) 2 new (MEDIUM F29, LOW F30) plus a residual HIGH
+  (F25: a lost `installed.json` made a weakening update look like a first
+  install). F25/F29/F30 fixed in `2e0e99c`; that commit reviewed by
+  Antigravity: **PASS-with-nits**, the one documentation nit fixed in
+  `488e0f6`. Accepted as known limitations (recorded, not fixed): F08
+  (`npm exec` trailing options / `npm_config_registry` still inherit a known
+  package profile in `skos scan mcp`), F26 (same-version replacement drops the
+  displaced copy before the registry commit), F28 (a credential reference or
+  empty value in a URL, or a flag with no value, is reported as a literal
+  secret - a false positive).
+
 ## Tracked files by area
 
 Per-area counts below were last verified at round 2 (commit `bcd9519`) and
@@ -875,7 +892,7 @@ Safe-test templates (4): `ST-IPI-001`, `ST-MEM-001`, `ST-TOOL-001`, `ST-CRED-001
 
 ## Dependencies (`sbom.json`)
 
-63 components — the project's actual dependency closure (Codex#9, round 7:
+66 components — the project's actual dependency closure (Codex#9, round 7:
 walked outward from every declared root rather than listing every
 installed distribution, which also included `pip` and unrelated
 environment packages; Codex#9, round 8: a package reachable only
@@ -887,7 +904,9 @@ one that is itself a *direct* pyproject.toml entry; Codex#6, round 14:
 requirement, round 9's own fix, had discarded which extras a PARENT
 requirement actually activated on its dependency, hiding this one).
 Core install =
-`pydantic` + `pyyaml`; the rest are `[api]`/`[llm]` extras or dev/test-only.
+`pydantic` + `pyyaml` + (v0.2.0, Update Pack signatures) `cryptography`
+(Apache-2.0 OR BSD-3-Clause) with its dependencies `cffi` (MIT-0) and
+`pycparser` (BSD-3-Clause); the rest are `[api]`/`[llm]` extras or dev/test-only.
 Zero `UNKNOWN` licences. Licences present: MIT, BSD (2/3-Clause), Apache-2.0,
 PSF-2.0 — permissive — plus **`pathspec` and `certifi`, both under MPL-2.0**
 (Codex finding #10, round 2, 2026-09-11, corrected round 3, 2026-09-12: an
@@ -904,7 +923,7 @@ which use Python's native `truststore` instead of `certifi`); `pathspec`
 is a transitive dependency of `mypy` (**not** `ruff`, which declares no
 dependencies of its own per installed-environment metadata) — both
 dev/test-only or extras, never imported by, bundled with, or distributed
-as part of `app/`'s core install. None of the 63 components conflict with
+as part of `app/`'s core install. None of the 66 components conflict with
 Apache-2.0 distribution of this project. Full list in `sbom.json`.
 
 ## §24 evaluation (internal fixtures — not real-world performance)
