@@ -24,8 +24,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import stat
 import sys
+import tempfile
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -47,7 +47,6 @@ from app.models.report import AssessmentReport, ReportStatus
 from app.pack_cli import PACK_ERRORS
 from app.pack_cli import register as register_pack_commands
 from app.packs.loader import PackLoadError, load_with_packs, only_pack
-from app.packs.store import verify_active
 from app.policy.safe_test import (
     SafeTestLoadError,
     load_safe_test_templates,
@@ -335,20 +334,20 @@ def _cmd_test(args: argparse.Namespace, s: Settings) -> int:
 
 
 def _write_private(path: Path, text: str) -> None:
-    """Write an owner-only regular file. An existing symlink is refused
-    (O_NOFOLLOW) rather than followed, and an existing file's mode is reset
-    to 0600 (Codex capgraph review G06)."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    """Publish an owner-only file by writing a new one and renaming it into
+    place. Whatever was at ``path`` - a symlink, a hardlink shared with
+    another file - is replaced as a directory entry, never written through
+    (Codex capgraph review G06)."""
+    if path.is_dir() and not path.is_symlink():
+        raise OSError(f"{path.name} exists and is a directory")
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)  # mode 0600
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise OSError(f"{path.name} exists and is not a regular file")
-        os.fchmod(fd, 0o600)
-        os.ftruncate(fd, 0)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
     except BaseException:
-        os.close(fd)
+        Path(tmp).unlink(missing_ok=True)
         raise
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(text)
 
 
 def _same_file(a: Path, b: Path) -> bool:
@@ -376,10 +375,12 @@ def _assess_generated(text: str, s: Settings, pack_scope: str | None) -> tuple[s
     return f"  -> {report.result.overall_status.value}  [{groups}]", int(failed)
 
 
-def _pack_active(pack_id: str) -> bool:
-    return any(
-        a.pack_id == pack_id and a.verified is not None for a in verify_active()
-    )
+def _usable_packs(s: Settings) -> set[str]:
+    """Ids of the packs an assessment would apply. Loading fails closed like
+    ``skos assess``: an active pack that does not verify is an error, not
+    "not installed" (Codex capgraph review G11)."""
+    catalogue, _ = load_with_packs(load_rules(s.rules_root))
+    return {p.pack_id for p in catalogue.packs_applied}
 
 
 def _cmd_scan_mcp(args: argparse.Namespace, s: Settings) -> int:
@@ -396,7 +397,13 @@ def _cmd_scan_mcp(args: argparse.Namespace, s: Settings) -> int:
         return 2
     # Each pack is assessed only when it is installed; the inputs are always
     # written (Codex capgraph review G09).
-    assess_servers = args.assess and _pack_active("mcp")
+    packs = _usable_packs(s) if args.assess else set()
+    if args.assess and args.full and "mcp" not in packs:
+        # the per-server inputs carry extensions.mcp: without the pack there
+        # is no full assessment to run (Codex capgraph review G12)
+        print("--full needs the mcp pack installed", file=sys.stderr)
+        return 2
+    assess_servers = "mcp" in packs
     worst = 0
     for scan in scans:
         text = assessment_yaml(scan, args.config.name)
@@ -421,7 +428,7 @@ def _cmd_scan_mcp(args: argparse.Namespace, s: Settings) -> int:
     unknown = sum(1 for v in agent.facts().values() if v is None)
     line = f"  {'(agent)':28} {path}  ({unknown} unknown)"
     if args.assess:
-        if _pack_active("capgraph"):
+        if "capgraph" in packs:
             summary, failed = _assess_generated(text, s, "capgraph")
             line += summary
             worst = max(worst, failed)

@@ -253,9 +253,13 @@ def test_g06_output_never_overwrites_the_input(
     assert "overwrite the input" in capsys.readouterr().err
 
 
-def test_g06_existing_outputs_are_not_followed_and_become_private(
+def test_g06_existing_links_are_replaced_not_written_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Round 2: a symlink or a hardlink at an output path is replaced as a
+    directory entry; the file it pointed to is never touched."""
+    import os
+
     from app.cli import main
 
     monkeypatch.setenv("SKOS_HOME", str(tmp_path / "home"))
@@ -265,12 +269,89 @@ def test_g06_existing_outputs_are_not_followed_and_become_private(
     out.mkdir()
     (out / "time.yaml").write_text("old\n")
     (out / "time.yaml").chmod(0o644)
-    victim = tmp_path / "victim.txt"
-    victim.write_text("keep\n")
-    (out / f"{AGENT_FILE_STEM}.yaml").symlink_to(victim)
-    assert main(["scan", "mcp", str(cfg), "--out", str(out)]) == 2
-    assert victim.read_text() == "keep\n"
-    assert (out / "time.yaml").stat().st_mode & 0o777 == 0o600
+    sym_victim = tmp_path / "sym-victim.txt"
+    sym_victim.write_text("keep\n")
+    (out / f"{AGENT_FILE_STEM}.yaml").symlink_to(sym_victim)
+    hard_victim = tmp_path / "hard-victim.txt"
+    hard_victim.write_text("keep\n")
+    hard_victim.chmod(0o644)
+    os.link(hard_victim, out / "capability-labels.json")
+    assert main(["scan", "mcp", str(cfg), "--out", str(out)]) == 0
+    for victim in (sym_victim, hard_victim):
+        assert victim.read_text() == "keep\n"
+    assert hard_victim.stat().st_mode & 0o777 == 0o644
+    for name in ("time.yaml", f"{AGENT_FILE_STEM}.yaml", "capability-labels.json"):
+        p = out / name
+        assert not p.is_symlink() and p.stat().st_nlink == 1
+        assert p.stat().st_mode & 0o777 == 0o600
+    assert not [p for p in out.iterdir() if p.name.startswith(".")]  # no temp files left
+
+
+@pytest.mark.parametrize("args", [
+    ["exec", "@modelcontextprotocol/server-brave-search", "--registry=https://x.invalid"],
+    ["@modelcontextprotocol/server-brave-search", "--registry", "https://x.invalid"],
+    ["-y", "@modelcontextprotocol/server-brave-search@0.6.2", "--userconfig=/tmp/npmrc"],
+])
+def test_g01_trailing_launcher_options_leave_the_package_unknown(
+    tmp_path: Path, args: list[str]
+) -> None:
+    command = "npm" if args[0] == "exec" else "npx"
+    scans = _scans(tmp_path, {"s": {"command": command, "args": args}})
+    assert scans[0].package is None
+    assert agent_labels(scans, "none").servers[0].labels == dict.fromkeys(LABELS)
+
+
+def test_g01_options_after_the_separator_belong_to_the_server(tmp_path: Path) -> None:
+    scans = _scans(tmp_path, {"s": {"command": "npx", "args": [
+        "-y", "@modelcontextprotocol/server-brave-search@0.6.2", "--", "--verbose"]}})
+    assert scans[0].package == "@modelcontextprotocol/server-brave-search"
+
+
+def test_g02_colliding_short_project_ids_are_now_distinct(tmp_path: Path) -> None:
+    """The two paths Codex found colliding on a 40-bit prefix."""
+    from app.adapters.mcp_config import project_id
+
+    a, b = "/review/project-138348", "/review/project-1201832"
+    assert project_id(a) != project_id(b)
+    labels = _labels_json(tmp_path, {"projects": {
+        a: {"mcpServers": {"s": {"command": "python", "args": ["custom.py"]}}},
+        b: {"mcpServers": {"s": TIME}},
+    }})
+    ids = [(e["scope"], e["server"]) for e in labels["servers"]]
+    assert len(set(ids)) == 2
+
+
+def test_g11_a_broken_active_pack_is_an_error_not_absence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.cli import main
+
+    home = tmp_path / "home"
+    (home / "versions" / "capgraph" / "2026.10.0").mkdir(parents=True)
+    (home / "active").mkdir()
+    (home / "active" / "capgraph").symlink_to(Path("..") / "versions" / "capgraph" / "2026.10.0")
+    monkeypatch.setenv("SKOS_HOME", str(home))
+    cfg = tmp_path / ".mcp.json"
+    cfg.write_text(json.dumps({"mcpServers": {"time": TIME}}))
+    rc = main(["scan", "mcp", str(cfg), "--out", str(tmp_path / "o"), "--assess",
+               "--strict", "--client", "none"])
+    assert rc != 0
+    captured = capsys.readouterr()
+    assert "pack error" in captured.err
+    assert "not installed" not in captured.out
+
+
+def test_g12_full_without_the_mcp_pack_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.cli import main
+
+    monkeypatch.setenv("SKOS_HOME", str(tmp_path / "home"))
+    cfg = tmp_path / ".mcp.json"
+    cfg.write_text(json.dumps({"mcpServers": {"time": TIME}}))
+    rc = main(["scan", "mcp", str(cfg), "--out", str(tmp_path / "o"), "--assess", "--full"])
+    assert rc == 2
+    assert "--full needs the mcp pack" in capsys.readouterr().err
 
 
 def test_g07_sensitive_egress_has_its_own_gate(tmp_path: Path) -> None:

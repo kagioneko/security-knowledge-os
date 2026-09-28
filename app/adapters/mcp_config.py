@@ -244,7 +244,15 @@ def _launcher(command: str, args: list[str]) -> tuple[str, str | None, list[str]
                 continue
             if arg.startswith("-"):
                 return "npm", None, []
-            return "npm", arg, rest[i + 1 :]
+            after = rest[i + 1 :]
+            # npm (and npx, which is `npm exec`) keeps parsing its own options
+            # after the package unless they follow `--`: a trailing
+            # --registry=... replaces what runs (Codex capgraph review G01).
+            # Any option before `--` therefore leaves the package unidentified.
+            sep = after.index("--") if "--" in after else len(after)
+            if any(a.startswith("-") for a in after[:sep]):
+                return "npm", None, []
+            return "npm", arg, after[:sep] + after[sep + 1 :]
         return "npm", None, []
     if base in ("uvx", "pipx"):
         if base == "pipx":
@@ -514,7 +522,8 @@ def project_id(project: str) -> str:
     """An opaque, stable id for a ``projects.<path>`` entry: outputs must not
     carry the project path (Codex capgraph review G05). Whoever knows the path
     can recompute it."""
-    return "project-" + hashlib.sha256(project.encode("utf-8")).hexdigest()[:10]
+    # 128 bits: two project paths must never share an id (Codex capgraph G02)
+    return "project-" + hashlib.sha256(project.encode("utf-8")).hexdigest()[:32]
 
 
 def load_config(path: Path) -> list[tuple[str, str, object]]:
@@ -549,6 +558,10 @@ def load_config(path: Path) -> list[tuple[str, str, object]]:
                 servers += [(pid, str(k), v) for k, v in inner.items()]
     if not servers:
         raise ConfigError("no MCP servers found (expected 'mcpServers')")
+    identities = [(scope, name) for scope, name, _ in servers]
+    if len(set(identities)) != len(identities):
+        # (scope, name) is how outputs identify a server; never let two share it
+        raise ConfigError("two servers share the same scope and name")
     return servers
 
 

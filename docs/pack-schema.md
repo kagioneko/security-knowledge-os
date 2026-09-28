@@ -249,7 +249,9 @@ is not taken as a server property (an auth header does not prove the server
 requires auth; a loopback URL does not prove a loopback-only bind), known
 server capabilities apply only to exact registry package identities (aliases,
 URLs, git and path specs, and any launcher option other than `-y`/`-q` - a
-registry/index override, `-p`/`--from` - leave the package unidentified), and container options that are not
+registry/index override, `-p`/`--from`, also an option AFTER the package for
+`npx`/`npm exec`, which npm still consumes unless it follows `--` - leave the
+package unidentified), and container options that are not
 fully understood leave isolation and pinning unknown. Credential detection
 proves presence, never absence: `secrets_in_config` is `true` (a literal
 credential was found; `${VAR}` references, also after `Bearer `, do not count)
@@ -268,13 +270,17 @@ are unknown, so the agent never gets a `false`. They go to `_agent.yaml`
 left `null` for the operator to answer) and to `capability-labels.json` (schema `capgraph/v0`, per-server
 labels, the aggregate and which server contributed each label) for runtime
 enforcement; there a server is identified by its exact name and scope
-(`global` or `project-<id>`, an opaque hash - project paths never reach an
-output), not by its file stem. `_agent` is a reserved file name. A package is
+(`global` or `project-<id>`, a 128-bit hash of the project path - project
+paths never reach an output; two servers with the same scope and name are a
+config error), not by its file stem. `_agent` is a reserved file name. A package is
 identified only when launched through a bare launcher name (`npx`, `uvx`, ...)
 and with no environment variables other than credentials - anything else can
 change what runs, so the server then gets no labels from a profile. Outputs are
-written owner-only; an existing symlink is refused and an output that would
-overwrite the input config stops the scan.
+written owner-only as new files renamed into place, so an existing symlink or
+hardlink at an output path is replaced, never written through; an output that
+would overwrite the input config stops the scan. With `--assess`, an active
+pack that fails verification is an error (as for `skos assess`), and `--full`
+without the mcp pack is refused.
 
 ## Scope of pack API 1
 
