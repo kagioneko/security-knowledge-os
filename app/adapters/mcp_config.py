@@ -232,7 +232,18 @@ def _launcher(command: str, args: list[str]) -> tuple[str, str | None, list[str]
     ecosystem: "npm" / "pypi" / "container" / "" (a plain command)."""
     base = PurePosixPath(command).name
     rest = list(args)
-    if base in ("pnpm", "yarn", "npm") and rest[:1] in (["dlx"], ["exec"]):
+    # `pnpm exec` / `yarn exec` run a LOCAL command: the name says nothing
+    # about a registry package (Codex capgraph review G01). `dlx` fetches one.
+    if base in ("pnpm", "yarn") and rest[:1] == ["dlx"]:
+        base, rest = "npx", rest[1:]
+    elif base in ("pnpm", "yarn") and rest[:1] == ["exec"]:
+        return "npm", None, []
+    # npm itself keeps parsing its options after the package unless they
+    # follow `--` (a trailing --registry=... replaces what runs); npx inserts
+    # that `--` before the first positional argument, so for npx the
+    # arguments after the package belong to the server (Codex G01/G13).
+    npm_exec = base == "npm" and rest[:1] == ["exec"]
+    if npm_exec:
         base, rest = "npx", rest[1:]
     # Only the launcher options below are understood. Anything else - a
     # registry/index override, `-p/--from` naming a different package than
@@ -245,10 +256,8 @@ def _launcher(command: str, args: list[str]) -> tuple[str, str | None, list[str]
             if arg.startswith("-"):
                 return "npm", None, []
             after = rest[i + 1 :]
-            # npm (and npx, which is `npm exec`) keeps parsing its own options
-            # after the package unless they follow `--`: a trailing
-            # --registry=... replaces what runs (Codex capgraph review G01).
-            # Any option before `--` therefore leaves the package unidentified.
+            if not npm_exec:
+                return "npm", arg, after
             sep = after.index("--") if "--" in after else len(after)
             if any(a.startswith("-") for a in after[:sep]):
                 return "npm", None, []

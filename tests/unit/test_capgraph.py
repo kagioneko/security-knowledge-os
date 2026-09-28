@@ -287,24 +287,34 @@ def test_g06_existing_links_are_replaced_not_written_through(
     assert not [p for p in out.iterdir() if p.name.startswith(".")]  # no temp files left
 
 
-@pytest.mark.parametrize("args", [
-    ["exec", "@modelcontextprotocol/server-brave-search", "--registry=https://x.invalid"],
-    ["@modelcontextprotocol/server-brave-search", "--registry", "https://x.invalid"],
-    ["-y", "@modelcontextprotocol/server-brave-search@0.6.2", "--userconfig=/tmp/npmrc"],
+@pytest.mark.parametrize(("command", "args"), [
+    # npm keeps parsing its own options after the package
+    ("npm", ["exec", "@modelcontextprotocol/server-brave-search", "--registry=https://x.invalid"]),
+    ("npm", ["exec", "@modelcontextprotocol/server-brave-search@0.6.2", "--userconfig=/x"]),
+    # pnpm/yarn exec run a local command of that name (round 3)
+    ("pnpm", ["exec", "@modelcontextprotocol/server-brave-search"]),
+    ("yarn", ["exec", "@modelcontextprotocol/server-brave-search"]),
 ])
-def test_g01_trailing_launcher_options_leave_the_package_unknown(
-    tmp_path: Path, args: list[str]
+def test_g01_launches_that_may_run_something_else_claim_nothing(
+    tmp_path: Path, command: str, args: list[str]
 ) -> None:
-    command = "npm" if args[0] == "exec" else "npx"
     scans = _scans(tmp_path, {"s": {"command": command, "args": args}})
     assert scans[0].package is None
     assert agent_labels(scans, "none").servers[0].labels == dict.fromkeys(LABELS)
 
 
-def test_g01_options_after_the_separator_belong_to_the_server(tmp_path: Path) -> None:
-    scans = _scans(tmp_path, {"s": {"command": "npx", "args": [
-        "-y", "@modelcontextprotocol/server-brave-search@0.6.2", "--", "--verbose"]}})
-    assert scans[0].package == "@modelcontextprotocol/server-brave-search"
+@pytest.mark.parametrize(("command", "args"), [
+    ("npm", ["exec", "@modelcontextprotocol/server-brave-search@0.6.2", "--", "--verbose"]),
+    # npx puts `--` before the first positional itself (Codex G13)
+    ("npx", ["@playwright/mcp@0.0.30", "--headless"]),
+    ("npx", ["-y", "@modelcontextprotocol/server-brave-search@0.6.2", "--verbose"]),
+    ("pnpm", ["dlx", "@modelcontextprotocol/server-brave-search@0.6.2"]),
+])
+def test_g01_server_arguments_keep_the_identity(
+    tmp_path: Path, command: str, args: list[str]
+) -> None:
+    scans = _scans(tmp_path, {"s": {"command": command, "args": args}})
+    assert scans[0].package is not None
 
 
 def test_g02_colliding_short_project_ids_are_now_distinct(tmp_path: Path) -> None:
