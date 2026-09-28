@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import shutil
 import zipfile
 from datetime import date
 from pathlib import Path
@@ -1009,3 +1010,66 @@ def test_f15_strong_encryption_flag_is_a_typed_error() -> None:
     data[cd + 8 : cd + 10] = (0x40).to_bytes(2, "little")
     with pytest.raises(PackArchiveError):
         read_pack_zip(bytes(data))
+
+
+# ------------------------------------------------ re-review round 4 ----
+
+
+@pytest.mark.parametrize("lose", ["empty", "missing"])
+def test_f25_lost_registry_is_a_recovery_that_needs_approval(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue, lose: str,
+) -> None:
+    """With installed.json lost, a weakening update must not pass as a first
+    install against an empty baseline."""
+    flipped = _RULE.replace("demo_auth_required: true", "demo_auth_required: false")
+    _install(_zip(tmp_path / "a", key), catalogue, trusted)
+    if lose == "empty":
+        (home / "installed.json").write_text("{}")
+    else:
+        (home / "installed.json").unlink()
+    weaker = _v2(tmp_path / "b", key, flipped)
+    with pytest.raises(PackStoreError, match="recovery: .*missing from installed.json"):
+        _install(weaker, catalogue, trusted)
+    assert not (home / "versions" / "demo" / "2026.11.0").exists()
+    _install(weaker, catalogue, trusted, approve_sensitive=True)
+    merged, _ = load_with_packs(catalogue, trusted=trusted, today=TODAY)
+    assert merged.packs_applied[0].version == "2026.11.0"
+
+
+def test_f29_rollback_rejects_a_different_release_in_the_kept_directory(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    _install(_zip(tmp_path / "a", key), catalogue, trusted)
+    _install(_v2(tmp_path / "b", key, _RULE), catalogue, trusted)
+    # a validly signed, otherwise identical release that says 2026.08.0
+    other = read_pack_zip(
+        _zip(tmp_path / "c", key, manifest=_manifest(version="2026.08.0")).read_bytes()
+    )
+    kept = home / "versions" / "demo" / "2026.10.0"
+    shutil.rmtree(kept)
+    for rel, data in other.items():
+        (kept / rel).parent.mkdir(parents=True, exist_ok=True)
+        (kept / rel).write_bytes(data)
+    with pytest.raises(PackStoreError, match="holds a different release"):
+        rollback("demo", "2026.10.0", catalogue, trusted=trusted, today=TODAY,
+                 approve_sensitive=True)
+    assert load_state(home).packs["demo"].version == "2026.11.0"
+    merged, _ = load_with_packs(catalogue, trusted=trusted, today=TODAY)
+    assert merged.packs_applied[0].version == "2026.11.0"
+
+
+def test_f30_rollback_repairs_a_corrupt_active_version_with_approval(
+    tmp_path: Path, home: Path, key: Ed25519PrivateKey, trusted: dict[str, TrustedKey],
+    catalogue: RuleCatalogue,
+) -> None:
+    _install(_zip(tmp_path / "a", key), catalogue, trusted)
+    _install(_v2(tmp_path / "b", key, _RULE), catalogue, trusted)
+    (home / "versions" / "demo" / "2026.11.0" / "rules" / "DEMO-001.yaml").write_text("x\n")
+    with pytest.raises(PackStoreError, match="recovery: .*failed verification"):
+        rollback("demo", "2026.10.0", catalogue, trusted=trusted, today=TODAY)
+    rollback("demo", "2026.10.0", catalogue, trusted=trusted, today=TODAY,
+             approve_sensitive=True)
+    merged, _ = load_with_packs(catalogue, trusted=trusted, today=TODAY)
+    assert merged.packs_applied[0].version == "2026.10.0"

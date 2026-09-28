@@ -195,8 +195,8 @@ them.
 
 The registry (`installed.json`) is written before the active link is switched;
 if switching fails the previous registry is restored, and if the process dies
-in between, registry and link disagree and the pack is refused until
-`rollback`/`remove` (fail closed). On every load an active pack must match its
+in between, registry and link disagree and the pack is refused until it is
+repaired (see below) or removed (fail closed). On every load an active pack must match its
 registry record exactly - pack id, version, directory and manifest sha256 -
 checked before anything else (so an expired license cannot mask a swap);
 operator approval counts only for a recorded operator-approved install, and a
@@ -205,12 +205,19 @@ revoking its key does not degrade it to "operator-approved". An active link with
 (a lost or emptied `installed.json`) is an error, not "nothing installed".
 
 The version install/rollback diffs against (the one active now) goes through
-the same strict check; if it fails, the change is refused until the
-installation is repaired - a tampered baseline must never decide that a
-change needs no approval. A kept version directory is replaced only after the
+the same strict check. If it fails - tampered or corrupt files, or an active
+link whose `installed.json` record is lost - there is no trustworthy
+baseline: the change is a **recovery**, diffed against nothing, and always
+needs `--approve-sensitive` (a tampered baseline must never decide that a
+change needs no approval, and a lost registry must never make an update look
+like a first install). Repair is therefore `skos pack rollback PACK_ID VERSION
+--approve-sensitive` to a kept version, or `skos pack install ZIP
+--approve-sensitive`, or `skos pack remove`. A kept version directory is replaced only after the
 verified copy is in place, and restored if that fails.
 
-`skos pack rollback PACK_ID VERSION` re-verifies the kept version, diffs,
+`skos pack rollback PACK_ID VERSION` re-verifies the kept version (its
+manifest must name that pack and version - a different release placed in the
+directory is refused), diffs,
 smoke-tests and swaps back. `skos pack remove PACK_ID` deactivates the pack and
 keeps its archives and versions as history.
 

@@ -250,7 +250,8 @@ def _verify_installed(
     target = _active_target(home, pack_id)
     if target is None:
         raise PackVerifyError(
-            Problem.INVALID, "installed but not active (run `skos pack rollback`)"
+            Problem.INVALID,
+            "installed but not active (run `skos pack rollback ... --approve-sensitive`)",
         )
     files = read_pack_dir(target)
     # Identity first, before any check that could end in a skippable outcome
@@ -287,27 +288,46 @@ def _verify_installed(
     return verified
 
 
-def _baseline_rules(
+@dataclass
+class Baseline:
+    """What install/rollback diff against. ``problem`` is set when something
+    is active but cannot be verified as the recorded installation: the diff
+    then runs against nothing and the change is a recovery that always needs
+    --approve-sensitive (Codex re-review F25/F30)."""
+
+    rules: list[RiskRule]
+    problem: str | None = None
+
+
+def _baseline(
     home: Path,
     pack_id: str,
     record: InstalledPack | None,
     *,
     trusted: dict[str, TrustedKey] | None,
     today: date | None,
-) -> list[RiskRule]:
+) -> Baseline:
     """The rules of what is active now, verified strictly, for diffing."""
     if record is None:
-        return []
+        # A lost or emptied installed.json must not turn an update into a
+        # first install with no baseline (F25).
+        if (home / "active" / pack_id).is_symlink():
+            return Baseline(
+                [], f"{pack_id} is active but missing from installed.json; it cannot "
+                "serve as the baseline for approving changes"
+            )
+        return Baseline([])
     try:
-        return _verify_installed(
-            home, pack_id, record, trusted=trusted, today=today, require_license=False
-        ).catalogue.rules
-    except (PackVerifyError, OSError) as exc:
-        raise PackStoreError(
-            f"the installed {pack_id} {record.version} failed verification ({exc}); it cannot "
-            "serve as the baseline for approving changes - repair it first with "
-            "`skos pack rollback` or `skos pack remove`"
-        ) from None
+        return Baseline(
+            _verify_installed(
+                home, pack_id, record, trusted=trusted, today=today, require_license=False
+            ).catalogue.rules
+        )
+    except (PackVerifyError, PackStoreError, OSError) as exc:
+        return Baseline(
+            [], f"the installed {pack_id} {record.version} failed verification ({exc}); it "
+            "cannot serve as the baseline for approving changes"
+        )
 
 
 def verify_active(
@@ -340,8 +360,8 @@ def verify_active(
             if record is None:
                 raise PackVerifyError(
                     Problem.INVALID,
-                    "active but missing from installed.json (state lost?) - reinstall it or "
-                    "`skos pack remove` it",
+                    "active but missing from installed.json (state lost?) - reinstall it "
+                    "with --approve-sensitive or `skos pack remove` it",
                 )
             verified = _verify_installed(home, pack_id, record, trusted=trusted, today=today)
             out.append(ActivePack(pack_id, verified))
@@ -374,9 +394,11 @@ def _smoke_test(core: RuleCatalogue, packs: list[VerifiedPack]) -> None:
         raise PackStoreError("smoke test failed: an empty assessment did not complete")
 
 
-def _needs_approval(diff: PackDiff, target: VerifiedPack) -> list[str]:
+def _needs_approval(diff: PackDiff, target: VerifiedPack, baseline: Baseline) -> list[str]:
     """The one approval policy for install AND rollback (Codex review F07)."""
     needs = list(diff.sensitive)
+    if baseline.problem is not None:
+        needs.insert(0, f"recovery: {baseline.problem}")
     if target.manifest.classification is PackClassification.CONFIDENTIAL:
         needs.append("confidential pack (customer-specific)")
     return needs
@@ -413,11 +435,11 @@ def plan_install(
     )
     state = load_state(home)
     previous = state.packs.get(verified.manifest.pack_id)
-    old_rules = _baseline_rules(
+    baseline = _baseline(
         home, verified.manifest.pack_id, previous, trusted=trusted, today=today
     )
-    diff = diff_rules(old_rules, verified.catalogue.rules)
-    needs = _needs_approval(diff, verified)
+    diff = diff_rules(baseline.rules, verified.catalogue.rules)
+    needs = _needs_approval(diff, verified, baseline)
     return ChangePlan(verified, files, archive, previous, diff, needs)
 
 
@@ -573,9 +595,16 @@ def rollback(
                 read_pack_dir(target), trusted=trusted_keys, engine_version=ENGINE_VERSION,
                 today=today or date.today(), approved=frozenset(state.approved_manifests),
             )
-            old_rules = _baseline_rules(home, pack_id, current, trusted=trusted, today=today)
-            diff = diff_rules(old_rules, verified.catalogue.rules)
-            needs = _needs_approval(diff, verified)
+            # The kept files must be the release that was asked for, not
+            # another validly signed one renamed into its place (F29).
+            if verified.manifest.pack_id != pack_id or verified.manifest.version != version:
+                raise PackStoreError(
+                    f"versions/{pack_id}/{version} holds a different release; reinstall it "
+                    "from its ZIP"
+                )
+            baseline = _baseline(home, pack_id, current, trusted=trusted, today=today)
+            diff = diff_rules(baseline.rules, verified.catalogue.rules)
+            needs = _needs_approval(diff, verified, baseline)
             if needs and not approve_sensitive:
                 raise PackStoreError(
                     "sensitive change(s) need --approve-sensitive: " + "; ".join(needs)
