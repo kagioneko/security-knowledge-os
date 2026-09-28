@@ -1,16 +1,16 @@
-# Publication Manifest — Security Knowledge OS v0.2.0
+# Publication Manifest — Security Knowledge OS v0.3.0
 
 Snapshot of what the first public push contains. Generated for the pre-publication
 review; regenerate with `git ls-files` after any change.
 
-- Commit: `316e8c6` (v0.2.0: Update Packs + `skos scan mcp`; PyPI 0.1.0 was `a7f463d`)
+- Commit: `2627b44` (v0.3.0: whole-agent capability labels for the `capgraph` pack; 0.2.0 was `316e8c6`, 0.1.0 `a7f463d`)
 - History: rewritten once on 2026-09-20, before first publication, to normalise author/committer identity to the
   GitHub no-reply address (one commit message also scrubbed of a local account name). Every commit's tree is
   identical before and after, so the reviewed content is the published content; commit hashes cited in the
   review records below are the **pre-rewrite** ones - see `docs/history-rewrite-map.md` for old -> new.
 - Licence: **Apache-2.0** (`LICENSE`, `NOTICE`, `pyproject.toml`)
-- Tracked files: **242**
-- Tests: **943** items (942 pass, 1 skip = JA-R02)
+- Tracked files: **244**
+- Tests: **978** items (977 pass, 1 skip = JA-R02)
 - `scripts/preflight.py`: **PASS** (now also verifies the documented
   quickstart `pip install -e` command installs every declared extra,
   pins `constraints.txt`, AND passes `--build-constraint constraints.txt`
@@ -797,6 +797,21 @@ review; regenerate with `git ls-files` after any change.
   displaced copy before the registry commit), F28 (a credential reference or
   empty value in a URL, or a flag with no value, is reported as a literal
   secret - a false positive).
+
+  **v0.3.0 capability-label review** (2026-09-29, scoped to `master..2627b44`:
+  `app/adapters/capgraph.py`, the `skos scan mcp --client` / `_agent.yaml` /
+  `capability-labels.json` changes in `app/adapters/mcp_config.py` and
+  `app/cli.py`, plus the separate data-only `capgraph` pack source). Codex,
+  three rounds, each CHANGES-REQUIRED and fixed: round 1 (`5b6a115`) 10
+  findings (4 HIGH: package impersonation via launcher path or environment,
+  server identity bound to file names, browser and memory profiles claiming
+  absent capabilities); round 2 (`75f146f`) residuals plus 2 new (HIGH: a pack
+  failing verification treated as not installed); round 3 (`2cc494b`) one
+  residual HIGH (`pnpm exec`/`yarn exec` run a local command) and one LOW
+  (npx server arguments). Fixed in `970a1b1`, reviewed by Antigravity:
+  **PASS-with-nits**; the test nit was added in `2627b44`. The medium-rule
+  suppression Codex flagged as G10 is documented in the pack README (engine
+  policy), not changed.
 
 ## Tracked files by area
 
